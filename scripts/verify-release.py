@@ -17,6 +17,11 @@ def run(tool, *args):
     return subprocess.check_output([str(TOOLS / tool), *map(str, args)], text=True)
 
 
+# The one place the version is set (see README, Versioning).
+gradle = (ROOT / "app/build.gradle.kts").read_text()
+CODE = re.search(r"versionCode = (\d+)", gradle).group(1)
+NAME = re.search(r'versionName = "([^"]+)"', gradle).group(1)
+
 print(run("apksigner", "verify", "--print-certs", APK).strip())
 run("zipalign", "-c", "-P", "16", "4", APK)
 print("PASS: release signature and 16 KB APK alignment")
@@ -26,9 +31,9 @@ for variant, package, label in [
 ]:
     apk = ROOT / f"app/build/outputs/apk/{variant}/app-{variant}.apk"
     badging = run("aapt", "dump", "badging", apk)
-    assert f"package: name='{package}' versionCode='1' versionName='0.1.0'" in badging
+    assert f"package: name='{package}' versionCode='{CODE}' versionName='{NAME}'" in badging
     assert f"application-label:'{label}'" in badging
-    print(f"PASS: {variant} package {package}, label {label}, version 0.1.0 (1)")
+    print(f"PASS: {variant} package {package}, label {label}, version {NAME} ({CODE})")
 
 jni = (ROOT / "app/src/main/cpp/jni.c").read_text()
 entry_points = re.findall(r"JNIEXPORT \w+ JNICALL API\((\w+)\)", jni)
