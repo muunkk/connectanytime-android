@@ -301,3 +301,41 @@ repository and its pinned build recipe alone do not replace those obligations.
 Upstream licenses are available in the downloaded source trees.
 
 Not affiliated with Cisco or NYU.
+
+## Share the VPN with a USB-tethered Mac
+
+The tether proxy lets a Mac use the phone's VPN without rooting Android. Android
+normally sends USB-tethered traffic directly to the upstream network, outside the
+VPN. This feature instead serves SOCKS5 and HTTP (including HTTPS CONNECT) on the
+phone's USB address, port **1080**, and binds outbound TCP and DNS to this app's
+VPN network. It refuses connections if that network disappears. TCP only: SOCKS4,
+UDP ASSOCIATE and Wi-Fi hotspot sharing are unsupported.
+
+Backend integration is ready for the UI: `Store.shareWithTether` defaults to false;
+set it to enable sharing without restarting the VPN. `ConnectApp.tetherShare`
+reports `Off`, `VpnNotConnected`, `WaitingForUsbTether`, or `Sharing(address, port)`.
+The toggle/screen itself is a separate UI task. Connect the VPN, enable this
+setting and USB tethering in Android, then use the address shown by sharing state
+(or the Activity message “Sharing the VPN over USB at …”). USB interfaces are
+rescanned every two seconds. The address changes when Android picks a new tether
+subnet; update the Mac's proxy settings when it does.
+
+On macOS: **System Settings → Network → the phone's USB service → Details →
+Proxies**. Enable **SOCKS proxy**, **Web proxy (HTTP)** and **Secure web proxy
+(HTTPS)** with the displayed phone address and port `1080`. No authentication.
+Equivalent commands (replace the service and IP with yours):
+
+```sh
+networksetup -setsocksfirewallproxy "<service>" <ip> 1080
+networksetup -setwebproxy "<service>" <ip> 1080
+networksetup -setsecurewebproxy "<service>" <ip> 1080
+```
+
+Only apps honoring macOS proxy settings use it. **Other Mac traffic still goes
+around the VPN**, including direct connections and unsupported UDP. SOCKS clients
+must send domain names to the proxy for phone-side VPN DNS (for example, curl's
+`socks5h://<ip>:1080`); a client resolving names locally still uses its own DNS.
+This is a no-auth proxy restricted to numbered `usb`, `rndis`, and `ncm` interfaces
+and clients in the bound interface's IPv4 subnet. Do not enable it for an untrusted
+USB peer. Turn off the Mac's proxy settings when done, or apps may fail to connect
+when the phone is absent.
