@@ -72,6 +72,11 @@ class Store(private val context: Context) {
     @Synchronized private fun <T> recover(name: String, decode: (String) -> T): T? = try {
         read(name)?.let(decode)
     } catch (e: Exception) {
+        // Only failures that mean this data can never be read: a lost or replaced key,
+        // tampered or corrupt ciphertext, or unparsable contents. Anything else (say a
+        // Keystore hiccup) is rethrown rather than costing the user their password.
+        if (e !is java.security.GeneralSecurityException && e !is org.json.JSONException &&
+            e !is IllegalArgumentException) throw e
         if (e is java.security.InvalidKeyException || e is java.security.UnrecoverableKeyException) {
             KeyStore.getInstance("AndroidKeyStore").apply { load(null); deleteEntry("connectanytime") }
         }

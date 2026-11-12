@@ -42,7 +42,7 @@ object Notices {
     }
     fun ended(c: Context) {
         if (Build.VERSION.SDK_INT >= 33 && c.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
-        val text = c.getString(R.string.refusal)
+        val text = c.getString(R.string.session_ended_body) // the title already says it ended
         c.getSystemService(NotificationManager::class.java).notify(ENDED, Notification.Builder(c, "session-ended")
             .setSmallIcon(R.drawable.ic_vpn).setContentTitle(c.getString(R.string.session_ended)).setContentText(text)
             .setStyle(Notification.BigTextStyle().bigText(text)).setCategory(Notification.CATEGORY_STATUS)

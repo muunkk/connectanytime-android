@@ -20,7 +20,8 @@
             </intent-filter>
             <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
         </activity>
-        <activity android:name=".ShortcutActivity" android:exported="false" android:excludeFromRecents="true" />
+        <activity android:name=".ShortcutActivity" android:exported="false" android:excludeFromRecents="true"
+            android:theme="@style/Theme.ConnectAnytime.Trampoline" android:noHistory="true" />
         <!-- Lint only models the exact-alarm exemption. Configured VPN apps
              also qualify, per developer.android.com/develop/background-work/services/fgs/service-types.
              Do not request unrelated exact-alarm permissions to silence it. -->

@@ -280,7 +280,9 @@ private fun Settings(store: Store, state: VpnState, user: String, onUser: (Strin
     Group(2) { index ->
         when (index) {
             0 -> FieldSegment(0, 2) {
-                OutlinedTextField(user, onUser, label = { Text(stringResource(R.string.netid)) }, singleLine = true,
+                // Locked while busy, like the server: the saved session belongs to this NetID, and an
+                // edit mid-session would make the next automatic start discard it.
+                OutlinedTextField(user, onUser, enabled = !state.busy, label = { Text(stringResource(R.string.netid)) }, singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii, imeAction = ImeAction.Next, autoCorrectEnabled = false),
                     keyboardActions = KeyboardActions(onNext = { focus.moveFocus(FocusDirection.Down) }),
                     modifier = Modifier.fillMaxWidth().semantics { contentType = ContentType.Username })

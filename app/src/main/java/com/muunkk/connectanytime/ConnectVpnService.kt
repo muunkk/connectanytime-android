@@ -285,7 +285,8 @@ class ConnectVpnService : VpnService() {
                 if (stopping) finish(null)
                 else if (givingUp) finish(getString(R.string.long_unreachable))
                 else {
-                    log(getString(R.string.connection_ended, result))
+                    // OpenConnect returns -errno; say what it means rather than a bare number.
+                    log(getString(R.string.connection_ended, if (result < 0) android.system.Os.strerror(-result) else "closed by the server"))
                     scheduleRejoin(if (replacingConfig) 0 else null)
                     replacingConfig = false
                 }
