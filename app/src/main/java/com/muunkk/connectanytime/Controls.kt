@@ -27,7 +27,15 @@ object Controls {
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED && intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) return
-        val store = (context.applicationContext as ConnectApp).store
+        val app = context.applicationContext as ConnectApp
+        val store = app.store
+        // Connected when the phone restarted or the app was updated: the process was killed
+        // without stopping, which is expected here. Say so, rather than letting the next
+        // start report that the VPN quit unexpectedly.
+        if (store.running) {
+            app.log.add(context.getString(if (intent.action == Intent.ACTION_BOOT_COMPLETED) R.string.was_on_reboot else R.string.was_on_update))
+            store.running = false
+        }
         // Credential-encrypted prefs are only available after first unlock. No
         // direct-boot receiver, and no password login from a boot or sticky start.
         if (store.stayConnected && store.hasSession && !store.disconnected && VpnService.prepare(context) == null) {

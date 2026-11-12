@@ -59,6 +59,8 @@ class Store(private val context: Context) {
     private fun read(name: String): String? {
         val value = prefs.getString(name, null) ?: return null
         val bytes = Base64.decode(value, Base64.NO_WRAP)
+        // A 12-byte nonce and a 16-byte tag at least; shorter is truncated, not a Keystore fault.
+        require(bytes.size >= 28) { "Truncated ciphertext" }
         val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply {
             init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, bytes.copyOfRange(0, 12)))
             updateAAD(name.toByteArray())
@@ -69,23 +71,29 @@ class Store(private val context: Context) {
     // This key is not auth-bound; prefs are credential-encrypted and this app is
     // not direct-boot aware (API 29+). There is no locked-user/authentication
     // retry state here. Invalid keys/ciphertext are unusable saved credentials.
-    @Synchronized private fun <T> recover(name: String, decode: (String) -> T): T? = try {
-        read(name)?.let(decode)
+    @Synchronized internal fun <T> recover(name: String, reader: (String) -> String? = ::read, decode: (String) -> T): T? = try {
+        reader(name)?.let(decode)
     } catch (e: Exception) {
-        // Only failures that mean this data can never be read: a lost or replaced key,
-        // tampered or corrupt ciphertext, or unparsable contents. Anything else (say a
-        // Keystore hiccup) is rethrown rather than costing the user their password.
-        if (e !is java.security.GeneralSecurityException && e !is org.json.JSONException &&
-            e !is IllegalArgumentException) throw e
-        if (e is java.security.InvalidKeyException || e is java.security.UnrecoverableKeyException) {
-            KeyStore.getInstance("AndroidKeyStore").apply { load(null); deleteEntry("connectanytime") }
-        }
+        // Discard only what can never be read (see CredentialFailure). Anything else, such
+        // as the Keystore being busy right after boot, is rethrown and the data kept, as
+        // iOS leaves a Keychain item it couldn't read. Never delete the key here: a lost
+        // key comes back from getKey as null, a new one is made, and the old data then
+        // fails its tag check, which is handled. Deleting it on a hiccup would cost both
+        // the session and the password.
+        if (!CredentialFailure.isPermanent(e)) throw e
         check(prefs.edit().remove(name).commit())
         (context.applicationContext as? ConnectApp)?.log?.add(context.getString(if (name == "session") R.string.discarded_session else R.string.discarded_password))
         null
     }
     fun password(): String? = recover("password") { it }
-    fun savePassword(value: String) = write("password", value)
+    /** User-initiated, so a key that's present but permanently broken is replaced here
+     *  (and only here): the session under the old key then fails its tag check and goes. */
+    @Synchronized fun savePassword(value: String) = try {
+        write("password", value)
+    } catch (e: java.security.InvalidKeyException) {
+        KeyStore.getInstance("AndroidKeyStore").apply { load(null); deleteEntry("connectanytime") }
+        write("password", value)
+    }
     fun session(): SavedSession? = recover("session") {
         val j = JSONObject(it)
         SavedSession(j.getString("server"), j.getString("user"), j.getString("url"), j.getString("cookie"), j.getString("dnsName"), j.getString("ip"))
@@ -95,6 +103,13 @@ class Store(private val context: Context) {
         write("session", j.toString())
     }
     fun clearSession() { check(prefs.edit().remove("session").commit()) }
+}
+
+/** Whether a failed read means the stored value can never be decrypted or parsed. */
+object CredentialFailure {
+    fun isPermanent(e: Throwable) = e is javax.crypto.AEADBadTagException ||
+        e is android.security.keystore.KeyPermanentlyInvalidatedException ||
+        e is IllegalArgumentException || e is org.json.JSONException
 }
 
 /** Single process, shared by the activity and service. One file write per burst. */

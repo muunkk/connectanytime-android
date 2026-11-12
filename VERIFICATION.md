@@ -436,3 +436,19 @@ index 852bf99..509251d 100644
 ++			 * Never replay a request with a body after an ambiguous write. */
 ++			if (rq_retry && !request_body_type) {
 ```
+
+## Council round 2 fixes
+
+Round 2 (reviewed at c3f5bd3) scored 8/10 from both reviewers, with no critical or high findings. Fixed:
+
+- **Credential recovery no longer deletes on a transient Keystore error** (Storage.kt `recover`, `CredentialFailure`).
+  - **Discarded:** only AEADBadTag, KeyPermanentlyInvalidated, malformed or truncated (IllegalArgument) and unparsable (JSON) values.
+  - **Kept:** anything else is rethrown and the data stays, as iOS leaves an unreadable Keychain item.
+  - **The key:** the read path never deletes it. Only a user-initiated `savePassword` replaces a broken key.
+  - **Tests:** StoreTest covers transient UnrecoverableKey, InvalidKey, IllegalBlockSize and ProviderException (both values kept), the classifier, and a truncated value (discarded).
+- **Every startup resume or login attempt refreshes the physical network** before it starts (`refreshNetwork`), so a network that comes back or goes during the retry waits doesn't leave DNS on a stale handle.
+- **BootReceiver clears the run marker** after a reboot or app update and logs why, instead of the next start reporting "quit unexpectedly".
+- **A late ARM or other non-Connect start after `finish()`** stops for its own start ID instead of leaving a started service that isn't in the foreground.
+- **Session-ended screen:** the body no longer repeats the headline. The transient read-failure message says to try again.
+
+Checks: `./gradlew assembleDebug assembleRelease testDebugUnitTest lintDebug lintRelease` exit 0 (49 tests, 0 lint errors); `verify-release.py` and `verify-native.sh` pass.

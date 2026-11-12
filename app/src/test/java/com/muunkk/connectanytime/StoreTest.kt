@@ -25,4 +25,34 @@ class StoreTest {
         assertEquals(lines, app.log.state.value.size) // one diagnostic per discarded value
         assertNull(StartRule.refusal(true, store.hasSession, false))
     }
+
+    @Test fun aTransientKeystoreErrorKeepsBothSavedValues() {
+        val store = ApplicationProvider.getApplicationContext<ConnectApp>().store
+        store.prefs.edit().putString("session", "kept-session").putString("password", "kept-password").commit()
+        for (e in listOf(java.security.UnrecoverableKeyException("System error"), java.security.InvalidKeyException("busy"),
+                         javax.crypto.IllegalBlockSizeException("busy"), java.security.ProviderException("busy"))) {
+            assertThrows(Exception::class.java) { store.recover("session", reader = { throw e }) { it } }
+            assertThrows(Exception::class.java) { store.recover("password", reader = { throw e }) { it } }
+        }
+        assertTrue(store.hasSession)
+        assertTrue(store.hasPassword)
+    }
+
+    @Test fun onlyUnreadableDataCountsAsPermanent() {
+        assertTrue(CredentialFailure.isPermanent(javax.crypto.AEADBadTagException()))
+        assertTrue(CredentialFailure.isPermanent(android.security.keystore.KeyPermanentlyInvalidatedException()))
+        assertTrue(CredentialFailure.isPermanent(IllegalArgumentException()))
+        assertTrue(CredentialFailure.isPermanent(org.json.JSONException("x")))
+        assertFalse(CredentialFailure.isPermanent(java.security.UnrecoverableKeyException()))
+        assertFalse(CredentialFailure.isPermanent(java.security.InvalidKeyException()))
+        assertFalse(CredentialFailure.isPermanent(javax.crypto.IllegalBlockSizeException()))
+        assertFalse(CredentialFailure.isPermanent(java.security.ProviderException()))
+    }
+
+    @Test fun aTruncatedValueIsDiscardedNotThrown() {
+        val store = ApplicationProvider.getApplicationContext<ConnectApp>().store
+        store.prefs.edit().putString("session", android.util.Base64.encodeToString(ByteArray(5), android.util.Base64.NO_WRAP)).commit()
+        assertNull(store.session())
+        assertFalse(store.hasSession)
+    }
 }

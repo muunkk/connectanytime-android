@@ -86,6 +86,9 @@ class ConnectVpnService : VpnService() {
                     if (commands.isCurrent(token) && finished) main.post { restart(token) }
                 }
             }
+            // A late ARM (or other non-Connect start) after this run finished would leave a
+            // started, non-foreground service behind; stop for it instead.
+            if (finished && pendingConnect == null) { stopSelfResult(startId); return START_NOT_STICKY }
             return if (store.stayConnected && store.hasSession && !stopping) START_STICKY else START_NOT_STICKY
         }
         // Android re-creating the service after its process was killed (sticky). That
@@ -134,12 +137,10 @@ class ConnectVpnService : VpnService() {
             require(user.isNotBlank()) { getString(R.string.enter_account) }
             log(getString(R.string.connecting_server, server, if (manual) "manual" else "auto"))
             state("Connecting… approve Duo on your phone")
-            val cm = getSystemService(ConnectivityManager::class.java)
-            underlying = physicalNetwork(cm)
-            native.setNetwork(underlying?.networkHandle ?: 0)
             var saved = savedSession()
             if (saved != null) {
                 for (attempt in 1..4) {
+                    refreshNetwork()
                     val result = resume(checkNotNull(saved))
                     if (result == 0) break
                     checkNotStopping()
@@ -154,6 +155,7 @@ class ConnectVpnService : VpnService() {
                 val password = store.password() ?: error(getString(R.string.save_account))
                 for (attempt in 1..3) {
                     checkNotStopping()
+                    refreshNetwork()
                     val s = newSession(password)
                     val token = generation
                     val start = SystemClock.uptimeMillis()
@@ -384,6 +386,13 @@ class ConnectVpnService : VpnService() {
             lastKick = now
             command(NativeBridge.RECONNECT)
         }
+    }
+    /** The network watch only starts once connected, so each startup attempt picks up
+     *  the current physical network itself: one that came back (or went) during the
+     *  retry waits would otherwise leave DNS on a stale handle. */
+    private fun refreshNetwork() {
+        underlying = physicalNetwork(getSystemService(ConnectivityManager::class.java))
+        native.setNetwork(underlying?.networkHandle ?: 0)
     }
     @Suppress("DEPRECATION")
     private fun physicalNetwork(cm: ConnectivityManager): Network? {

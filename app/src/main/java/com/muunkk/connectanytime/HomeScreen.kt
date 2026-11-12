@@ -140,7 +140,7 @@ private fun StatusPanel(state: VpnState, server: String, ready: Boolean, problem
         Phase.Connecting -> stringResource(R.string.status_connecting)
         Phase.Connected -> stringResource(R.string.status_connected, server)
         Phase.Reconnecting -> stringResource(R.string.status_reconnecting)
-        Phase.Failed -> if (ended) stringResource(R.string.refusal) else stringResource(R.string.status_failed)
+        Phase.Failed -> if (ended) stringResource(R.string.session_ended_body) else stringResource(R.string.status_failed)
     }
     // The service's own reason when it failed; otherwise our validation message.
     val reason = problem?.let { stringResource(it) } ?: state.error?.takeIf { phase == Phase.Failed && !ended }
