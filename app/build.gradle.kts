@@ -27,8 +27,8 @@ android {
         applicationId = "com.muunkk.connectanytime"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.1"
         buildConfigField("String", "BUILD_DESCRIPTION", "\"ConnectAnytime $versionName (build $versionCode)\"")
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
         externalNativeBuild { cmake { arguments += "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON" } }

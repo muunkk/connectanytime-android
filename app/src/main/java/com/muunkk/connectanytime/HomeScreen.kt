@@ -350,6 +350,8 @@ private fun Settings(store: Store, state: VpnState, user: String, onUser: (Strin
         }
     }
 
+    ShareSection(store)
+
     Spacer(Modifier.height(24.dp))
     Group(1) {
         SegmentedListItem(colors = segmentColors(), onClick = onActivity, shapes = ListItemDefaults.segmentedShapes(0, 1),
@@ -384,16 +386,16 @@ private fun Settings(store: Store, state: VpnState, user: String, onUser: (Strin
 
 // Segments sit on surfaceContainer so each group reads as one block on the background.
 @Composable
-private fun segmentColors() = ListItemDefaults.segmentedColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
+internal fun segmentColors() = ListItemDefaults.segmentedColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
 
 @Composable
-private fun Group(count: Int, item: @Composable (Int) -> Unit) {
+internal fun Group(count: Int, item: @Composable (Int) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)) { repeat(count) { item(it) } }
 }
 
 /** A segment of a list group that holds a text field rather than a list item. */
 @Composable
-private fun FieldSegment(index: Int, count: Int, padded: Boolean = true, content: @Composable () -> Unit) {
+internal fun FieldSegment(index: Int, count: Int, padded: Boolean = true, content: @Composable () -> Unit) {
     Surface(shape = ListItemDefaults.segmentedShapes(index, count).shape, color = MaterialTheme.colorScheme.surfaceContainer,
         modifier = Modifier.fillMaxWidth()) {
         Box(if (padded) Modifier.padding(horizontal = 16.dp, vertical = 12.dp) else Modifier) { content() }
@@ -401,13 +403,13 @@ private fun FieldSegment(index: Int, count: Int, padded: Boolean = true, content
 }
 
 @Composable
-private fun SectionTitle(id: Int) {
+internal fun SectionTitle(id: Int) {
     Text(stringResource(id), style = MaterialTheme.typography.titleMediumEmphasized, color = MaterialTheme.colorScheme.primary,
         modifier = Modifier.padding(start = 16.dp, top = 28.dp, bottom = 10.dp).semantics { heading() })
 }
 
 @Composable
-private fun Footnote(id: Int) {
+internal fun Footnote(id: Int) {
     Text(stringResource(id), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp))
 }

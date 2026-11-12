@@ -311,25 +311,19 @@ phone's USB address, port **1080**, and binds outbound TCP and DNS to this app's
 VPN network. It refuses connections if that network disappears. TCP only: SOCKS4,
 UDP ASSOCIATE and Wi-Fi hotspot sharing are unsupported.
 
-Backend integration is ready for the UI: `Store.shareWithTether` defaults to false;
-set it to enable sharing without restarting the VPN. `ConnectApp.tetherShare`
-reports `Off`, `VpnNotConnected`, `WaitingForUsbTether`, or `Sharing(address, port)`.
-The toggle/screen itself is a separate UI task. Connect the VPN, enable this
-setting and USB tethering in Android, then use the address shown by sharing state
-(or the Activity message “Sharing the VPN over USB at …”). USB interfaces are
+In the app, turn on **Share with your Mac → Share over USB tethering**, then turn on
+USB tethering in Android (the app links to it). While the VPN is connected, the app
+shows the proxy address, for example `192.168.42.129:1080`. USB interfaces are
 rescanned every two seconds. The address changes when Android picks a new tether
-subnet; update the Mac's proxy settings when it does.
+subnet, and the app then shows the new one.
 
 On macOS: **System Settings → Network → the phone's USB service → Details →
-Proxies**. Enable **SOCKS proxy**, **Web proxy (HTTP)** and **Secure web proxy
-(HTTPS)** with the displayed phone address and port `1080`. No authentication.
-Equivalent commands (replace the service and IP with yours):
-
-```sh
-networksetup -setsocksfirewallproxy "<service>" <ip> 1080
-networksetup -setwebproxy "<service>" <ip> 1080
-networksetup -setsecurewebproxy "<service>" <ip> 1080
-```
+Proxies**. Turn on **Web proxy (HTTP)**, **Secure web proxy (HTTPS)** and
+**SOCKS proxy**, each with the displayed address and port `1080`. No
+authentication. Or tap **Copy Terminal command** in the app and paste it into
+Terminal. It finds the network service whose router is the phone, so you don't
+need its name, and sets all three proxies with `sudo networksetup`. Run it again
+after the address changes.
 
 Only apps honoring macOS proxy settings use it. **Other Mac traffic still goes
 around the VPN**, including direct connections and unsupported UDP. SOCKS clients
@@ -337,5 +331,6 @@ must send domain names to the proxy for phone-side VPN DNS (for example, curl's
 `socks5h://<ip>:1080`); a client resolving names locally still uses its own DNS.
 This is a no-auth proxy restricted to numbered `usb`, `rndis`, and `ncm` interfaces
 and clients in the bound interface's IPv4 subnet. Do not enable it for an untrusted
-USB peer. Turn off the Mac's proxy settings when done, or apps may fail to connect
-when the phone is absent.
+USB peer. The Mac's proxy settings belong to the phone's USB service, so other networks are
+unaffected. While tethered with sharing off, apps using the proxy can't connect:
+turn the proxies off on the Mac, or sharing back on.

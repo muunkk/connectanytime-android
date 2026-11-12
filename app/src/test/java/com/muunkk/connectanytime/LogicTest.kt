@@ -129,4 +129,12 @@ class LogicTest {
         // A marker from a build before stamps existed: can't tell, so no "quit unexpectedly".
         assertEquals(RunStamp.Cause.Reboot, RunStamp.cause("", now))
     }
+
+    @Test fun macCommandTargetsThePhonesServiceAndAllThreeProxies() {
+        val c = macCommand("192.168.42.129", 1080)
+        assertTrue(c.startsWith("ip=192.168.42.129; port=1080; "))
+        assertTrue(c.contains("grep -qx \"Router: \$ip\""))
+        assertTrue(c.contains("for p in webproxy securewebproxy socksfirewallproxy; do sudo networksetup -set\$p \"\$s\" \"\$ip\" \"\$port\""))
+        assertFalse(c.contains("\n"))
+    }
 }

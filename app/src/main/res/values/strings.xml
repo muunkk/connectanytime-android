@@ -104,4 +104,19 @@
     <string name="tether_started">Sharing the VPN over USB at %1$s:%2$d</string>
     <string name="tether_stopped">Stopped sharing the VPN over USB</string>
     <string name="tether_refused">Refused a client outside the USB tether subnet</string>
+    <!-- Share with a USB-tethered Mac -->
+    <string name="share_title">Share with your Mac</string>
+    <string name="share_switch">Share over USB tethering</string>
+    <string name="share_off_help">A Mac plugged into this phone can use the VPN through a proxy here.</string>
+    <string name="share_vpn_off">Starts once the VPN is connected.</string>
+    <string name="share_waiting">Turn on USB tethering to start sharing.</string>
+    <string name="share_sharing">Sharing at %1$s, port %2$d.</string>
+    <string name="open_tethering">Open tethering settings</string>
+    <string name="share_proxy_label">Proxy for your Mac</string>
+    <string name="share_mac_steps">On your Mac, open System Settings → Network → your phone → Details → Proxies. Turn on Web proxy, Secure web proxy and SOCKS proxy, each with this address and port %1$d.</string>
+    <string name="share_copy_address">Copy address</string>
+    <string name="share_copy_command">Copy Terminal command</string>
+    <string name="share_copied">Copied</string>
+    <string name="share_command_help">Or paste the command into Terminal on your Mac. It finds the phone\'s connection and sets all three proxies (it asks for your Mac password). Run it again if this address changes.</string>
+    <string name="share_footnote">Only Mac apps that use the system proxy go through the VPN; browsers and Mail do. Other traffic, and calls or games that use UDP, still go around it. The settings only apply while the Mac uses this phone\'s connection.</string>
 </resources>
