@@ -4,6 +4,9 @@ import java.io.EOFException
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.net.ConnectException
+import java.net.UnknownHostException
+import java.net.NetworkInterface
 import java.net.InetAddress
 import java.net.Socket
 import java.net.URI
@@ -18,11 +21,40 @@ internal interface ProxyNetwork {
 /** No default network, default resolver, or unbound connect exists on this path. */
 internal fun connectViaVpn(network: ProxyNetwork?, target: ProxyTarget, register: (Socket) -> Unit): Socket {
     val vpn = network ?: throw ProxyFailure()
+    val addresses = try { vpn.resolve(target.host) } catch (e: UnknownHostException) { throw ProxyFailure(4) }
+    if (addresses.isEmpty()) throw ProxyFailure(4)
     var failure: IOException = ProxyFailure()
-    for (address in vpn.resolve(target.host)) {
+    for (address in addresses) {
+        if (!allowedDestination(address, phoneOwnsAddress(address))) throw ProxyFailure(2)
         try { return vpn.connect(address, target.port, register) } catch (e: IOException) { failure = e }
     }
-    throw failure
+    throw when (failure) {
+        is ProxyFailure -> failure
+        is ConnectException -> ProxyFailure(if (failure.message.orEmpty().contains("refused", ignoreCase = true)) 5 else 1)
+        else -> ProxyFailure()
+    }
+}
+/** Pure policy: assignment is supplied by the caller, never discovered inside the predicate. */
+internal fun allowedDestination(address: InetAddress, assignedToPhone: Boolean): Boolean {
+    val normalized = normalizedAddress(address)
+    return !assignedToPhone && !normalized.isLoopbackAddress && !normalized.isAnyLocalAddress &&
+        !normalized.isLinkLocalAddress && !normalized.isMulticastAddress
+}
+internal fun phoneOwnsAddress(address: InetAddress) = NetworkInterface.getByInetAddress(normalizedAddress(address)) != null
+private fun normalizedAddress(address: InetAddress): InetAddress {
+    val bytes = address.address
+    // Inet6Address can retain mapped IPv4 bytes, unlike InetAddress.getByAddress.
+    return if (bytes.size == 16 && bytes.take(10).all { it == 0.toByte() } &&
+        bytes[10] == (-1).toByte() && bytes[11] == (-1).toByte()) InetAddress.getByAddress(bytes.copyOfRange(12, 16)) else address
+}
+internal fun allowedPeer(local: InetAddress, prefix: Int, peer: InetAddress, assignedToPhone: Boolean) =
+    !assignedToPhone && peer != local && sameSubnet(local, prefix, peer)
+
+internal fun uploadProxyRequest(input: InputStream, remote: Socket, head: ProxyProtocol.Head?) {
+    if (head == null) {
+        input.copyTo(remote.getOutputStream(), 16384)
+        remote.shutdownOutput()
+    } else ProxyProtocol.body(input, remote.getOutputStream(), head)
 }
 internal object ProxyProtocol {
     private fun byte(input: InputStream): Int = input.read().also { if (it < 0) throw EOFException() }
@@ -58,7 +90,7 @@ internal object ProxyProtocol {
         output.write(byteArrayOf(5, code.toByte(), 0, 1, 0, 0, 0, 0, 0, 0)); output.flush()
     }
     // Byte-at-a-time header parsing deliberately leaves tunnel/body bytes untouched.
-    fun line(input: InputStream, max: Int = 8192): String {
+    fun line(input: InputStream, max: Int = 8192, obsText: Boolean = false): String {
         val out = StringBuilder()
         while (out.length <= max) {
             val b = byte(input)
@@ -66,7 +98,7 @@ internal object ProxyProtocol {
                 if (byte(input) != 10) throw ProxyFailure()
                 return out.toString()
             }
-            if (b !in 32..126 && b != 9) throw ProxyFailure()
+            if (b !in 32..126 && b != 9 && !(obsText && b in 128..255)) throw ProxyFailure()
             out.append(b.toChar())
         }
         throw ProxyFailure()
@@ -98,13 +130,13 @@ internal object ProxyProtocol {
         val headers = mutableListOf<Pair<String, String>>()
         var size = first.length
         while (true) {
-            val line = line(input)
+            val line = line(input, obsText = true)
             size += line.length + 2
             if (size > 32768 || headers.size > 100) throw ProxyFailure()
             if (line.isEmpty()) break
             val colon = line.indexOf(':')
             if (colon <= 0 || !line.substring(0, colon).matches(Regex("[!#$%&'*+.^_`|~0-9A-Za-z-]+"))) throw ProxyFailure()
-            headers += line.substring(0, colon) to line.substring(colon + 1).trim()
+            headers += line.substring(0, colon) to line.substring(colon + 1).trim(' ', '\t')
         }
         return Head(first, headers).also { it.length(); it.chunked(); it.cleaned() }
     }
@@ -121,7 +153,7 @@ internal object ProxyProtocol {
         val port = if (uri.port < 0) 80 else uri.port
         val path = uri.rawPath.ifEmpty { "/" } + (uri.rawQuery?.let { "?$it" } ?: "")
         val authority = (if (':' in host) "[$host]" else host) + if (port == 80) "" else ":$port"
-        val forward = Head("${parts[0]} $path HTTP/1.1", h.cleaned().filterNot { it.first.equals("host", true) } + ("Host" to authority) +
+        val forward = Head("${parts[0]} $path ${parts[2]}", h.cleaned().filterNot { it.first.equals("host", true) } + ("Host" to authority) +
             (if (h.chunked()) listOf("Transfer-Encoding" to "chunked") else emptyList()))
         return Http(ProxyTarget(host, port), if (connect) h else forward, connect)
     }

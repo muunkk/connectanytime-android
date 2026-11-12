@@ -149,16 +149,115 @@ class ProxyProtocolTest {
                     peer.getOutputStream().write("reply:$body".toByteArray()); peer.shutdownOutput(); body
                 } }
                 val vpn = object : ProxyNetwork {
-                    override fun resolve(host: String): List<InetAddress> { assertEquals("phone-resolved.invalid", host); return listOf(server.inetAddress) }
-                    override fun connect(address: InetAddress, port: Int, register: (Socket) -> Unit) = Socket().also { register(it); it.connect(java.net.InetSocketAddress(address, port), 1000) }
+                    override fun resolve(host: String): List<InetAddress> { assertEquals("phone-resolved.invalid", host); return listOf(InetAddress.getByName("203.0.113.1")) }
+                    override fun connect(address: InetAddress, port: Int, register: (Socket) -> Unit) = Socket().also { register(it); it.connect(java.net.InetSocketAddress(server.inetAddress, port), 1000) }
                 }
                 connectViaVpn(vpn, ProxyTarget("phone-resolved.invalid", server.localPort)) {}.use { client ->
                     client.soTimeout = 2000
-                    client.getOutputStream().write("hello".toByteArray()); client.shutdownOutput()
+                    uploadProxyRequest(input("hello"), client, null)
                     assertEquals("reply:hello", client.getInputStream().readBytes().toString(Charsets.UTF_8))
                 }
                 assertEquals("hello", response.get(2, TimeUnit.SECONDS))
             } finally { executor.shutdownNow() }
         }
     }
+    @Test fun destinationPolicyCoversIpv4Ipv6AndMappedAddresses() {
+        val denied = listOf("127.0.0.1", "127.1.2.3", "0.0.0.0", "169.254.1.2", "224.0.0.1",
+            "::1", "::", "fe80::1", "ff02::1")
+        for (literal in denied) {
+            val ip = InetAddress.getByName(literal)
+            assertFalse(literal, allowedDestination(ip, false))
+            if (ip.address.size == 4) {
+                val mapped = ByteArray(16).also { it[10] = -1; it[11] = -1; ip.address.copyInto(it, 12) }
+                assertFalse(literal, allowedDestination(java.net.Inet6Address.getByAddress(null, mapped, -1), false))
+                assertFalse(literal, allowedDestination(InetAddress.getByAddress(mapped), false))
+            }
+        }
+        for (literal in listOf("192.168.42.1", "10.0.0.8", "203.0.113.1", "2001:db8::1", "fd00::1", "::ffff:203.0.113.1")) {
+            val ip = InetAddress.getByName(literal)
+            assertTrue(literal, allowedDestination(ip, false))
+            assertFalse(literal, allowedDestination(ip, true))
+        }
+    }
+    @Test fun dnsRebindingIsRejectedBeforeConnect() {
+        var attempted = false
+        val vpn = object : ProxyNetwork {
+            override fun resolve(host: String) = listOf(InetAddress.getByName("127.0.0.1"))
+            override fun connect(address: InetAddress, port: Int, register: (Socket) -> Unit): Socket { attempted = true; error("local connect") }
+        }
+        assertEquals(2, assertThrows(ProxyFailure::class.java) { connectViaVpn(vpn, ProxyTarget("rebind.invalid", 1080)) {} }.socksCode)
+        assertFalse(attempted)
+    }
+    @Test fun phonePeersAreRejectedEvenInsideSubnet() {
+        val local = InetAddress.getByName("192.168.42.1")
+        val otherPhoneAddress = InetAddress.getByName("192.168.42.3")
+        assertFalse(allowedPeer(local, 24, local, false))
+        assertFalse(allowedPeer(local, 24, otherPhoneAddress, true))
+        assertTrue(allowedPeer(local, 24, otherPhoneAddress, false))
+    }
+    @Test fun obsTextRoundTripsLatin1ResponseAndUtf8Request() {
+        val response = "HTTP/1.1 200 OK\r\nContent-Disposition: attachment; filename=\"café.txt\"\r\nX: \u00a0\r\n\r\n".toByteArray(Charsets.ISO_8859_1)
+        val request = "GET http://example.org/ HTTP/1.1\r\nX-Name: café ☕\r\n\r\n".toByteArray(Charsets.UTF_8)
+        val out = ByteArrayOutputStream()
+        ProxyProtocol.writeHead(out, ProxyProtocol.head(ByteArrayInputStream(response)))
+        assertTrue(out.toString("ISO-8859-1").contains("filename=\"café.txt\""))
+        assertTrue(out.toString("ISO-8859-1").contains("X: \u00a0\r\n"))
+        out.reset()
+        ProxyProtocol.writeHead(out, ProxyProtocol.http(ByteArrayInputStream(request)).head)
+        assertTrue(out.toString("UTF-8").contains("X-Name: café ☕\r\n"))
+    }
+    @Test fun obsTextDoesNotRelaxNamesControlsOrFraming() {
+        for (bad in listOf("Nâmé: value", "X: a\u0000b", "X: a\u007fb", "X: a\nb", "X: a\rb"))
+            assertThrows(ProxyFailure::class.java) { http("GET http://example.org/ HTTP/1.1\r\n$bad\r\n\r\n") }
+        assertTrue(http("GET http://example.org/ HTTP/1.1\r\nX: a\tb\r\n\r\n").head.values("X").single().contains('\t'))
+    }
+    @Test fun http10IsForwardedWithoutUpgrade() {
+        val out = ByteArrayOutputStream()
+        ProxyProtocol.writeHead(out, http("GET http://example.org/ HTTP/1.0\r\n\r\n").head)
+        assertTrue(out.toString().startsWith("GET / HTTP/1.0\r\n"))
+        assertTrue(out.toString().contains("Connection: close\r\n"))
+    }
+    @Test fun socksDistinguishesDnsRefusedAndOtherFailures() {
+        fun failure(resolve: () -> List<InetAddress>, error: java.io.IOException): Int {
+            val vpn = object : ProxyNetwork {
+                override fun resolve(host: String) = resolve()
+                override fun connect(address: InetAddress, port: Int, register: (Socket) -> Unit): Socket = throw error
+            }
+            return assertThrows(ProxyFailure::class.java) { connectViaVpn(vpn, ProxyTarget("test.invalid", 80)) {} }.socksCode
+        }
+        val address = listOf(InetAddress.getByName("203.0.113.1"))
+        assertEquals(4, failure({ throw java.net.UnknownHostException() }, java.io.IOException()))
+        assertEquals(4, failure({ emptyList() }, java.io.IOException()))
+        assertEquals(5, failure({ address }, java.net.ConnectException("Connection refused")))
+        assertEquals(1, failure({ address }, java.net.ConnectException("Network is unreachable")))
+        assertEquals(1, failure({ address }, java.net.SocketTimeoutException()))
+        assertEquals(1, failure({ address }, java.io.IOException("other")))
+    }
+    @Test fun plainHttpUploadKeepsServerSideOpenUntilResponse() {
+        ServerSocket(0, 1, InetAddress.getLoopbackAddress()).use { server ->
+            val executor = Executors.newSingleThreadExecutor()
+            try {
+                val reply = executor.submit<Boolean> { server.accept().use { peer ->
+                    peer.soTimeout = 200
+                    val head = ProxyProtocol.head(peer.getInputStream())
+                    ProxyProtocol.body(peer.getInputStream(), ByteArrayOutputStream(), head)
+                    // Model a server that aborts on EOF before emitting its response.
+                    assertThrows(java.net.SocketTimeoutException::class.java) { peer.getInputStream().read() }
+                    peer.getOutputStream().write("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK".toByteArray())
+                    true
+                } }
+                Socket(server.inetAddress, server.localPort).use { client ->
+                    client.soTimeout = 2000
+                    val request = http("POST http://example.org/ HTTP/1.1\r\nContent-Length: 3\r\n\r\n").head
+                    ProxyProtocol.writeHead(client.getOutputStream(), request)
+                    uploadProxyRequest(input("abc"), client, request)
+                    val head = ProxyProtocol.head(client.getInputStream())
+                    val out = ByteArrayOutputStream(); ProxyProtocol.body(client.getInputStream(), out, head)
+                    assertEquals("OK", out.toString())
+                }
+                assertTrue(reply.get(3, TimeUnit.SECONDS))
+            } finally { executor.shutdownNow() }
+        }
+    }
+
 }

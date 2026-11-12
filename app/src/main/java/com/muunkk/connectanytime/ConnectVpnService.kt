@@ -486,7 +486,7 @@ class ConnectVpnService : VpnService() {
             if (logout) store.clearSession()
             store.running = false
         }
-        tetherProxy?.close(); tetherProxy = null
+        runCatching { tetherProxy?.close() }; tetherProxy = null
         tetherAddress = null
         tun?.close(); tun = null
         if (error != null) log(getString(R.string.failed, error)) else log(if (logout) getString(R.string.disconnected) else getString(R.string.stopped_session))
