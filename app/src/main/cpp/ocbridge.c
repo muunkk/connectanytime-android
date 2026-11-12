@@ -2,6 +2,7 @@
 
 #include <openconnect.h>
 #include <pthread.h>
+#include <android/multinetwork.h>
 #include <errno.h>
 #include <netdb.h>
 #include <signal.h>
@@ -39,6 +40,19 @@ struct ocb_session {
 enum { LOGIN_IDLE, LOGIN_SENDING_SECRETS, LOGIN_ABORTED };
 
 static void reconnected_cb(void *priv);
+static uint64_t physical_network;
+void ocb_set_network(uint64_t handle) {
+    __atomic_store_n(&physical_network, handle, __ATOMIC_SEQ_CST);
+}
+// Protecting transport sockets doesn't protect libc DNS. Resolve explicitly on
+// the physical network too, or a rejoin could wait on DNS inside its own tunnel.
+static int physical_getaddrinfo(void *priv, const char *node, const char *service,
+                               const struct addrinfo *hints, struct addrinfo **res) {
+    (void)priv;
+    uint64_t network = __atomic_load_n(&physical_network, __ATOMIC_SEQ_CST);
+    if (!network) { *res = NULL; return EAI_AGAIN; }
+    return android_getaddrinfofornetwork(network, node, service, hints, res);
+}
 
 static void logf_(struct ocb_session *s, int level, const char *fmt, ...) {
     if (!s->log) return;
@@ -196,11 +210,13 @@ ocb_session *ocb_new(const char *server, const char *user, const char *password,
     s->protect = protect;
     s->vpn = openconnect_vpninfo_new(NULL, validate_cert_cb, NULL, auth_form_cb, progress_cb, s);
     if (!s->vpn) { ocb_free(s); return NULL; }
+    openconnect_override_getaddrinfo(s->vpn, physical_getaddrinfo);
     openconnect_set_protect_socket_handler(s->vpn, protect_cb);
     openconnect_set_loglevel(s->vpn, PRG_INFO);
     openconnect_set_reported_os(s->vpn, "android");
     openconnect_set_reconnected_handler(s->vpn, reconnected_cb);
     s->cmd_fd = openconnect_setup_cmd_pipe(s->vpn);
+    if (s->cmd_fd < 0) { ocb_free(s); return NULL; }
     return s;
 }
 
@@ -253,10 +269,10 @@ static int pinned_getaddrinfo(void *priv, const char *node, const char *service,
                               const struct addrinfo *hints, struct addrinfo **res) {
     struct ocb_session *s = priv;
     if (!node || !s->pin_name || !s->pin_ip || strcasecmp(node, s->pin_name))
-        return getaddrinfo(node, service, hints, res);
+        return physical_getaddrinfo(priv, node, service, hints, res);
     struct addrinfo *pinned = NULL, *normal = NULL;
-    int pinned_err = getaddrinfo(s->pin_ip, service, hints, &pinned);
-    int normal_err = getaddrinfo(node, service, hints, &normal);
+    int pinned_err = physical_getaddrinfo(priv, s->pin_ip, service, hints, &pinned);
+    int normal_err = physical_getaddrinfo(priv, node, service, hints, &normal);
     if (pinned_err) { *res = normal; return normal_err; }
     bool usable = normal_err != 0;
     for (struct addrinfo *a = normal_err ? NULL : normal; a && !usable; a = a->ai_next)

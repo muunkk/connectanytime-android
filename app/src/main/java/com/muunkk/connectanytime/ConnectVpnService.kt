@@ -1,0 +1,447 @@
+package com.muunkk.connectanytime
+
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.IpPrefix
+import android.net.Network
+import android.net.VpnService
+import android.os.Build
+import android.os.ParcelFileDescriptor
+import android.os.SystemClock
+import android.service.quicksettings.TileService
+import android.content.ComponentName
+import java.net.InetAddress
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
+
+class ConnectVpnService : VpnService() {
+    private val queue = Executors.newSingleThreadScheduledExecutor()
+    // Deadline timers cannot use queue: it blocks waiting for Duo or TLS.
+    private val deadlines = Executors.newSingleThreadScheduledExecutor()
+    private val sessionLock = Any()
+    private var session = 0L
+    private var generation = 0
+    @Volatile private var stopping = false
+    @Volatile private var logout = false
+    @Volatile private var manualRequested = false
+    private var launched = false // on Android's main thread only
+    private val native = NativeBridge()
+    private val app get() = application as ConnectApp
+    private val store get() = app.store
+    private fun log(s: String) = app.log.add(s)
+    private var tun: ParcelFileDescriptor? = null
+    private var installed: TunnelConfig? = null
+    private var watch: NetworkWatch? = null
+    private var underlying: Network? = null
+    private var identity: String? = null
+    private var online = false
+    private var watchdog: ScheduledFuture<*>? = null
+    private var debounce: ScheduledFuture<*>? = null
+    private var pendingRejoin: ScheduledFuture<*>? = null
+    private val backoff = RejoinBackoff()
+    private var down = false
+    private var downOnline = 0L
+    private var lastCheck = SystemClock.uptimeMillis()
+    private var lastElapsed = SystemClock.elapsedRealtime()
+    private var lastAwake = SystemClock.uptimeMillis()
+    private var destroyed = false
+    private var finished = false
+    private var lastKick = 0L
+    private var givingUp = false
+    private var server = ""
+    private var user = ""
+    private var replacingConfig = false
+    private var foreground = false
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val manual = intent?.action == CONNECT
+        if (intent?.action == DISCONNECT) {
+            // Durable intent first: a crash or concurrent successful login must not
+            // resurrect a session after Disconnect.
+            synchronized(sessionLock) { store.disconnected = true; store.clearSession() }
+            requestStop(true)
+            if (!launched) { stopSelf(); return START_NOT_STICKY }
+            return START_NOT_STICKY
+        }
+        if (manual) manualRequested = true
+        if (launched) return if (store.stayConnected && store.hasSession && !stopping) START_STICKY else START_NOT_STICKY
+        stopping = false
+        logout = false
+        if (manual) store.disconnected = false
+        val refusal = StartRule.refusal(manual, store.hasSession, store.disconnected)
+        if (refusal != null) {
+            RefusedStarts(this, store, app.log).note()
+            ConnectApp.mutableState.value = VpnState(error = refusal)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        launched = true
+        foreground = true
+        val notification = Notices.ongoing(this, "Connecting…")
+        if (Build.VERSION.SDK_INT >= 34) startForeground(Notices.ONGOING, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED)
+        else startForeground(Notices.ONGOING, notification)
+        queue.execute { start(manual) }
+        // Not sticky until a successful login saved a session. Android remembers
+        // a later onStartCommand return; arm that with an internal action below.
+        return if (store.stayConnected && store.hasSession) START_STICKY else START_NOT_STICKY
+    }
+
+    private fun state(status: String, connected: Boolean = false, error: String? = null) {
+        ConnectApp.mutableState.value = VpnState(status, status != "Not connected", connected, error)
+        if (foreground) getSystemService(android.app.NotificationManager::class.java).notify(Notices.ONGOING, Notices.ongoing(this, status))
+        TileService.requestListeningState(this, ComponentName(this, ConnectTileService::class.java))
+    }
+    private fun start(manual: Boolean) {
+        try {
+            RefusedStarts(this, store, app.log).end()
+            log(BuildConfig.BUILD_DESCRIPTION)
+            if (store.running) log("The VPN extension quit unexpectedly last time")
+            store.running = false
+            server = store.server
+            user = store.user
+            require(user.isNotBlank()) { "Open ConnectAnytime and enter your NetID." }
+            log("Connecting to $server (${if (manual) "manual" else "auto"})")
+            state("Connecting… approve Duo on your phone")
+            val cm = getSystemService(ConnectivityManager::class.java)
+            underlying = physicalNetwork(cm)
+            native.setNetwork(underlying?.networkHandle ?: 0)
+            var saved = savedSession()
+            if (saved != null) {
+                for (attempt in 1..4) {
+                    val result = resume(checkNotNull(saved))
+                    if (result == 0) break
+                    checkNotStopping()
+                    if (result == NativeBridge.SESSION_ENDED) { store.clearSession(); saved = null; break }
+                    if (manual || manualRequested) break
+                    if (attempt == 4) error("Couldn't reach the VPN server.")
+                    pause(attempt * 5_000L)
+                }
+            }
+            if (session == 0L) {
+                check(StartRule.mayLogin(manual || manualRequested, store.disconnected)) { StartRule.REFUSAL }
+                val password = store.password() ?: error("Open ConnectAnytime and save your password.")
+                for (attempt in 1..3) {
+                    checkNotStopping()
+                    val s = newSession(password)
+                    val token = generation
+                    val start = SystemClock.uptimeMillis()
+                    var timedOut = false
+                    val timer = deadlines.scheduleWithFixedDelay({
+                        synchronized(sessionLock) {
+                            if (session == s && generation == token) {
+                                val aborted = native.abortBeforePassword(s)
+                                if (!aborted && SystemClock.uptimeMillis() - start >= 180_000) {
+                                    timedOut = true
+                                    native.command(s, NativeBridge.CANCEL)
+                                }
+                            }
+                        }
+                    }, 20, 1, TimeUnit.SECONDS)
+                    val result = try { native.connect(s) } finally { timer.cancel(false) }
+                    if (result == 0) break
+                    val message = native.error(s)
+                    freeSession()
+                    checkNotStopping()
+                    if (synchronized(sessionLock) { timedOut }) error("The VPN server stopped answering during login. Tap Connect to try again.")
+                    if (result != NativeBridge.UNREACHABLE || attempt == 3) error(message)
+                    log("$message Trying again")
+                    pause(attempt * 3_000L)
+                }
+                saved = null
+            }
+            // Save before checking an OS stop: a completed login can still be
+            // rejoined next time. A user's Disconnect wins under sessionLock.
+            saveSession(saved)
+            checkNotStopping()
+            applyConfig(native.config(session)?.let(TunnelConfig::from) ?: error("The server didn't send tunnel settings."))
+            checkNotStopping()
+            synchronized(sessionLock) { if (!stopping) store.running = true }
+            log("Connected")
+            Notices.clear(this)
+            state("Connected", true)
+            // Re-deliver an internal (automatic) start only to update Android's
+            // sticky return value; it cannot start a second login.
+            startService(Intent(this, ConnectVpnService::class.java).setAction(ARM))
+            watchNetwork()
+            run()
+        } catch (e: Exception) {
+            finish(if (stopping) null else safeMessage(e))
+        }
+    }
+
+    private fun safeMessage(e: Exception): String = when (e) {
+        is java.security.GeneralSecurityException -> "Couldn't read encrypted credentials. Unlock the device or save your password again."
+        else -> e.message ?: "Couldn't start the VPN."
+    }
+    private fun savedSession(): SavedSession? {
+        val s = store.session() ?: return null
+        if (s.server == server && s.user == user) return s
+        store.clearSession()
+        return null
+    }
+    private fun saveSession(previous: SavedSession?) = synchronized(sessionLock) {
+        if (logout || store.disconnected) { store.clearSession(); return@synchronized }
+        val values = native.saved(session)
+        check(values[0].isNotBlank() && values[1].isNotBlank()) { "The server didn't provide a session." }
+        store.saveSession(SavedSession(server, user, values[0], values[1], previous?.dnsName ?: values[2], previous?.ip ?: values[3]))
+    }
+    private fun newSession(password: String): Long = synchronized(sessionLock) {
+        checkNotStopping()
+        val token = ++generation
+        val cb = object : NativeBridge.Callbacks {
+            override fun onLog(line: String) = log(line)
+            override fun onEvent(event: Int, config: Array<String>?) {
+                val cfg = config?.let(TunnelConfig::from)
+                queue.execute {
+                    if (token != generation || stopping) return@execute
+                    if (event == 2) {
+                        lastKick = SystemClock.uptimeMillis()
+                        if (cfg != null && cfg.changedFrom(installed)) {
+                            // Builder can't mutate an established interface. Detach this
+                            // connection, then rejoin and establish its newest config.
+                            // Keep the old fd until the new interface is established:
+                            // queued traffic must wait, never bypass during reconnect.
+                            replacingConfig = true
+                            reconnecting()
+                            command(NativeBridge.DETACH)
+                        } else connected()
+                    } else {
+                        reconnecting()
+                        if (event == 1) lastKick = SystemClock.uptimeMillis()
+                    }
+                }
+            }
+            override fun verify(chain: Array<ByteArray>, hostname: String) = PlatformTrust.verify(chain, hostname)
+            override fun protectSocket(fd: Int) = protect(fd)
+        }
+        native.create(server, user, password, cb).also { check(it != 0L) { "Couldn't start the VPN client." }; session = it }
+    }
+    private fun freeSession() = synchronized(sessionLock) {
+        if (session != 0L) native.free(session)
+        session = 0L
+        generation++ // discard any callback queued by the connection just freed
+    }
+    private fun command(cmd: Int) = synchronized(sessionLock) { if (session != 0L) native.command(session, cmd) }
+    private fun checkNotStopping() { check(!stopping) { "Cancelled." } }
+    private fun pause(ms: Long) {
+        val end = SystemClock.uptimeMillis() + ms
+        while (!stopping && SystemClock.uptimeMillis() < end) Thread.sleep(minOf(100, end - SystemClock.uptimeMillis()).coerceAtLeast(1))
+        checkNotStopping()
+    }
+    private fun resume(saved: SavedSession): Int {
+        val s = newSession("")
+        val token = generation
+        val timer = deadlines.scheduleWithFixedDelay({
+            synchronized(sessionLock) { if (session == s && generation == token) native.command(s, NativeBridge.DETACH) }
+        }, 30, 1, TimeUnit.SECONDS)
+        val result = try { native.resume(s, saved.native()) } finally { timer.cancel(false) }
+        if (result != 0) { log("Couldn't rejoin the session: ${native.error(s)}"); freeSession() }
+        return result
+    }
+    private fun run() {
+        val s = session
+        val fd = checkNotNull(tun).fd
+        Thread({
+            val result = native.run(s, fd)
+            queue.execute {
+                freeSession()
+                if (stopping) finish(null)
+                else if (givingUp) finish("Couldn't reach the VPN server for 30 minutes. Tap Connect to try again.")
+                else {
+                    log("The connection ended ($result); rejoining the session")
+                    scheduleRejoin(if (replacingConfig) 0 else null)
+                    replacingConfig = false
+                }
+            }
+        }, "connectanytime.openconnect").start()
+    }
+    private fun scheduleRejoin(delay: Long? = null) {
+        if (stopping) return finish(null)
+        reconnecting()
+        pendingRejoin?.cancel(false)
+        val wait = delay ?: backoff.next(SystemClock.uptimeMillis())
+        if (wait > 0) log("Trying to rejoin again in ${wait / 1000} s")
+        pendingRejoin = queue.schedule({ rejoin() }, wait, TimeUnit.MILLISECONDS)
+    }
+    private fun rejoin() {
+        pendingRejoin = null
+        try {
+            checkNotStopping()
+            val saved = savedSession() ?: return sessionEnded()
+            val result = resume(checkNotNull(saved))
+            if (stopping) return finish(null)
+            if (result == NativeBridge.SESSION_ENDED) return sessionEnded()
+            if (result != 0) return scheduleRejoin()
+            saveSession(saved)
+            val cfg = native.config(session)?.let(TunnelConfig::from) ?: error("The server didn't send tunnel settings.")
+            applyConfig(cfg)
+            connected()
+            run()
+        } catch (e: Exception) {
+            freeSession()
+            if (stopping) finish(null)
+            else { log("Couldn't rejoin: ${safeMessage(e)}"); scheduleRejoin() }
+        }
+    }
+    private fun sessionEnded() {
+        store.clearSession()
+        Notices.ended(this)
+        finish(StartRule.REFUSAL)
+    }
+    private fun connected() {
+        if (stopping) return
+        if (down) log("Back up")
+        down = false; downOnline = 0; lastCheck = SystemClock.uptimeMillis()
+        state("Connected", true)
+    }
+    private fun reconnecting() {
+        if (!down) { down = true; downOnline = 0; lastCheck = SystemClock.uptimeMillis(); lastKick = lastCheck }
+        state("Reconnecting…")
+    }
+    private fun watchNetwork() {
+        val cm = getSystemService(ConnectivityManager::class.java)
+        watch = NetworkWatch(cm) { n, id ->
+            native.setNetwork(n?.networkHandle ?: 0)
+            queue.execute {
+                val old = identity
+                underlying = n
+                setUnderlyingNetworks(n?.let { arrayOf(it) } ?: emptyArray())
+                accountDown(SystemClock.uptimeMillis())
+                online = n != null
+                identity = id
+                if (old != null && id != old && !stopping) {
+                    log(if (n == null) "Network lost" else "Network changed")
+                    reconnecting()
+                    debounce?.cancel(false)
+                    if (n != null) debounce = queue.schedule({
+                        if (!stopping) {
+                            if (session == 0L) { backoff.reset(); scheduleRejoin(0) }
+                            else { lastKick = SystemClock.uptimeMillis(); command(NativeBridge.RECONNECT) }
+                        }
+                    }, 2, TimeUnit.SECONDS)
+                }
+            }
+        }.also { it.start() }
+        watchdog = queue.scheduleWithFixedDelay({ checkReconnect() }, 10, 10, TimeUnit.SECONDS)
+    }
+    private fun accountDown(now: Long) {
+        if (down && online) downOnline += now - lastCheck
+        lastCheck = now
+    }
+    private fun checkReconnect() {
+        val now = SystemClock.uptimeMillis()
+        val elapsed = SystemClock.elapsedRealtime()
+        val slept = (elapsed - lastElapsed) - (now - lastAwake)
+        if (slept >= 60_000) log("Woke after ${slept / 60_000} min asleep")
+        lastAwake = now
+        lastElapsed = elapsed
+        accountDown(now)
+        if (!down || !online || stopping || givingUp) return
+        if (downOnline >= 1_800_000) {
+            givingUp = true
+            log("Couldn't reach the VPN server in 30 minutes; stopping")
+            if (session == 0L) finish("Couldn't reach the VPN server for 30 minutes. Tap Connect to try again.")
+            else command(NativeBridge.DETACH)
+        } else if (session != 0L && now - lastKick >= 60_000) {
+            log("Reconnect is taking too long; trying again")
+            lastKick = now
+            command(NativeBridge.RECONNECT)
+        }
+    }
+    @Suppress("DEPRECATION")
+    private fun physicalNetwork(cm: ConnectivityManager): Network? {
+        val active = cm.activeNetwork
+        fun physical(n: Network) = cm.getNetworkCapabilities(n)?.let {
+            it.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_VPN) &&
+                it.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } == true
+        return active?.takeIf(::physical) ?: cm.allNetworks.firstOrNull(::physical)
+    }
+    private fun applyConfig(cfg: TunnelConfig) {
+        if (!cfg.changedFrom(installed)) return
+        val builder = Builder().setSession("ConnectAnytime").setBlocking(false)
+        val addr = Prefix.parse("${cfg.address}/${cfg.mask}")
+        builder.addAddress(cfg.address, addr.bits)
+        val full = cfg.includes.isEmpty()
+        val includes = if (full) listOf(Prefix.parse("0.0.0.0/0")) else cfg.includes.map(Prefix::parse)
+        val excludes = cfg.excludes.map(Prefix::parse)
+        val routes = if (Build.VERSION.SDK_INT >= 33) includes else Prefix.complement(includes, excludes)
+        routes.forEach { builder.addRoute(InetAddress.getByName(it.text.substringBefore("/")), it.bits) }
+        if (Build.VERSION.SDK_INT >= 33) excludes.forEach { builder.excludeRoute(IpPrefix(InetAddress.getByName(it.text.substringBefore("/")), it.bits)) }
+        if (cfg.address6.isNotBlank()) {
+            val parts = cfg.address6.split("/")
+            require(parts.size == 2)
+            builder.addAddress(InetAddress.getByName(parts[0]), parts[1].toInt())
+            if (full) builder.addRoute("::", 0)
+        } else if (full) {
+            // Cisco's Drop All Traffic policy: consume IPv6 in the tunnel even
+            // without a server IPv6 address, instead of leaking it outside.
+            builder.addAddress("fd00:ca::1", 128).addRoute("::", 0)
+        }
+        cfg.dns.forEach { builder.addDnsServer(it) }
+        cfg.domain.split(Regex("\\s+")).filter(String::isNotBlank).forEach { builder.addSearchDomain(it) }
+        if (cfg.mtu > 0) builder.setMtu(cfg.mtu)
+        // Set the physical network before establish, then keep it up to date.
+        if (underlying == null) {
+            underlying = physicalNetwork(getSystemService(ConnectivityManager::class.java))
+        }
+        builder.setUnderlyingNetworks(underlying?.let { arrayOf(it) } ?: emptyArray())
+        // Never allowBypass. Establish the replacement before closing the old fd.
+        val replacement = builder.establish() ?: error("VPN consent is needed. Open ConnectAnytime.")
+        val old = tun
+        tun = replacement
+        installed = cfg
+        old?.close()
+        log("Applied tunnel settings")
+    }
+    private fun requestStop(logOut: Boolean) {
+        synchronized(sessionLock) {
+            stopping = true
+            logout = logout || logOut
+            if (session != 0L) native.command(session, if (logout) NativeBridge.CANCEL else NativeBridge.DETACH)
+            store.running = false
+        }
+        // When the queue is idle (between connections), no native run will
+        // deliver connectionEnded. Cancel the scheduled rejoin and finish here.
+        queue.execute { if (session == 0L) finish(null) }
+    }
+    private fun finish(error: String?) {
+        if (finished) return
+        finished = true
+        stopping = true
+        pendingRejoin?.cancel(false); debounce?.cancel(false); watchdog?.cancel(false)
+        watch?.close(); watch = null
+        synchronized(sessionLock) {
+            if (session != 0L) {
+                native.command(session, if (logout) NativeBridge.CANCEL else NativeBridge.DETACH)
+                freeSession()
+            }
+            if (logout) store.clearSession()
+            store.running = false
+        }
+        tun?.close(); tun = null
+        if (error != null) log("Failed: $error") else log(if (logout) "Disconnected" else "Stopped, keeping the session")
+        app.log.flush()
+        foreground = false
+        state("Not connected", error = error)
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+        if (destroyed) { deadlines.shutdown(); queue.shutdown() }
+    }
+    override fun onRevoke() { requestStop(false); super.onRevoke() }
+    override fun onDestroy() {
+        destroyed = true
+        if (!queue.isShutdown) requestStop(false)
+        // Don't free native state here: the blocking call must return first.
+        if (!queue.isShutdown) queue.execute { if (session == 0L) { deadlines.shutdown(); queue.shutdown() } }
+        super.onDestroy()
+    }
+    companion object {
+        const val CONNECT = "com.muunkk.connectanytime.CONNECT"
+        const val DISCONNECT = "com.muunkk.connectanytime.DISCONNECT"
+        const val AUTOMATIC = "com.muunkk.connectanytime.AUTOMATIC"
+        const val ARM = "com.muunkk.connectanytime.ARM"
+    }
+}

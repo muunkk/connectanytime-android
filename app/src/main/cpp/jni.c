@@ -100,6 +100,9 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *v, void *unused) {
 }
 #define API(name) Java_com_muunkk_connectanytime_NativeBridge_##name
 #define B ((bridge *)(intptr_t)handle)
+JNIEXPORT void JNICALL API(setNetwork)(JNIEnv *e, jobject self, jlong handle) {
+    (void)e; (void)self; ocb_set_network((uint64_t)handle);
+}
 JNIEXPORT jlong JNICALL API(create)(JNIEnv *e, jobject self, jstring server, jstring user, jstring password, jobject cb) {
     (void)self; bridge *b = calloc(1, sizeof *b); if (!b) return 0;
     b->callbacks = (*e)->NewGlobalRef(e, cb);

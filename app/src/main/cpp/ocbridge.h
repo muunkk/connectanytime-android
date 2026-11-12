@@ -5,6 +5,8 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
+void ocb_set_network(uint64_t handle);
 
 typedef struct ocb_session ocb_session;
 typedef int (*ocb_trust_fn)(void *ctx, const unsigned char **der, const int *lengths, int count, const char *hostname);
