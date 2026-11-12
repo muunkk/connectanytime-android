@@ -308,14 +308,20 @@ The tether proxy lets a Mac use the phone's VPN without rooting Android. Android
 normally sends USB-tethered traffic directly to the upstream network, outside the
 VPN. This feature instead serves SOCKS5 and HTTP (including HTTPS CONNECT) on the
 phone's USB address, port **1080**, and binds outbound TCP and DNS to this app's
-VPN network. It refuses connections if that network disappears. TCP only: SOCKS4,
+VPN network. Plain HTTP keeps the client's HTTP version and closes after the
+response; only SOCKS and CONNECT tunnels use TCP half-close. HTTP header values
+preserve non-ASCII bytes. SOCKS reports DNS failure as host unreachable (0x04),
+connection refusal as 0x05, and other failures as 0x01. It refuses connections if that network disappears. TCP only: SOCKS4,
 UDP ASSOCIATE and Wi-Fi hotspot sharing are unsupported.
 
 In the app, turn on **Share with your Mac → Share over USB tethering**, then turn on
 USB tethering in Android (the app links to it). While the VPN is connected, the app
 shows the proxy address, for example `192.168.42.129:1080`. USB interfaces are
 rescanned every two seconds. The address changes when Android picks a new tether
-subnet, and the app then shows the new one.
+subnet, and the app then shows the new one. The backend distinguishes waiting for
+USB tethering, waiting for a reconnecting VPN, and a port-1080 bind failure. Bind
+failures are retried every two seconds and logged once per address until recovery
+or removal.
 
 On macOS: **System Settings → Network → the phone's USB service → Details →
 Proxies**. Turn on **Web proxy (HTTP)**, **Secure web proxy (HTTPS)** and
@@ -330,7 +336,11 @@ around the VPN**, including direct connections and unsupported UDP. SOCKS client
 must send domain names to the proxy for phone-side VPN DNS (for example, curl's
 `socks5h://<ip>:1080`); a client resolving names locally still uses its own DNS.
 This is a no-auth proxy restricted to numbered `usb`, `rndis`, and `ncm` interfaces
-and clients in the bound interface's IPv4 subnet. Do not enable it for an untrusted
+and clients in the bound interface's IPv4 subnet. Phone apps cannot use the proxy,
+including apps in other profiles. After VPN DNS resolution, the proxy refuses
+loopback, unspecified, link-local, multicast and phone-interface destinations
+(SOCKS ruleset refusal / HTTP 403). Other private-network destinations remain
+available through the VPN. Do not enable it for an untrusted
 USB peer. The Mac's proxy settings belong to the phone's USB service, so other networks are
 unaffected. While tethered with sharing off, apps using the proxy can't connect:
 turn the proxies off on the Mac, or sharing back on.
