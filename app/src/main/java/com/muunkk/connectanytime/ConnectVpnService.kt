@@ -81,7 +81,7 @@ class ConnectVpnService : VpnService() {
         // only stands for Stay Connected; once you turn it off, the earlier sticky return
         // mustn't bring the VPN back. Always-on VPN starts carry an intent and go ahead.
         if (intent == null && !store.stayConnected) {
-            log("Android restarted the VPN, but Stay Connected is off; staying off")
+            log(getString(R.string.stay_off))
             stopSelf()
             return START_NOT_STICKY
         }
@@ -116,12 +116,12 @@ class ConnectVpnService : VpnService() {
         try {
             RefusedStarts(this, store, app.log).end()
             log(BuildConfig.BUILD_DESCRIPTION)
-            if (store.running) log("The VPN extension quit unexpectedly last time")
+            if (store.running) log(getString(R.string.unclean))
             store.running = false
             server = store.server
             user = store.user
-            require(user.isNotBlank()) { "Open ConnectAnytime and enter your NetID." }
-            log("Connecting to $server (${if (manual) "manual" else "auto"})")
+            require(user.isNotBlank()) { getString(R.string.enter_account) }
+            log(getString(R.string.connecting_server, server, if (manual) "manual" else "auto"))
             state("Connecting… approve Duo on your phone")
             val cm = getSystemService(ConnectivityManager::class.java)
             underlying = physicalNetwork(cm)
@@ -134,13 +134,13 @@ class ConnectVpnService : VpnService() {
                     checkNotStopping()
                     if (result == NativeBridge.SESSION_ENDED) { store.clearSession(); saved = null; break }
                     if (manual || manualRequested) break
-                    if (attempt == 4) error("Couldn't reach the VPN server.")
+                    if (attempt == 4) error(getString(R.string.unreachable))
                     pause(attempt * 5_000L)
                 }
             }
             if (session == 0L) {
                 check(StartRule.mayLogin(manual || manualRequested, store.disconnected)) { StartRule.REFUSAL }
-                val password = store.password() ?: error("Open ConnectAnytime and save your password.")
+                val password = store.password() ?: error(getString(R.string.save_account))
                 for (attempt in 1..3) {
                     checkNotStopping()
                     val s = newSession(password)
@@ -163,9 +163,9 @@ class ConnectVpnService : VpnService() {
                     val message = native.error(s)
                     freeSession()
                     checkNotStopping()
-                    if (synchronized(sessionLock) { timedOut }) error("The VPN server stopped answering during login. Tap Connect to try again.")
+                    if (synchronized(sessionLock) { timedOut }) error(getString(R.string.login_timeout))
                     if (result != NativeBridge.UNREACHABLE || attempt == 3) error(message)
-                    log("$message Trying again")
+                    log(getString(R.string.try_again, message))
                     pause(attempt * 3_000L)
                 }
                 saved = null
@@ -174,10 +174,10 @@ class ConnectVpnService : VpnService() {
             // rejoined next time. A user's Disconnect wins under sessionLock.
             saveSession(saved)
             checkNotStopping()
-            applyConfig(native.config(session)?.let(TunnelConfig::from) ?: error("The server didn't send tunnel settings."))
+            applyConfig(native.config(session)?.let(TunnelConfig::from) ?: error(getString(R.string.no_settings)))
             checkNotStopping()
             synchronized(sessionLock) { if (!stopping) store.running = true }
-            log("Connected")
+            log(getString(R.string.connected))
             Notices.clear(this)
             state("Connected", true)
             // Re-deliver an internal (automatic) start only to update Android's
@@ -191,8 +191,8 @@ class ConnectVpnService : VpnService() {
     }
 
     private fun safeMessage(e: Exception): String = when (e) {
-        is java.security.GeneralSecurityException -> "Couldn't read encrypted credentials. Unlock the device or save your password again."
-        else -> e.message ?: "Couldn't start the VPN."
+        is java.security.GeneralSecurityException -> getString(R.string.credentials_error)
+        else -> e.message ?: getString(R.string.start_error)
     }
     private fun savedSession(): SavedSession? {
         val s = store.session() ?: return null
@@ -203,7 +203,7 @@ class ConnectVpnService : VpnService() {
     private fun saveSession(previous: SavedSession?) = synchronized(sessionLock) {
         if (logout || store.disconnected) { store.clearSession(); return@synchronized }
         val values = native.saved(session)
-        check(values[0].isNotBlank() && values[1].isNotBlank()) { "The server didn't provide a session." }
+        check(values[0].isNotBlank() && values[1].isNotBlank()) { getString(R.string.no_session) }
         store.saveSession(SavedSession(server, user, values[0], values[1], previous?.dnsName ?: values[2], previous?.ip ?: values[3]))
     }
     private fun newSession(password: String): Long = synchronized(sessionLock) {
@@ -235,7 +235,7 @@ class ConnectVpnService : VpnService() {
             override fun verify(chain: Array<ByteArray>, hostname: String) = PlatformTrust.verify(chain, hostname)
             override fun protectSocket(fd: Int) = protect(fd)
         }
-        native.create(server, user, password, cb).also { check(it != 0L) { "Couldn't start the VPN client." }; session = it }
+        native.create(server, user, password, cb).also { check(it != 0L) { getString(R.string.client_error) }; session = it }
     }
     private fun freeSession() = synchronized(sessionLock) {
         if (session != 0L) native.free(session)
@@ -243,7 +243,7 @@ class ConnectVpnService : VpnService() {
         generation++ // discard any callback queued by the connection just freed
     }
     private fun command(cmd: Int) = synchronized(sessionLock) { if (session != 0L) native.command(session, cmd) }
-    private fun checkNotStopping() { check(!stopping) { "Cancelled." } }
+    private fun checkNotStopping() { check(!stopping) { getString(R.string.cancelled) } }
     private fun pause(ms: Long) {
         val end = SystemClock.uptimeMillis() + ms
         while (!stopping && SystemClock.uptimeMillis() < end) Thread.sleep(minOf(100, end - SystemClock.uptimeMillis()).coerceAtLeast(1))
@@ -256,7 +256,7 @@ class ConnectVpnService : VpnService() {
             synchronized(sessionLock) { if (session == s && generation == token) native.command(s, NativeBridge.DETACH) }
         }, 30, 1, TimeUnit.SECONDS)
         val result = try { native.resume(s, saved.native()) } finally { timer.cancel(false) }
-        if (result != 0) { log("Couldn't rejoin the session: ${native.error(s)}"); freeSession() }
+        if (result != 0) { log(getString(R.string.rejoin_error, native.error(s))); freeSession() }
         return result
     }
     private fun run() {
@@ -267,9 +267,9 @@ class ConnectVpnService : VpnService() {
             queue.execute {
                 freeSession()
                 if (stopping) finish(null)
-                else if (givingUp) finish("Couldn't reach the VPN server for 30 minutes. Tap Connect to try again.")
+                else if (givingUp) finish(getString(R.string.long_unreachable))
                 else {
-                    log("The connection ended ($result); rejoining the session")
+                    log(getString(R.string.connection_ended, result))
                     scheduleRejoin(if (replacingConfig) 0 else null)
                     replacingConfig = false
                 }
@@ -281,7 +281,7 @@ class ConnectVpnService : VpnService() {
         reconnecting()
         pendingRejoin?.cancel(false)
         val wait = delay ?: backoff.next(SystemClock.uptimeMillis())
-        if (wait > 0) log("Trying to rejoin again in ${wait / 1000} s")
+        if (wait > 0) log(getString(R.string.rejoin_wait, wait / 1000))
         pendingRejoin = queue.schedule({ rejoin() }, wait, TimeUnit.MILLISECONDS)
     }
     private fun rejoin() {
@@ -294,14 +294,14 @@ class ConnectVpnService : VpnService() {
             if (result == NativeBridge.SESSION_ENDED) return sessionEnded()
             if (result != 0) return scheduleRejoin()
             saveSession(saved)
-            val cfg = native.config(session)?.let(TunnelConfig::from) ?: error("The server didn't send tunnel settings.")
+            val cfg = native.config(session)?.let(TunnelConfig::from) ?: error(getString(R.string.no_settings))
             applyConfig(cfg)
             connected()
             run()
         } catch (e: Exception) {
             freeSession()
             if (stopping) finish(null)
-            else { log("Couldn't rejoin: ${safeMessage(e)}"); scheduleRejoin() }
+            else { log(getString(R.string.rejoin_failed, safeMessage(e))); scheduleRejoin() }
         }
     }
     private fun sessionEnded() {
@@ -311,7 +311,7 @@ class ConnectVpnService : VpnService() {
     }
     private fun connected() {
         if (stopping) return
-        if (down) log("Back up")
+        if (down) log(getString(R.string.back_up))
         down = false; downOnline = 0; lastCheck = SystemClock.uptimeMillis()
         state("Connected", true)
     }
@@ -331,7 +331,7 @@ class ConnectVpnService : VpnService() {
                 online = n != null
                 identity = id
                 if (old != null && id != old && !stopping) {
-                    log(if (n == null) "Network lost" else "Network changed")
+                    log(if (n == null) getString(R.string.network_lost) else getString(R.string.network_changed))
                     reconnecting()
                     debounce?.cancel(false)
                     if (n != null) debounce = queue.schedule({
@@ -353,18 +353,18 @@ class ConnectVpnService : VpnService() {
         val now = SystemClock.uptimeMillis()
         val elapsed = SystemClock.elapsedRealtime()
         val slept = (elapsed - lastElapsed) - (now - lastAwake)
-        if (slept >= 60_000) log("Woke after ${slept / 60_000} min asleep")
+        if (slept >= 60_000) log(getString(R.string.woke, slept / 60_000))
         lastAwake = now
         lastElapsed = elapsed
         accountDown(now)
         if (!down || !online || stopping || givingUp) return
         if (downOnline >= 1_800_000) {
             givingUp = true
-            log("Couldn't reach the VPN server in 30 minutes; stopping")
-            if (session == 0L) finish("Couldn't reach the VPN server for 30 minutes. Tap Connect to try again.")
+            log(getString(R.string.stopping_unreachable))
+            if (session == 0L) finish(getString(R.string.long_unreachable))
             else command(NativeBridge.DETACH)
         } else if (session != 0L && now - lastKick >= 60_000) {
-            log("Reconnect is taking too long; trying again")
+            log(getString(R.string.slow_reconnect))
             lastKick = now
             command(NativeBridge.RECONNECT)
         }
@@ -380,7 +380,7 @@ class ConnectVpnService : VpnService() {
     }
     private fun applyConfig(cfg: TunnelConfig) {
         if (!cfg.changedFrom(installed)) return
-        val builder = Builder().setSession("ConnectAnytime").setBlocking(false)
+        val builder = Builder().setSession(getString(R.string.app_name)).setBlocking(false)
         val addr = Prefix.parse("${cfg.address}/${cfg.mask}")
         builder.addAddress(cfg.address, addr.bits)
         val full = cfg.includes.isEmpty()
@@ -408,12 +408,12 @@ class ConnectVpnService : VpnService() {
         }
         builder.setUnderlyingNetworks(underlying?.let { arrayOf(it) } ?: emptyArray())
         // Never allowBypass. Establish the replacement before closing the old fd.
-        val replacement = builder.establish() ?: error("VPN consent is needed. Open ConnectAnytime.")
+        val replacement = builder.establish() ?: error(getString(R.string.need_consent))
         val old = tun
         tun = replacement
         installed = cfg
         old?.close()
-        log("Applied tunnel settings")
+        log(getString(R.string.applied_settings))
     }
     private fun requestStop(logOut: Boolean) {
         synchronized(sessionLock) {
@@ -441,7 +441,7 @@ class ConnectVpnService : VpnService() {
             store.running = false
         }
         tun?.close(); tun = null
-        if (error != null) log("Failed: $error") else log(if (logout) "Disconnected" else "Stopped, keeping the session")
+        if (error != null) log(getString(R.string.failed, error)) else log(if (logout) getString(R.string.disconnected) else getString(R.string.stopped_session))
         app.log.flush()
         foreground = false
         state("Not connected", error = error)

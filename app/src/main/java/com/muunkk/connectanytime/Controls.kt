@@ -31,7 +31,7 @@ class BootReceiver : BroadcastReceiver() {
         // direct-boot receiver, and no password login from a boot or sticky start.
         if (store.stayConnected && store.hasSession && !store.disconnected && VpnService.prepare(context) == null) {
             runCatching { context.startForegroundService(Intent(context, ConnectVpnService::class.java).setAction(ConnectVpnService.AUTOMATIC)) }
-                .onFailure { (context.applicationContext as ConnectApp).log.add("Android postponed restarting the VPN. Open ConnectAnytime to reconnect.") }
+                .onFailure { (context.applicationContext as ConnectApp).log.add(context.getString(R.string.restart_postponed)) }
         }
     }
 }
@@ -41,7 +41,7 @@ class ConnectTileService : TileService() {
         val state = ConnectApp.state.value
         qsTile?.apply {
             this.state = if (state.connected) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
-            subtitle = state.status
+            subtitle = Notices.status(this@ConnectTileService, state.status)
             updateTile()
         }
     }

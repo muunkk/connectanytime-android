@@ -8,7 +8,7 @@
     <!-- VPN apps qualify for systemExempted after VPN consent. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SYSTEM_EXEMPTED" />
     <application android:name=".ConnectApp" android:label="@string/app_name"
-        android:icon="@drawable/ic_vpn" android:theme="@android:style/Theme.Material.Light.NoActionBar"
+        android:icon="@mipmap/ic_launcher" android:theme="@style/Theme.ConnectAnytime.Starting"
         android:allowBackup="false" android:fullBackupContent="false"
         android:dataExtractionRules="@xml/data_extraction_rules" android:supportsRtl="true"
         android:usesCleartextTraffic="false">

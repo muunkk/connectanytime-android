@@ -65,6 +65,7 @@ class Store(context: Context) {
         }
         return cipher.doFinal(bytes.copyOfRange(12, bytes.size)).toString(Charsets.UTF_8)
     }
+    fun clearPassword() { check(prefs.edit().remove("password").commit()) }
     fun password() = read("password")
     fun savePassword(value: String) = write("password", value)
     fun session(): SavedSession? = read("session")?.let {
