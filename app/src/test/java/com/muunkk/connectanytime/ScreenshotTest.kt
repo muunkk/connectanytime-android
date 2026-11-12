@@ -90,7 +90,7 @@ class ScreenshotTest(private val dark: Boolean) {
         save("home-remove-password-dialog")
     }
     @Test fun activity() {
-        listOf("ConnectAnytime 0.1.0 (build 1)", "Connecting to vpn.shanghai.nyu.edu (manual)", "Connected",
+        listOf(BuildConfig.BUILD_DESCRIPTION, "Connecting to vpn.shanghai.nyu.edu (manual)", "Connected",
             "Network changed", "Reconnecting…", "Back up").forEach(app.log::add)
         compose.setContent { ConnectTheme(dark = dark, dynamicColor = false) { ActivityScreen(app.log, {}, {}) } }
         save("activity")
@@ -103,6 +103,39 @@ class ScreenshotTest(private val dark: Boolean) {
             }
         } }
         save("home-landscape-200pct")
+    }
+    @Test fun sharing() {
+        account(); app.store.shareWithTether = true
+        ConnectApp.mutableTetherShare.value = TetherShare.Sharing("192.168.42.129", 1080)
+        try {
+            home(VpnState("Connected", busy = true, connected = true))
+            compose.onNodeWithText("Only Mac apps", substring = true).performScrollTo()
+            save("home-share-sharing")
+        } finally { ConnectApp.mutableTetherShare.value = TetherShare.Off }
+    }
+    @Test fun shareWaiting() {
+        account(); app.store.shareWithTether = true
+        ConnectApp.mutableTetherShare.value = TetherShare.WaitingForUsbTether
+        try {
+            home(VpnState("Connected", busy = true, connected = true))
+            compose.onNodeWithTag("share").performScrollTo()
+            save("home-share-waiting")
+        } finally { ConnectApp.mutableTetherShare.value = TetherShare.Off }
+    }
+    @Test fun sharePortInUse() {
+        account(); app.store.shareWithTether = true
+        ConnectApp.mutableTetherShare.value = TetherShare.PortInUse
+        try {
+            home(VpnState("Connected", busy = true, connected = true))
+            compose.onNodeWithTag("share").performScrollTo()
+            save("home-share-port-in-use")
+        } finally { ConnectApp.mutableTetherShare.value = TetherShare.Off }
+    }
+    @Test fun shareStopped() {
+        account(); app.store.sharedBefore = true
+        home(VpnState())
+        compose.onNodeWithText("Copy command to turn off").performScrollTo()
+        save("home-share-stopped")
     }
     @Test fun activityEmpty() {
         compose.setContent { ConnectTheme(dark = dark, dynamicColor = false) { ActivityScreen(app.log, {}, {}) } }

@@ -129,4 +129,5 @@ class LogicTest {
         // A marker from a build before stamps existed: can't tell, so no "quit unexpectedly".
         assertEquals(RunStamp.Cause.Reboot, RunStamp.cause("", now))
     }
+
 }

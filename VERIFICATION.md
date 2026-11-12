@@ -463,3 +463,185 @@ Round 3 (reviewed at ef25932): Claude Opus 9/10 and GPT Sol 8/10. Both are satis
 - **Deferred:** an automatic start that hits a brief Keystore error doesn't retry it (Opus Low 4, "later"). This matches how unreachable starts behave.
 
 Checks: the full Gradle command exits 0 (50 tests, 0 lint errors), and `verify-release.py` and `verify-native.sh` pass.
+
+## USB tether proxy implementation (2026-11-12)
+
+Implemented on the already checked-out `tether-proxy` branch. No push, main-branch
+change, emulator or device operation. UI screens are deliberately left to the UI
+implementation; the backend exposes `Store.shareWithTether` (default off) and
+`ConnectApp.tetherShare: StateFlow<TetherShare>`.
+
+### Files and integration
+
+New `ProxyProtocol.kt` contains JVM-only SOCKS5/HTTP parsing, request/response
+hop-header sanitation, bounded body framing, network connector seam, interface
+name and subnet checks. New `TetherProxy.kt` owns USB listeners, connection limits,
+relay/half-close handling, timeouts, VPN network selection, explicit-network DNS,
+and socket cleanup. `ConnectVpnService.kt` only adds sharing lifecycle hooks and
+publishes the installed tunnel address for matching our VPN interface.
+`Storage.kt` adds the toggle, `ConnectApp.kt` adds observable sharing state and
+preference observation, and `strings.xml` adds three privacy-preserving log lines.
+`ProxyProtocolTest.kt` and `StoreTest.kt` cover the new backend contract. README
+contains the Mac setup and scope limitations. Logic.kt, cpp/, native sockets,
+physical-network tracking and the existing VPN/authentication rules are unchanged.
+
+### Fail-closed and resource bounds
+
+- `ProxyProtocol.kt:19`: `connectViaVpn` rejects a missing network before DNS or
+  connection work. All resolution and attempts use the injected VPN connector.
+- `TetherProxy.kt:112`: VPN lookup requires TRANSPORT_VPN and the interface holding
+  the service's installed tunnel address. It rejects disabled sharing and inactive
+  VPN states. Reconnecting can retain existing listeners; first start requires
+  Connected. No active/default/physical network fallback exists.
+- `TetherProxy.kt:204`: `DnsResolver.query` receives that explicit VPN Network;
+  resolution has a 15-second wait and cancellation, including worker interruption
+  on stop. Numeric addresses are parsed without DNS.
+- `TetherProxy.kt:217`: bindSocket precedes connect on every outbound socket.
+  Failures close the socket and cannot try an unbound connection. A missing VPN
+  yields SOCKS 0x01 / HTTP 503. Unsupported SOCKS commands yield 0x07.
+- Listeners bind only individual IPv4 addresses, never wildcard addresses. The
+  allowlist is anchored `(?:rndis|ncm|usb)[0-9]+`. AOSP's
+  [Tethering config.xml](https://android.googlesource.com/platform/packages/modules/Connectivity/+/refs/heads/main/Tethering/res/values/config.xml)
+  defaults to `usb\d` and `rndis\d`, and defines a separate OEM-overridable NCM
+  array (empty by default). This implementation adds numbered NCM gadgets and
+  permits multi-digit indices; it does not claim these are literal AOSP defaults.
+  Wi-Fi, cellular, generic Ethernet, loopback and tun names do not match.
+- Only up, non-loopback, non-point-to-point USB interfaces are considered. Accepted
+  peers must match that listener's actual IPv4 prefix. A rescan every two seconds
+  removes old bindings and their sessions; toggles trigger reconciliation directly.
+- Port 1080, 256 sessions, at most 512 worker threads, 16 KiB copy buffers,
+  8 KiB lines, 32 KiB headers/trailers, 100 headers. Handshake/DNS/connect timeout
+  approximately 15 seconds (handshake sweep granularity two seconds); idle sessions
+  close after five minutes measured across both directions. Half-closes retain the
+  other direction until EOF, timeout or stop. Stop closes all tracked sockets,
+  joins accept threads, cancels DNS waits, and shuts down both executors.
+- Plain HTTP uses one request per connection, rewrites absolute URI/Host, forces
+  Connection: close, strips fixed and Connection-nominated hop headers on requests
+  and responses, validates framing, and streams fixed/chunked bodies. Chunk trailers
+  are consumed and removed. Ambiguous CL/TE framing, upgrades and unsupported
+  transfer codings are refused. CONNECT and SOCKS tunnel bytes are not prefetched.
+  No destinations or credentials are logged. Non-subnet refusal logs are limited
+  to one per ten seconds.
+
+### JVM test coverage
+
+`ProxyProtocolTest` (24 tests): IPv4/domain/IPv6 SOCKS CONNECT; unsupported BIND/UDP;
+invalid reserved/address fields; truncation at every handshake byte; no-auth
+negotiation and success reply; HTTP CONNECT/IPv6; absolute URI/Host rewrite;
+Connection-nominated Host regeneration; malformed chunk sizes; unsupported and
+malformed HTTP; truncation and tunnel-byte preservation; request/response hop
+headers; ambiguous framing; header limits; chunk/trailer sanitation; fixed-body
+boundaries; anchored USB names; real subnet prefixes; missing VPN refusal; DNS and
+connect failures without fallback; and a JVM loopback connector/half-close test.
+That loopback test validates the connector seam and TCP half-closes, not Android
+Network routing or the entire Android listener lifecycle.
+
+`StoreTest` adds default-off and persistence coverage. Existing JVM Compose,
+screenshot, logic and credential tests remain enabled.
+
+### Commands and results
+
+- `./gradlew assembleDebug assembleRelease testDebugUnitTest lintDebug lintRelease`:
+  PASS, BUILD SUCCESSFUL (51 seconds, 123 tasks). **75 tests, zero failures,
+  errors or skips**: ProxyProtocolTest 24, StoreTest 5, LogicTest 14, ScreensTest 8,
+  ScreenshotTest 24. Both lint variants: **0 errors, 24 warnings**, no baseline.
+  Warnings remain dependency-version suggestions, existing synchronous preference
+  commits and optional KTX edits (including the added toggle setter).
+- `python3 scripts/verify-release.py`: PASS. Release signature, debug/release
+  identity, both ABIs, 16 KiB APK alignment, 11 JNI entries and all four callback
+  names/descriptors survive R8. No new reflection or keep rules were introduced.
+- `scripts/verify-native.sh`: PASS for both ABIs, JNI exports, Android-system-only
+  dynamic dependencies, and APK alignment.
+- `git diff --check`: PASS.
+
+Logs: `/tmp/tether-build-verified.log`, `/tmp/tether-release.log`,
+`/tmp/tether-native.log`. Results apply to backend code; a subsequent comment only
+adds the interface-source reference. No emulator/device was started. Android VPN
+Network discovery/binding, USB client reachability, subnet rebinds, reconnect and
+stop races, phone-side VPN DNS, actual NYU egress and macOS per-app proxy behavior
+still require hardware testing. The JVM loopback test is not proof of VPN routing.
+
+Implementation commits (documentation is a separate following commit):
+
+- `95a708dd2d2668ce865225fd09888aa8945bdb38`: protocol, network seam and 24 JVM tests.
+- `a26400d85851f807dd7f808fdc46a0d7a314ebae`: Android listener/lifecycle, Store,
+  StateFlow, logs and toggle-persistence test.
+
+
+## USB tether proxy review fixes (2026-11-12)
+
+All seven review issues were verified in the implementation and fixed in local
+commit `1005c6a` on `tether-proxy` (PR #1). Nothing was pushed. No emulator or
+device was started. ShareSection.kt, HomeScreen.kt and existing strings were left
+unchanged; strings.xml only adds the `tether_port_in_use` log line. The subsequent
+UI pass must render the two new sharing states.
+
+1. **Destination policy:** ProxyProtocol.kt:24 checks each resolved address before
+   connecting; its pure `allowedDestination` predicate at line 38 rejects loopback,
+   any-local, link-local, multicast and phone-assigned addresses. Mapped IPv6 is
+   normalized for both classification and interface lookup. AndroidProxyNetwork
+   repeats the check immediately before socket creation (TetherProxy.kt:224).
+   Refusal yields SOCKS 0x02 / HTTP 403 (TetherProxy.kt:189). Other private-network
+   addresses remain allowed through the VPN.
+2. **Peer policy:** `allowedPeer` (ProxyProtocol.kt:50), used at TetherProxy.kt:97,
+   rejects phone-assigned sources as well as the listener address even if they
+   match the listener subnet. Interface-lookup failures refuse the peer.
+3. **HTTP upload:** `uploadProxyRequest` (ProxyProtocol.kt:53), used at
+   TetherProxy.kt:163, only half-closes SOCKS/CONNECT uploads. Plain HTTP uploads
+   leave the upstream socket open while reading the response, then session cleanup
+   closes it. This fixes the premature EOF that can make nginx abort a request;
+   no nginx process or hardware was used for verification.
+4. **Shutdown:** reconciliation (TetherProxy.kt:60) and close (line 195) hold the
+   same monitor for listener-map access. Shutdown no longer relies on a timed
+   executor wait for map safety, and individual listener-close failures cannot
+   interrupt the remaining listener teardown. ConnectVpnService.kt:489 catches
+   proxy-close failures so they cannot skip tunnel cleanup, state or stopSelf.
+5. **Header bytes:** ProxyProtocol.kt:93 permits obs-text only when reading header
+   fields. Names remain ASCII tokens, controls except HTAB remain invalid, and
+   CRLF framing and size bounds remain enforced. Only space/HTAB are trimmed,
+   preserving non-ASCII value bytes such as Latin-1 NBSP.
+6. **States:** TetherProxy.kt:27 adds `WaitingForVpn` and `PortInUse`.
+   Reconnect with USB present reports WaitingForVpn while listener creation waits.
+   A connected VPN with USB addresses but no successfully bound listener reports
+   PortInUse. Failed binds retry every two seconds, logging once per address until
+   success or address removal. Off, VpnNotConnected, WaitingForUsbTether and Sharing
+   retain their existing purposes. Existing listeners may survive reconnect.
+7. **Protocol details:** ProxyProtocol.kt:156 preserves the client's HTTP version
+   and keeps Connection: close. DNS exceptions/empty answers return SOCKS 0x04;
+   refused connects return 0x05; other connect failures return 0x01 (lines 24–35).
+   Android DNS timeout is treated as a failed lookup (TetherProxy.kt:219).
+
+### Added regression coverage
+
+ProxyProtocolTest grows from 24 to 32 tests: IPv4/IPv6 and explicit/collapsed
+IPv4-mapped IPv6 destination policy, post-DNS rebinding rejection before connect,
+phone-source peers inside the subnet, Latin-1 Content-Disposition and UTF-8 header
+byte round trips, invalid names/controls/framing with HTAB allowed, HTTP/1.0
+forwarding, SOCKS DNS/refused/other failure codes, and an actual loopback HTTP
+server that checks for no EOF before responding. The existing loopback tunnel
+test now exercises the shared upload helper and still verifies half-close.
+
+TetherProxyTest adds a deterministic Robolectric race regression: pause a rescan
+at listener-map traversal, start close concurrently, verify it cannot complete
+until the scan is released, then verify both finish and repeat close safely.
+The service's JNI initializer is suppressed in that test; it starts no native VPN.
+It validates synchronization, not Android interface enumeration, network binding,
+USB reachability or hardware reconnect behavior. Those still need device testing.
+
+### Final commands
+
+- `./gradlew assembleDebug assembleRelease testDebugUnitTest lintDebug lintRelease`:
+  PASS, BUILD SUCCESSFUL, 123 tasks, 22 seconds. **95 tests, zero failures, errors
+  or skips** (ProxyProtocolTest 32, TetherProxyTest 1, LogicTest 14, MacCommandTest 7,
+  ScreensTest 8, ScreenshotTest 28, StoreTest 5). Both lint variants: **0 errors,
+  24 warnings**, no baseline added or used.
+- `python3 scripts/verify-release.py`: PASS, signed release and debug identity,
+  both ABIs, 16 KiB alignment, 11 JNI methods and four callback signatures after R8.
+- `scripts/verify-native.sh`: PASS, both ABIs, JNI exports, Android system-only
+  dependencies and APK alignment.
+- `git diff --check`: PASS.
+
+Full logs: `/tmp/tether-review-gradle-final.log`, `/tmp/tether-review-release.log`,
+`/tmp/tether-review-native.log`. An initial race-test attempt failed on JNI library
+loading; suppressing only that initializer in the test fixed the harness. The
+complete command above was rerun afterwards and passed.

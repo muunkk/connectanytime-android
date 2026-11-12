@@ -101,4 +101,27 @@
     <string name="refused_total">No session to rejoin. Automatic starts refused (%2$s to %3$s): %1$d</string>
     <string name="discarded_session">Discarded unreadable saved session</string>
     <string name="discarded_password">Discarded unreadable saved password</string>
+    <string name="tether_started">Sharing the VPN over USB at %1$s:%2$d</string>
+    <string name="tether_stopped">Stopped sharing the VPN over USB</string>
+    <string name="tether_refused">Refused a client outside the USB tether subnet</string>
+    <!-- Share with a USB-tethered Mac -->
+    <string name="share_title">Share with your Mac</string>
+    <string name="share_switch">Share over USB tethering</string>
+    <string name="share_off_help">A Mac plugged into this phone can use the VPN through a proxy here.</string>
+    <string name="share_vpn_off">Starts once the VPN is connected.</string>
+    <string name="share_waiting">Turn on USB tethering to start sharing.</string>
+    <string name="share_waiting_vpn">Resumes once the VPN has reconnected.</string>
+    <string name="share_port_in_use">Another app on this phone is using port 1080, so sharing can\'t start. Close that app, or turn its proxy off.</string>
+    <string name="share_sharing">Sharing at %1$s, port %2$d.</string>
+    <string name="open_tethering">Open tethering settings</string>
+    <string name="share_proxy_label">Proxy for your Mac</string>
+    <string name="share_mac_steps">On your Mac, open System Settings → Network → your phone → Details → Proxies. Turn on Web proxy, Secure web proxy and SOCKS proxy, each with this address and port %1$d.</string>
+    <string name="share_copy_address">Copy address</string>
+    <string name="share_copy_command">Copy Terminal command</string>
+    <string name="share_copy_off">Copy command to turn off</string>
+    <string name="share_stopped_help">Not sharing now. If your Mac still has the proxies on, its browsing won\'t work: paste this into Terminal on the Mac to turn them off.</string>
+    <string name="share_copied">Copied</string>
+    <string name="share_command_help">Or paste the command into Terminal on your Mac. It finds the phone\'s connection and sets all three proxies, asking for your Mac password. Run it again if this address changes.</string>
+    <string name="share_footnote">Only Mac apps that use the system proxy go through the VPN, such as Safari and Chrome. Other traffic, and calls or games that use UDP, still go around it. While the proxies are on, browsing on the Mac needs sharing on here, so turn them off when you\'re done (Copy command to turn off).</string>
+    <string name="tether_port_in_use">USB proxy could not bind %1$s:%2$d; will retry.</string>
 </resources>

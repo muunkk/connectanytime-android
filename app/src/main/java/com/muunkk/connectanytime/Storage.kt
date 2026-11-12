@@ -32,6 +32,13 @@ class Store(private val context: Context) {
     var server: String
         get() = prefs.getString("server", "vpn.shanghai.nyu.edu")!!
         set(v) { prefs.edit().putString("server", v.trim()).apply() }
+    /** Whether sharing has ever been up, so the Mac may still have its proxies set. */
+    var sharedBefore: Boolean
+        get() = prefs.getBoolean("sharedBefore", false)
+        set(v) { prefs.edit().putBoolean("sharedBefore", v).apply() }
+    var shareWithTether: Boolean
+        get() = prefs.getBoolean("shareWithTether", false)
+        set(v) { prefs.edit().putBoolean("shareWithTether", v).apply() }
     var stayConnected: Boolean
         get() = prefs.getBoolean("stayConnected", true)
         set(v) { prefs.edit().putBoolean("stayConnected", v).apply() }

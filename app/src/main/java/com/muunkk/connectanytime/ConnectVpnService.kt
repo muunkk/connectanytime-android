@@ -33,6 +33,11 @@ class ConnectVpnService : VpnService() {
     private fun log(s: String) = app.log.add(s)
     private var tun: ParcelFileDescriptor? = null
     private var installed: TunnelConfig? = null
+    @Volatile private var tetherAddress: String? = null
+    @Volatile private var tetherProxy: TetherProxy? = null
+    internal fun tetherVpnInterface(): String? = tetherAddress?.let { address ->
+        java.net.NetworkInterface.getByInetAddress(android.net.InetAddresses.parseNumericAddress(address))?.name
+    }
     private var watch: NetworkWatch? = null
     private var underlying: Network? = null
     private var networkBaseline = NetworkBaseline()
@@ -124,6 +129,8 @@ class ConnectVpnService : VpnService() {
     }
 
     private fun state(status: String, connected: Boolean = false, error: String? = null) {
+        if (tetherProxy == null && connected) tetherProxy = TetherProxy(this, app)
+        tetherProxy?.state(connected && !stopping, status == "Reconnecting…" && !stopping)
         ConnectApp.mutableState.value = VpnState(status, status != "Not connected", connected, error)
         if (foreground) getSystemService(android.app.NotificationManager::class.java).notify(Notices.ONGOING, Notices.ongoing(this, status))
         TileService.requestListeningState(this, ComponentName(this, ConnectTileService::class.java))
@@ -449,6 +456,7 @@ class ConnectVpnService : VpnService() {
         val old = tun
         tun = replacement
         installed = cfg
+        tetherAddress = cfg.address
         old?.close()
         log(getString(R.string.applied_settings))
     }
@@ -459,6 +467,7 @@ class ConnectVpnService : VpnService() {
             if (session != 0L) native.command(session, if (logout) NativeBridge.CANCEL else NativeBridge.DETACH)
             store.running = false
         }
+        tetherProxy?.state(false, false)
         // When the queue is idle (between connections), no native run will
         // deliver connectionEnded. Cancel the scheduled rejoin and finish here.
         queue.execute { if (session == 0L) finish(null) }
@@ -477,6 +486,8 @@ class ConnectVpnService : VpnService() {
             if (logout) store.clearSession()
             store.running = false
         }
+        runCatching { tetherProxy?.close() }; tetherProxy = null
+        tetherAddress = null
         tun?.close(); tun = null
         if (error != null) log(getString(R.string.failed, error)) else log(if (logout) getString(R.string.disconnected) else getString(R.string.stopped_session))
         app.log.flush()
