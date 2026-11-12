@@ -9,6 +9,7 @@ import android.content.Intent
 import android.provider.Settings
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -75,14 +76,17 @@ private fun MacSetup(context: Context, sharing: TetherShare.Sharing) {
             Text(stringResource(R.string.share_proxy_label), style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             // The one thing to type on the Mac: large, monospace and selectable.
-            Text(address, style = MaterialTheme.typography.headlineSmallEmphasized, fontFamily = FontFamily.Monospace,
-                modifier = Modifier.testTag("share-address"))
+            SelectionContainer {
+                Text(address, style = MaterialTheme.typography.headlineSmallEmphasized, fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.testTag("share-address"))
+            }
         }
         Text(stringResource(R.string.share_mac_steps, sharing.port), style = MaterialTheme.typography.bodyMedium)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp),
             itemVerticalAlignment = Alignment.CenterVertically) {
             CopyButton(context, R.string.share_copy_address, address, tonal = true)
             CopyButton(context, R.string.share_copy_command, macCommand(sharing.address, sharing.port), tonal = false)
+            CopyButton(context, R.string.share_copy_off, macOffCommand(sharing.address, sharing.port), tonal = false)
         }
         Text(stringResource(R.string.share_command_help), style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -111,15 +115,41 @@ private fun CopyButton(context: Context, label: Int, text: String, tonal: Boolea
 }
 
 /**
- * A Terminal one-liner that sets the Mac's web, secure web and SOCKS proxies on the
- * network service whose router is this phone (the tether address is the Mac's gateway),
- * so you don't need to know what macOS named the phone's connection.
+ * Terminal one-liners for the Mac. `ip` is an IPv4 address string and `port` an Int, so
+ * neither can inject anything. Written with § for the shell's $ (Kotlin would read $ as a
+ * template), and checked in zsh and bash against a fake networksetup (see LogicTest).
+ *
+ * Both pick the enabled network service to change, refuse if more than one matches rather
+ * than guess, check every networksetup call, and only report success when all three worked.
  */
-internal fun macCommand(ip: String, port: Int) =
-    "ip=$ip; port=$port; s=\$(networksetup -listallnetworkservices | tail -n +2 | sed 's/^\\*//' | " +
-        "while IFS= read -r n; do networksetup -getinfo \"\$n\" | grep -qx \"Router: \$ip\" && echo \"\$n\"; done | head -n 1); " +
-        "if [ -n \"\$s\" ]; then for p in webproxy securewebproxy socksfirewallproxy; do sudo networksetup -set\$p \"\$s\" \"\$ip\" \"\$port\"; done; " +
-        "echo \"Proxies set on \$s\"; else echo \"Couldn't find the phone's connection. Is USB tethering on?\"; fi"
+private const val FIND = "ip=@IP@; port=@PORT@; s=; n=0; " +
+    "while IFS= read -r v; do case \"§v\" in '*'*) continue;; esac; " +
+    "if networksetup @MATCH@; then s=§v; n=§((n+1)); fi; " +
+    "done <<< \"§(networksetup -listallnetworkservices | tail -n +2)\"; " +
+    "if [ §n -eq 0 ]; then echo \"@NONE@\"; " +
+    "elif [ §n -gt 1 ]; then echo \"More than one network service matches §ip. Set the proxies in System Settings instead.\"; " +
+    "else ok=1; for p in webproxy securewebproxy socksfirewallproxy; do sudo networksetup @SET@ || { ok=0; break; }; done; " +
+    "if [ §ok = 1 ]; then echo \"@DONE@ §s\"; else echo \"Couldn't change the proxies on §s.\"; fi; fi"
+
+private fun script(ip: String, port: Int, match: String, set: String, none: String, done: String) = FIND
+    .replace("@MATCH@", match).replace("@SET@", set).replace("@NONE@", none).replace("@DONE@", done)
+    .replace("@IP@", ip).replace("@PORT@", port.toString()).replace('§', '$')
+
+/** Sets the web, secure web and SOCKS proxies on the service whose router is this phone
+ *  (the tether address is the Mac's gateway), so you needn't know what macOS named it. */
+internal fun macCommand(ip: String, port: Int) = script(ip, port,
+    match = "-getinfo \"§v\" | grep -qxF \"Router: §ip\"",
+    set = "-set§p \"§s\" \"§ip\" \"§port\"",
+    none = "Couldn't find the phone's connection. Is USB tethering on?",
+    done = "Proxies set on")
+
+/** Turns those proxies off again, finding the service by the proxy it was given, which
+ *  still works once the phone is unplugged. */
+internal fun macOffCommand(ip: String, port: Int) = script(ip, port,
+    match = "-getsocksfirewallproxy \"§v\" | grep -qxF \"Server: §ip\"",
+    set = "-set§{p}state \"§s\" off",
+    none = "No network service uses this proxy. Nothing to turn off.",
+    done = "Proxies turned off on")
 
 /** Android's tethering screen; not a public action everywhere, so fall back to network settings. */
 private fun openTethering(context: Context) {
