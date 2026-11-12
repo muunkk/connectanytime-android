@@ -1,0 +1,8 @@
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut android:shortcutId="connect" android:enabled="true" android:shortcutShortLabel="@string/connect" android:icon="@drawable/ic_vpn">
+        <intent android:action="com.muunkk.connectanytime.CONNECT" android:targetPackage="com.muunkk.connectanytime.debug" android:targetClass="com.muunkk.connectanytime.ShortcutActivity" />
+    </shortcut>
+    <shortcut android:shortcutId="disconnect" android:enabled="true" android:shortcutShortLabel="@string/disconnect" android:icon="@drawable/ic_vpn">
+        <intent android:action="com.muunkk.connectanytime.DISCONNECT" android:targetPackage="com.muunkk.connectanytime.debug" android:targetClass="com.muunkk.connectanytime.ShortcutActivity" />
+    </shortcut>
+</shortcuts>

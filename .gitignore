@@ -9,3 +9,4 @@ Vendor/out/
 *.keystore
 .idea/
 .DS_Store
+keystore.properties
