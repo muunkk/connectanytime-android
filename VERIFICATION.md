@@ -249,3 +249,190 @@ a clean build resolved it. No failure remains outstanding.
 - `d54433545ef348f09a303af9c665d1cba620f6dd`: Material 3 UI, icons, resource strings,
   permission timing, password removal and JVM Compose tests.
 - Documentation commit follows these; `git log -1 --format=%H` gives its SHA.
+
+---
+
+# Review fixes verification (2026-11-12)
+
+This section supersedes earlier statements that VPN/native files are unchanged.
+All eleven reported issues were confirmed in code. Work was done on Android local
+`main`; no remote was added, nothing was pushed, no device/emulator was started,
+and the iOS repository was read only. HomeScreen.kt, ActivityScreen.kt, AppTheme.kt
+and themes.xml are unchanged. Only two required credential-discard diagnostic
+strings were added; existing app copy is unchanged.
+
+## Findings and changes
+
+1. **Real: ambiguous write could replay a body.**
+   `Vendor/patches/openconnect-no-post-replay.patch:3` guards the `ssl_write`
+   failure retry with `!request_body_type`, just as the response-read retry does.
+   OpenConnect 9.21 `http.c:934` formerly checked only `rq_retry`. Partial writes
+   can already submit a password or Duo request. HTTP_REDIRECT handling is unchanged
+   deliberately. `Vendor/build-deps.sh:27` already hashes recipe and every patch:
+   no recipe edit was necessary. A changed stamp rebuilt both ABIs; a subsequent
+   invocation reports both up to date.
+2. **Real: exported shortcut authorized outside callers.**
+   `app/src/main/AndroidManifest.xml:23` sets ShortcutActivity exported=false.
+   Static launcher shortcut execution with the app's identity must still be
+   confirmed on a device, including locked/unlocked and consent cases.
+3. **Real: pending/posted Connect survived Disconnect.**
+   `ConnectVpnService.kt:64`, `:82`, `:468`, `:477` use a monotonically increasing
+   user-command generation, checked at worker execution and again on main before
+   restart. Pending Connect is published immediately, before its worker is queued,
+   so finish cannot consume its startId first. A later Disconnect invalidates it.
+   `Logic.kt:109` contains the pure decision; `LogicTest.kt:7` tests queued and
+   already-posted Disconnect → Connect → Disconnect sequences plus a newer Connect.
+4. **Real: decrypt/JSON exceptions escaped and retained unusable credentials.**
+   `Storage.kt:72` removes an unreadable/unparsable value and logs one secret-free
+   line. Invalid/unrecoverable keys are removed so the next save generates a new
+   one; missing keys also regenerate. AEAD/corrupt-value errors discard only the
+   affected value. Recover/write are serialized. `password():82` returns none;
+   `session():84` returns none. Existing service reads at `ConnectVpnService.kt:154`
+   and `:209` now continue to manual login or the save-password prompt as appropriate.
+   The comment explains why credential-encrypted prefs, non-auth-bound keys and no
+   direct boot provide no locked-user/authentication retry case on API 29+.
+   StoreTest checks corrupt values are removed, return none, and are logged once.
+   Hardware key loss, saving again and reaching actual NYU login remain device tests.
+5. **Real: start published synthetic offline.**
+   `NetworkWatch.kt:35` no longer publishes at registration. It waits for callback
+   link properties. `Logic.kt:116` / `ConnectVpnService.kt:341` make the first
+   callback identity a baseline, including offline, with no reconnect/log. JVM tests
+   cover first online/offline, duplicate identities and real changes.
+6. **Real: DEBUG promotion could never run at PRG_INFO.**
+   Verified in downloaded OpenConnect `openconnect-internal.h:934` (`verbose`
+   filters before callback) and `cstp.c:439–441` (headers logged at PRG_DEBUG).
+   `app/src/main/cpp/ocbridge.c:70` reads CSTP options using
+   `openconnect_get_ip_info(vpn, &ip, &opts, NULL)` and logs exactly six names,
+   removing the X-CSTP- prefix. Calls at `:253`, `:309`, `:388` cover successful
+   connect, resume and in-place reconnect. The dead DEBUG branch is removed;
+   verbosity remains PRG_INFO. No other option is logged. The exact iOS diff below
+   was generated against the read-only sibling and passed `patch --dry-run` there.
+7. **Real: Builder default marks VPN metered.**
+   `ConnectVpnService.kt:398` adds setMetered(false); underlying network assignment
+   remains in place so effective meteredness can follow it.
+8. **Real: unconditional stopSelf raced a later service start; ARM could launch.**
+   `ConnectVpnService.kt:64` tracks latestStartId. Final stop/restart decisions run
+   on main (`:468`) and use stopSelfResult(latestStartId), preserving a valid pending
+   Connect. All other stopSelf calls also use stopSelfResult. An unlaunched ARM
+   (`:65`) stops its startId and returns START_NOT_STICKY without starting VPN work.
+9. **Real: JNI used modified UTF-8 for credentials/logs.**
+   `jni.c:45`, `:123` transfer server/user/password and log lines as byte arrays;
+   `NativeBridge.kt:12`, `:18` and `ConnectVpnService.kt:225`, `:250` encode/decode
+   standard UTF-8. Kotlin replacement decoding handles a 1023-byte C log truncation
+   through a multibyte character. C wipes its temporary password and the Java array;
+   Kotlin also wipes in finally. OpenConnect retains its necessary credential copy,
+   already wiped by the bridge; immutable password Strings cannot be zeroed.
+   `app/proguard-rules.pro:7` keeps onLog(byte[]), and
+   `scripts/verify-release.py:47` checks the new create descriptor as well as all
+   four callback descriptors from C after R8.
+10. **Real: app replacement did not restart.**
+    `Controls.kt:29` accepts ACTION_MY_PACKAGE_REPLACED and BOOT_COMPLETED with
+    identical Stay Connected/session/not-disconnected/VPN-consent gates. The
+    manifest registers the action. Both use AUTOMATIC: rejoin only, never login.
+11. **Real: activeNetwork may be the VPN on API 29/30.**
+    `NetworkWatch.kt:29`, `:39` replace the heuristic with a NOT_VPN request ranked
+    by Android via requestNetwork. API 31+ keeps passive best-match registration.
+    CHANGE_NETWORK_STATE is the required normal permission. The request is released
+    with the watcher. This can keep the best physical network available while the
+    VPN runs. No app-selected Wi-Fi preference is used. Android documents why the
+    default callback alone is insufficient (it can return a VPN), and requestNetwork
+    reports the system-ranked best match:
+    https://developer.android.com/reference/android/net/ConnectivityManager
+
+Paths in the list above without directories are under
+`app/src/main/java/com/muunkk/connectanytime/` (C paths under `app/src/main/cpp/`;
+unit tests under `app/src/test/java/com/muunkk/connectanytime/`).
+
+## Checks and limits
+
+```sh
+Vendor/build-deps.sh
+./gradlew assembleDebug assembleRelease testDebugUnitTest lintDebug lintRelease
+python3 scripts/verify-release.py
+scripts/verify-native.sh
+git diff --check
+```
+
+All PASS, exit 0. Dependency build rebuilt arm64-v8a and x86_64 after the patch
+change; repeating it reports both up to date. Native dependency warnings include
+OpenSSL's existing __ANDROID_API__ redefinition. No build-deps recipe edit needed.
+Final Gradle run: BUILD SUCCESSFUL in 42s, 123 tasks (54 executed, 69 up-to-date).
+46 JVM tests: LogicTest 13, StoreTest 1, ScreensTest 8, ScreenshotTest 24;
+0 failures/errors/skips. Both lint variants: **0 errors, 22 warnings**, no baseline.
+Warnings concern pinned dependency versions, synchronous prefs commits (including
+one in the new StoreTest), and optional KTX style. No new suppression was added.
+Release script passes signing, alignment, package/version, both ABIs, 11 JNI
+entries, new create signature and all four callbacks including onLog([B)V.
+Native verification passes both ABI exports, dependency allowlist and alignment.
+Logs are in `/tmp/connectanytime-review-{deps,deps-stamp,build,tests,release,native}.log`.
+
+No hardware Keystore, real login/Duo, launcher shortcut, network selection/handoff,
+command/finish lifecycle race, update/boot delivery, traffic or leak checks were
+run on a device. JVM tests validate the factored command and baseline decisions
+and corrupt-storage handling, not Android scheduler or hardware behavior. API
+29/30 requestNetwork behavior and effective meteredness still need device testing.
+
+Implementation commits:
+
+- `ad21b87ac218e4bf18415a849f1c7e38ff2b90bb`: body-write replay guard.
+- `87568cccd0e1a8c41f3f268c6321d80163ae0bb0`: service/network/storage/JNI fixes and tests.
+- Documentation is committed separately; `git log -1 --format=%H` identifies it.
+
+### Exact iOS bridge diff (not applied)
+
+```diff
+--- a/Tunnel/ocbridge.c
++++ b/Tunnel/ocbridge.c
+@@ -52,0 +53,14 @@
++// Read only these session limits; other CSTP options may contain credentials.
++static void log_server_limits(ocb_session *s) {
++    const struct oc_ip_info *ip = NULL;
++    const struct oc_vpn_option *opts = NULL;
++    static const char *limits[] = { "X-CSTP-Lease-Duration", "X-CSTP-Session-Timeout",
++        "X-CSTP-Session-Timeout-Remaining", "X-CSTP-Idle-Timeout",
++        "X-CSTP-Disconnected-Timeout", "X-CSTP-Session-Timeout-Alert-Interval", NULL };
++    if (openconnect_get_ip_info(s->vpn, &ip, &opts, NULL)) return;
++    for (; opts; opts = opts->next)
++        for (int i = 0; opts->option && opts->value && limits[i]; i++)
++            if (!strcasecmp(opts->option, limits[i]))
++                logf_(s, PRG_INFO, "Server limit %s: %s", opts->option + 7, opts->value);
++}
++
+@@ -65,15 +78,0 @@
+-    // The server's limits on the session (how long it may last, sit idle, or wait for
+-    // the phone to come back), from the CONNECT reply's headers. Only these: other
+-    // DEBUG lines can hold the password or cookie.
+-    if (level == PRG_DEBUG && !strcmp(fmt, "%s: %s\n")) {
+-        static const char *limits[] = { "X-CSTP-Lease-Duration", "X-CSTP-Session-Timeout",
+-            "X-CSTP-Session-Timeout-Remaining", "X-CSTP-Idle-Timeout",
+-            "X-CSTP-Disconnected-Timeout", "X-CSTP-Session-Timeout-Alert-Interval", NULL };
+-        va_list ap;
+-        va_start(ap, fmt);
+-        const char *name = va_arg(ap, const char *), *value = va_arg(ap, const char *);
+-        va_end(ap);
+-        for (int i = 0; name && value && limits[i]; i++)
+-            if (!strcasecmp(name, limits[i])) logf_(s, PRG_INFO, "Server limit %s: %s", name + 7, value);
+-        return;
+-    }
+@@ -253,0 +253 @@
++    log_server_limits(s);
+@@ -308,0 +309 @@
++    log_server_limits(s);
+@@ -386,0 +388 @@
++    log_server_limits(s);
+```
+
+### Shared OpenConnect patch delta
+
+```diff
+diff --git a/Vendor/patches/openconnect-no-post-replay.patch b/Vendor/patches/openconnect-no-post-replay.patch
+index 852bf99..509251d 100644
+--- a/Vendor/patches/openconnect-no-post-replay.patch
++++ b/Vendor/patches/openconnect-no-post-replay.patch
+@@ -2,0 +3,5 @@
++@@ -934 +934,3 @@
++-			if (rq_retry) {
+++			/* A failed write may have sent part or all of a login POST.
+++			 * Never replay a request with a body after an ambiguous write. */
+++			if (rq_retry && !request_body_type) {
+```

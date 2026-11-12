@@ -52,8 +52,8 @@ that IP when it is usable on the current network, with normal DNS answers as
 fallback. A rejoin returning 401/EPERM clears the session and waits for Connect.
 
 Only the app button, unlocked Quick Settings tile or launcher Connect shortcut
-can authorize a login. Boot, process restarts and Android Always-on VPN starts
-only rejoin. Repeated automatic starts without a session are counted: log the first,
+can authorize a login. Boot, app updates, process restarts and Android Always-on
+VPN starts only rejoin. Repeated automatic starts without a session are counted: log the first,
 notify “VPN session ended”, summarize every 30 minutes, then report the total when
 a start goes ahead. Notification permission is requested on Android 13 and later when you first tap
 Connect in the app. Denial does not prevent connecting. Android still lists the
@@ -63,7 +63,8 @@ foreground VPN service in its active apps panel.
 
 On by default. After a successful connection, the foreground VPN service returns
 START_STICKY so Android can restore it after process death. BOOT_COMPLETED restarts
-it after first unlock if a session exists and you did not disconnect.
+it after first unlock if a session exists and you did not disconnect. App updates
+use the same consent and Stay Connected checks and only rejoin a saved session.
 
 For stronger OS supervision, open **Android VPN settings** from the app and enable
 **Always-on VPN** for ConnectAnytime. Android controls this setting; the app cannot
@@ -102,12 +103,15 @@ domains and MTU come from the server.
 The password and session JSON (cookie, URL, DNS name, IP, account and server) are
 AES-GCM encrypted in private SharedPreferences. The random-nonce encryption key
 stays in Android Keystore. Associated data binds ciphertext to its preference key.
+Unreadable credentials are discarded with a secret-free diagnostic; an unreadable
+session becomes no session, and an unreadable password must be saved again.
 No deprecated EncryptedSharedPreferences is used. Backup and device transfer are
 disabled. Credential-encrypted app storage is unavailable before first unlock.
 
 The password field never displays the saved password. OpenConnect runs at PRG_INFO:
 debug form dumps could contain passwords. Only a fixed allowlist of X-CSTP session
-limit headers is promoted from DEBUG. Passwords and cookies are never logged.
+limits is read from the negotiated CSTP options after connection and reconnection.
+Passwords and cookies are never logged.
 SIGPIPE is ignored so a reset socket fails rather than killing the VPN process.
 DTLS falls back to TLS-only when setup fails.
 
@@ -152,7 +156,9 @@ VPN addresses and server diagnostics, so review them before sharing.
   OpenConnect TCP/DTLS socket goes through VpnService.protect before use. Native DNS
   uses android_getaddrinfofornetwork on the current NOT_VPN network so rejoining
   cannot wait for DNS inside its own disconnected tunnel. API 31+ watches the best
-  NOT_VPN match; API 29–30 prefers a physical system default, then validated Wi-Fi.
+  NOT_VPN match; API 29–30 requests the system-ranked best NOT_VPN match
+  (CHANGE_NETWORK_STATE). The first callback establishes a baseline without
+  triggering a reconnect. VPN meteredness follows the selected underlying network.
 - **Sleep detection uses clock differences.** elapsedRealtime includes deep sleep;
   uptimeMillis does not. The latter also measures the online-unreachable budget.
 - **Trust uses Android's CA store**, and an explicit, tested DNS SAN matcher,
