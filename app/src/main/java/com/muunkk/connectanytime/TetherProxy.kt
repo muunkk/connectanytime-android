@@ -40,7 +40,9 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
     @Volatile private var connected = false
     @Volatile private var reconnecting = false
     private val bindFailures = mutableSetOf<InetAddress>()
-    private var lastRefusal = 0L
+    // Atomic, not the controller monitor: reconcile and close hold that while joining this
+    // accept thread, which would then wait out the join timeout to log a refusal.
+    private val lastRefusal = java.util.concurrent.atomic.AtomicLong(0)
     private val prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == "shareWithTether" && !closed.get()) runCatching { timer.execute { reconcile() } }
     }
@@ -97,12 +99,10 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
                 if (!allowedPeer(binding.address, binding.prefix, client.inetAddress,
                         runCatching { phoneOwnsAddress(client.inetAddress) }.getOrDefault(true))) {
                     client.close()
-                    synchronized(this@TetherProxy) {
-                        val now = System.nanoTime()
-                        if (now - lastRefusal > TimeUnit.SECONDS.toNanos(10)) {
-                            lastRefusal = now; app.log.add(service.getString(R.string.tether_refused))
-                        }
-                    }
+                    val now = System.nanoTime()
+                    val last = lastRefusal.get()
+                    if ((last == 0L || now - last > TimeUnit.SECONDS.toNanos(10)) && lastRefusal.compareAndSet(last, now))
+                        app.log.add(service.getString(R.string.tether_refused))
                     continue
                 }
                 synchronized(sessions) {
