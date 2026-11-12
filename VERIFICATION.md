@@ -452,3 +452,14 @@ Round 2 (reviewed at c3f5bd3) scored 8/10 from both reviewers, with no critical 
 - **Session-ended screen:** the body no longer repeats the headline. The transient read-failure message says to try again.
 
 Checks: `./gradlew assembleDebug assembleRelease testDebugUnitTest lintDebug lintRelease` exit 0 (49 tests, 0 lint errors); `verify-release.py` and `verify-native.sh` pass.
+
+## Council round 3
+
+Round 3 (reviewed at ef25932): Claude Opus 9/10 and GPT Sol 8/10. Both are satisfied for device testing, with no critical, high or medium findings. Low findings fixed afterwards:
+
+- **Run marker:** it carries a boot and install stamp (`RunStamp`). The next start logs "was on when the phone restarted" or "when the app was updated" instead of "quit unexpectedly". That covers Always-on VPN starts that arrive before BOOT_COMPLETED. BootReceiver no longer clears the marker, since a run that's already connected owns it.
+- **Late Disconnect:** one delivered after `finish()` stops for its own start ID.
+- **Error copy:** `ProviderException` maps to the read-failure message. When the failure keeps happening, the message now says to save the password again, which replaces a broken key.
+- **Deferred:** an automatic start that hits a brief Keystore error doesn't retry it (Opus Low 4, "later"). This matches how unreachable starts behave.
+
+Checks: the full Gradle command exits 0 (50 tests, 0 lint errors), and `verify-release.py` and `verify-native.sh` pass.

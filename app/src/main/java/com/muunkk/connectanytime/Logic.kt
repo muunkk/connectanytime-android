@@ -81,6 +81,23 @@ class RejoinBackoff {
     }
     fun reset() { tries = 0; last = Long.MIN_VALUE }
 }
+/** Why the last run ended without stopping, from the boot and install it ran under. A
+ *  restart or update kills the process without onDestroy, which is expected; only a
+ *  run that ended on the same boot and install really quit unexpectedly. */
+object RunStamp {
+    enum class Cause { Reboot, Update, Unexpected }
+    fun of(bootCount: Int, lastUpdateTime: Long) = "$bootCount/$lastUpdateTime"
+    fun cause(saved: String, now: String): Cause {
+        val (savedBoot, savedUpdate) = saved.split("/").let { it.getOrNull(0) to it.getOrNull(1) }
+        val (boot, update) = now.split("/").let { it[0] to it[1] }
+        return when {
+            savedBoot != boot -> Cause.Reboot
+            savedUpdate != update -> Cause.Update
+            else -> Cause.Unexpected
+        }
+    }
+}
+
 object StartRule {
     const val REFUSAL = "The VPN session has ended. Tap Connect in ConnectAnytime to log in again."
     fun mayLogin(manual: Boolean, disconnected: Boolean) = manual && !disconnected

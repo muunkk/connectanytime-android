@@ -41,6 +41,10 @@ class Store(private val context: Context) {
     var running: Boolean
         get() = prefs.getBoolean("running", false)
         set(v) { check(prefs.edit().putBoolean("running", v).commit()) }
+    /** The boot and install the run marker was set under (see RunStamp). */
+    var runStamp: String
+        get() = prefs.getString("runStamp", "")!!
+        set(v) { check(prefs.edit().putString("runStamp", v).commit()) }
     val hasSession get() = prefs.contains("session")
     val hasPassword get() = prefs.contains("password")
     private fun key(): SecretKey {

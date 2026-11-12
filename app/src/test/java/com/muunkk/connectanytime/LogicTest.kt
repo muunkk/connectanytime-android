@@ -120,4 +120,13 @@ class LogicTest {
         assertEquals("Reconnecting", LogLines.filter("Reconnecting\r\n"))
         assertEquals("Server limit Idle-Timeout: 300", LogLines.filter("Server limit Idle-Timeout: 300"))
     }
+
+    @Test fun runStampTellsARestartOrUpdateFromACrash() {
+        val now = RunStamp.of(12, 1000L)
+        assertEquals(RunStamp.Cause.Reboot, RunStamp.cause(RunStamp.of(11, 1000L), now))
+        assertEquals(RunStamp.Cause.Update, RunStamp.cause(RunStamp.of(12, 999L), now))
+        assertEquals(RunStamp.Cause.Unexpected, RunStamp.cause(now, now))
+        // A marker from a build before stamps existed: can't tell, so no "quit unexpectedly".
+        assertEquals(RunStamp.Cause.Reboot, RunStamp.cause("", now))
+    }
 }

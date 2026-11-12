@@ -70,7 +70,9 @@ class ConnectVpnService : VpnService() {
             // resurrect a session after Disconnect.
             synchronized(sessionLock) { store.disconnected = true; store.clearSession() }
             requestStop(true)
-            if (!launched) { stopSelfResult(latestStartId); return START_NOT_STICKY }
+            // Also when this run already finished: a Disconnect delivered after finish()'s
+            // stop (which used an older start ID) would otherwise leave a started service.
+            if (!launched || finished) { stopSelfResult(startId); return START_NOT_STICKY }
             return START_NOT_STICKY
         }
         if (manual) manualRequested = true
@@ -130,7 +132,11 @@ class ConnectVpnService : VpnService() {
         try {
             RefusedStarts(this, store, app.log).end()
             log(BuildConfig.BUILD_DESCRIPTION)
-            if (store.running) log(getString(R.string.unclean))
+            if (store.running) log(getString(when (RunStamp.cause(store.runStamp, runStamp())) {
+                RunStamp.Cause.Reboot -> R.string.was_on_reboot
+                RunStamp.Cause.Update -> R.string.was_on_update
+                RunStamp.Cause.Unexpected -> R.string.unclean
+            }))
             store.running = false
             server = store.server
             user = store.user
@@ -189,7 +195,7 @@ class ConnectVpnService : VpnService() {
             checkNotStopping()
             applyConfig(native.config(session)?.let(TunnelConfig::from) ?: error(getString(R.string.no_settings)))
             checkNotStopping()
-            synchronized(sessionLock) { if (!stopping) store.running = true }
+            synchronized(sessionLock) { if (!stopping) { store.runStamp = runStamp(); store.running = true } }
             log(getString(R.string.connected))
             Notices.clear(this)
             state("Connected", true)
@@ -389,6 +395,10 @@ class ConnectVpnService : VpnService() {
             command(NativeBridge.RECONNECT)
         }
     }
+    /** This boot and this install, to tell a restart or update from a real crash. */
+    private fun runStamp() = RunStamp.of(
+        android.provider.Settings.Global.getInt(contentResolver, android.provider.Settings.Global.BOOT_COUNT, -1),
+        packageManager.getPackageInfo(packageName, 0).lastUpdateTime)
     /** The network watch only starts once connected, so each startup attempt picks up
      *  the current physical network itself: one that came back (or went) during the
      *  retry waits would otherwise leave DNS on a stale handle. */
