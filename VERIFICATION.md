@@ -1,3 +1,80 @@
+# Material 3 Expressive redesign verification
+
+Verified on the Mac mini on 2026-11-12, on local `main`. No device or emulator was
+started or driven. No remote was added and nothing was pushed. VPN behaviour files
+(ConnectVpnService.kt, cpp/, Logic.kt, Storage.kt, NativeBridge.kt, NetworkWatch.kt),
+signing, R8 setup and ProGuard rules are unchanged. VpnState is unchanged: the status
+area derives its five states from the existing status, busy, connected and error.
+
+## Dependencies
+
+- Compose BOM 2025.10.01 → **2026.06.01** (Compose 1.11.4).
+- Material 3 → **1.5.0-alpha18**, pinned over the BOM's 1.4.0, which lacks
+  MaterialExpressiveTheme, LoadingIndicator, MaterialShapes, ButtonShapes,
+  SegmentedListItem and the flexible app bars.
+- AGP 8.13.2, Kotlin 2.2.21, Gradle 8.13 and compile/target SDK 36 are unchanged.
+  The AAR metadata of Compose 1.12 (BOM 2026.08.00 and later) and of Material 3
+  1.5.0-alpha19 through 1.5.0-rc01 requires AGP 9.1.0 and compileSdk 37;
+  `checkDebugAarMetadata` rejected them with the pinned toolchain. 1.5.0-alpha18 is
+  the newest Material 3 release built on Compose 1.11, so it ships the Expressive
+  APIs without that toolchain change. The APIs are still `@ExperimentalMaterial3ExpressiveApi`
+  there; the UI files opt in at file level.
+
+## Checks
+
+```sh
+./gradlew assembleDebug assembleRelease testDebugUnitTest lintDebug lintRelease
+```
+
+PASS, exit 0, `BUILD SUCCESSFUL`, 123 actionable tasks.
+
+- LogicTest: 9 tests, 0 failures/errors/skips (unchanged).
+- ScreensTest (Robolectric, SDK 35): 8 tests, 0 failures. Covers not connected,
+  connecting (loading indicator), connected, reconnecting, failed with the reason,
+  session ended; the static badge when animations are removed; Activity newest-first
+  day grouping, Clear confirmation/cancel and empty state; NetID validation and
+  password show/hide; remove saved password cancel then confirm, plus the locked
+  server while busy; Stay Connected as a switch; settings and About reachable in
+  landscape at 200% font.
+- ScreenshotTest (Robolectric native graphics): 24 captures, 0 failures.
+- `lintDebug` and `lintRelease`: each **0 errors, 21 warnings**, no baseline, no new
+  suppressions. Warnings: newer dependency versions (GradleDependency,
+  NewerVersionAvailable, AndroidGradlePluginVersion), existing synchronous
+  preference commits (ApplySharedPref) and optional KTX style (UseKtx).
+
+```sh
+python3 scripts/verify-release.py
+scripts/verify-native.sh
+git diff --check
+```
+
+All PASS, exit 0: signature, 16 KB alignment, both ABI libraries, package names,
+labels, version 0.1.0 (1), all 11 native methods and the four JNI callbacks after R8;
+JNI exports and dynamic dependencies for both ABIs; no whitespace errors.
+
+- Release: `app/build/outputs/apk/release/app-release.apk`, 16,316,052 bytes.
+- Debug: `app/build/outputs/apk/debug/app-debug.apk`, 52,918,029 bytes.
+
+## Screenshots
+
+`testDebugUnitTest` writes PNGs to `app/build/screenshots/` (411×891 dp at xhdpi,
+fallback brand colors so the images do not depend on Robolectric's stand-in
+wallpaper palette), each as `-light.png` and `-dark.png`:
+`home-not-connected`, `home-ready`, `home-connecting`, `home-connected`,
+`home-reconnecting`, `home-failed`, `home-session-ended`, `home-settings`,
+`home-remove-password-dialog`, `home-landscape-200pct`, `activity`, `activity-empty`.
+Compose's `captureToImage()` waits for a frame-commit callback Robolectric never
+delivers, so the test draws the newest window's view into a bitmap. Compose tests
+pause endless animations, so the loading indicator shows its first frame.
+
+## Limits
+
+These are JVM renderings. Real rendering, dynamic colors from a real wallpaper,
+TalkBack announcements, the reduced-motion setting, notification and Quick Settings
+tile appearance, and every VPN runtime behaviour still need an Android device.
+
+---
+
 # Android production-hardening verification
 
 Verified on the Mac mini on 2026-11-12, on local `main`. No device or emulator was

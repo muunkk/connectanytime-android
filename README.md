@@ -8,6 +8,26 @@ Release package: `com.muunkk.connectanytime`. Debug package: `com.muunkk.connect
 Android 10 (API 29) or later.
 Current build: **ConnectAnytime 0.1.0 (build 1)**.
 
+## The app
+
+The connection status fills the top of the screen: **Not connected**, **Connecting…**
+(approve Duo on your phone if it asks), **Connected**, **Reconnecting…**, or
+**Couldn’t connect** with the reason. **VPN session ended** means the server ended
+the session and Connect will log in again. One button connects or disconnects.
+
+Below it: your NetID and password (show/hide, Save, and Remove saved password,
+which asks first), **Stay Connected**, a shortcut to **Android VPN settings** for
+Always-on VPN, the server (locked while connecting or connected), **Activity** and
+**About**. Activity lists events newest first under day headings with a time
+column; Share and Clear (which asks first) sit in its top bar.
+
+The UI uses Material 3 Expressive: the wallpaper's dynamic colors on Android 12 and
+later, a slate-blue scheme from the app icon on Android 10 and 11, light and dark.
+State changes use the expressive motion scheme. With animations removed in Android's
+settings, the shape morph and loading indicator become static. The status is a
+TalkBack live region. Screens work at 200% font size and in landscape, where wide
+windows show the status and settings side by side.
+
 ## How it works
 
 The app uses OpenConnect's Cisco AnyConnect protocol and OpenSSL to connect to
@@ -142,7 +162,11 @@ VPN addresses and server diagnostics, so review them before sharing.
 ## Build and sideload
 
 Build tools are pinned: Gradle **8.13** (wrapper and distribution checksum),
-AGP **8.13.2**, Kotlin/Compose compiler **2.2.21**, Compose BOM **2025.10.01**.
+AGP **8.13.2**, Kotlin/Compose compiler **2.2.21**, Compose BOM **2026.06.01**
+(Compose 1.11.4) and Material 3 **1.5.0-alpha18** for the Expressive components.
+Material 3 1.4.0, which that BOM selects, has no Expressive components. Compose 1.12
+and every later Material 3 1.5.0 build (alpha19 through rc01) require AGP 9.1 and
+compile SDK 37, so moving to them means upgrading AGP, Gradle and the SDK together.
 The module uses compile/target SDK **36**, build-tools **36.0.0** and NDK
 **27.1.12297006**. JDK **21** runs Gradle; app bytecode targets Java **17**.
 
@@ -209,8 +233,10 @@ scripts/verify-native.sh
 The release verification script checks the signature with `apksigner`, 16 KB APK
 alignment, both ABI libraries, package names, labels and version. It inspects the
 release DEX with `dexdump` and the R8 mapping to verify every native entry point
-and every JNI callback name and descriptor. The four Compose UI tests run on the
-JVM with Robolectric; no emulator is needed.
+and every JNI callback name and descriptor. The Compose UI tests (`ScreensTest`)
+and screenshots (`ScreenshotTest`) run on the JVM with Robolectric; no emulator is
+needed. Screenshots of each main state, light and dark, are written to
+`app/build/screenshots/` on every `testDebugUnitTest`.
 
 ### Sideload
 
@@ -238,8 +264,9 @@ Nothing has been published or pushed.
 - `Storage.kt`, `Notices.kt`: encrypted state, activity file, refusal summaries,
   foreground/session-ended notifications.
 - `MainActivity.kt`: VPN consent, notification permission and screen navigation.
-- `AppTheme.kt`, `HomeScreen.kt`, `ActivityScreen.kt`: dynamic Material 3 colors,
-  account and connection controls, and shareable activity with confirmed clearing.
+- `AppTheme.kt`, `HomeScreen.kt`, `ActivityScreen.kt`: Material 3 Expressive theme
+  (dynamic and fallback colors, motion, reduced-motion handling), the status area and
+  settings, and shareable activity grouped by day with confirmed clearing.
 - `Controls.kt`, `ConnectApp.kt`: tile, shortcuts, boot and the process StateFlow.
 - `app/src/main/AndroidManifest.xml`, `res/`: permissions, Android components,
   icons, shortcuts and backup exclusions.
