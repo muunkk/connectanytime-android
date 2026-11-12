@@ -32,6 +32,9 @@ class Store(private val context: Context) {
     var server: String
         get() = prefs.getString("server", "vpn.shanghai.nyu.edu")!!
         set(v) { prefs.edit().putString("server", v.trim()).apply() }
+    var shareWithTether: Boolean
+        get() = prefs.getBoolean("shareWithTether", false)
+        set(v) { prefs.edit().putBoolean("shareWithTether", v).apply() }
     var stayConnected: Boolean
         get() = prefs.getBoolean("stayConnected", true)
         set(v) { prefs.edit().putBoolean("stayConnected", v).apply() }

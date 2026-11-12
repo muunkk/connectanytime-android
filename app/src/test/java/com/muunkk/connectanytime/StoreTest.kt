@@ -10,6 +10,16 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(application = ConnectApp::class, sdk = [35])
 class StoreTest {
+    @Test fun tetherSharingDefaultsOffAndPersistsWithoutVpnRestart() {
+        val app = ApplicationProvider.getApplicationContext<ConnectApp>()
+        app.store.prefs.edit().remove("shareWithTether").commit()
+        assertFalse(app.store.shareWithTether)
+        app.store.shareWithTether = true
+        assertTrue(Store(app).shareWithTether)
+        app.store.shareWithTether = false
+        assertFalse(Store(app).shareWithTether)
+    }
+
     @Test fun corruptCredentialsAreRemovedAndDoNotBlockConnect() {
         val app = ApplicationProvider.getApplicationContext<ConnectApp>()
         val store = app.store

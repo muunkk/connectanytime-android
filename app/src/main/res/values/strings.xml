@@ -101,4 +101,7 @@
     <string name="refused_total">No session to rejoin. Automatic starts refused (%2$s to %3$s): %1$d</string>
     <string name="discarded_session">Discarded unreadable saved session</string>
     <string name="discarded_password">Discarded unreadable saved password</string>
+    <string name="tether_started">Sharing the VPN over USB at %1$s:%2$d</string>
+    <string name="tether_stopped">Stopped sharing the VPN over USB</string>
+    <string name="tether_refused">Refused a client outside the USB tether subnet</string>
 </resources>
