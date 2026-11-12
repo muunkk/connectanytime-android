@@ -131,6 +131,12 @@ class ScreenshotTest(private val dark: Boolean) {
             save("home-share-port-in-use")
         } finally { ConnectApp.mutableTetherShare.value = TetherShare.Off }
     }
+    @Test fun shareStopped() {
+        account(); app.store.sharedBefore = true
+        home(VpnState())
+        compose.onNodeWithText("Copy command to turn off").performScrollTo()
+        save("home-share-stopped")
+    }
     @Test fun activityEmpty() {
         compose.setContent { ConnectTheme(dark = dark, dynamicColor = false) { ActivityScreen(app.log, {}, {}) } }
         save("activity-empty")

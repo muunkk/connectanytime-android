@@ -35,6 +35,10 @@ internal fun ShareSection(store: Store) {
     val share by ConnectApp.tetherShare.collectAsState()
     var on by remember { mutableStateOf(store.shareWithTether) }
     val sharing = share as? TetherShare.Sharing
+    // Once the Mac may have been set up, the way back stays in reach: after sharing or the VPN
+    // stops, the Mac's proxies point at nothing and its browsing fails until they're off.
+    var shared by remember { mutableStateOf(store.sharedBefore) }
+    LaunchedEffect(sharing) { if (sharing != null && !shared) { shared = true; store.sharedBefore = true } }
     val count = if (on && sharing != null) 2 else 1
 
     SectionTitle(R.string.share_title)
@@ -67,6 +71,13 @@ internal fun ShareSection(store: Store) {
             FieldSegment(1, 2) { MacSetup(context, sharing) }
         }
     }
+    AnimatedVisibility(shared && sharing == null) {
+        Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(stringResource(R.string.share_stopped_help), style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            CopyButton(context, R.string.share_copy_off, macOffCommand(1080), tonal = false)
+        }
+    }
     AnimatedVisibility(on) { Footnote(R.string.share_footnote) }
 }
 
@@ -88,7 +99,7 @@ private fun MacSetup(context: Context, sharing: TetherShare.Sharing) {
             itemVerticalAlignment = Alignment.CenterVertically) {
             CopyButton(context, R.string.share_copy_address, address, tonal = true)
             CopyButton(context, R.string.share_copy_command, macCommand(sharing.address, sharing.port), tonal = false)
-            CopyButton(context, R.string.share_copy_off, macOffCommand(sharing.address, sharing.port), tonal = false)
+            CopyButton(context, R.string.share_copy_off, macOffCommand(sharing.port), tonal = false)
         }
         Text(stringResource(R.string.share_command_help), style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -119,7 +130,7 @@ private fun CopyButton(context: Context, label: Int, text: String, tonal: Boolea
 /**
  * Terminal one-liners for the Mac. `ip` is an IPv4 address string and `port` an Int, so
  * neither can inject anything. Written with § for the shell's $ (Kotlin would read $ as a
- * template), and checked in zsh and bash against a fake networksetup (see LogicTest).
+ * template), and checked in zsh and bash against a fake networksetup (see MacCommandTest).
  *
  * Both pick the enabled network service to change, refuse if more than one matches rather
  * than guess, check every networksetup call, and only report success when all three worked.
@@ -129,7 +140,7 @@ private const val FIND = "ip=@IP@; port=@PORT@; s=; n=0; " +
     "if networksetup @MATCH@; then s=§v; n=§((n+1)); fi; " +
     "done <<< \"§(networksetup -listallnetworkservices | tail -n +2)\"; " +
     "if [ §n -eq 0 ]; then echo \"@NONE@\"; " +
-    "elif [ §n -gt 1 ]; then echo \"More than one network service matches §ip. Set the proxies in System Settings instead.\"; " +
+    "elif [ §n -gt 1 ]; then echo \"More than one network service matches. Change the proxies in System Settings instead.\"; " +
     "else ok=1; for p in webproxy securewebproxy socksfirewallproxy; do sudo networksetup @SET@ || { ok=0; break; }; done; " +
     "if [ §ok = 1 ]; then echo \"@DONE@ §s\"; else echo \"Couldn't change the proxies on §s.\"; fi; fi"
 
@@ -145,10 +156,11 @@ internal fun macCommand(ip: String, port: Int) = script(ip, port,
     none = "Couldn't find the phone's connection. Is USB tethering on?",
     done = "Proxies set on")
 
-/** Turns those proxies off again, finding the service by the proxy it was given, which
- *  still works once the phone is unplugged. */
-internal fun macOffCommand(ip: String, port: Int) = script(ip, port,
-    match = "-getsocksfirewallproxy \"§v\" | grep -qxF \"Server: §ip\"",
+/** Turns those proxies off again. Finds the service by its SOCKS proxy being on with this
+ *  port, not by the phone's address: that still works once the phone is unplugged, and
+ *  after Android has moved the tether to a new address. */
+internal fun macOffCommand(port: Int) = script("", port,
+    match = "-getsocksfirewallproxy \"§v\" | grep -qxF \"Enabled: Yes\" && networksetup -getsocksfirewallproxy \"§v\" | grep -qxF \"Port: §port\"",
     set = "-set§{p}state \"§s\" off",
     none = "No network service uses this proxy. Nothing to turn off.",
     done = "Proxies turned off on")

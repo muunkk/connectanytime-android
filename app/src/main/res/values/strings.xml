@@ -119,6 +119,7 @@
     <string name="share_copy_address">Copy address</string>
     <string name="share_copy_command">Copy Terminal command</string>
     <string name="share_copy_off">Copy command to turn off</string>
+    <string name="share_stopped_help">Not sharing now. If your Mac still has the proxies on, its browsing won\'t work: paste this into Terminal on the Mac to turn them off.</string>
     <string name="share_copied">Copied</string>
     <string name="share_command_help">Or paste the command into Terminal on your Mac. It finds the phone\'s connection and sets all three proxies, asking for your Mac password. Run it again if this address changes.</string>
     <string name="share_footnote">Only Mac apps that use the system proxy go through the VPN, such as Safari and Chrome. Other traffic, and calls or games that use UDP, still go around it. While the proxies are on, browsing on the Mac needs sharing on here, so turn them off when you\'re done (Copy command to turn off).</string>

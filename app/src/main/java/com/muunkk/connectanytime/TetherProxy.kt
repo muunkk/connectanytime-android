@@ -74,8 +74,12 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
                 bindFailures.remove(binding.address)
                 app.log.add(service.getString(R.string.tether_started, binding.address.hostAddress, port))
                 listener.thread.start()
-            } catch (_: Exception) {
-                if (bindFailures.add(binding.address)) app.log.add(service.getString(R.string.tether_port_in_use, binding.address.hostAddress, port))
+            } catch (e: Exception) {
+                // Only "address in use" means another app has the port. Anything else, such as
+                // EADDRNOTAVAIL when the address went away between the scan and the bind (also a
+                // BindException), is retried quietly on the next rescan without blaming an app.
+                if (portInUse(e) && bindFailures.add(binding.address))
+                    app.log.add(service.getString(R.string.tether_port_in_use, binding.address.hostAddress, port))
             }
         }
         ConnectApp.mutableTetherShare.value = when {
@@ -88,6 +92,8 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
             else -> TetherShare.Sharing(listeners.keys.first().address.hostAddress!!, port)
         }
     }
+    private fun portInUse(e: Exception) = e is java.net.BindException &&
+        (e.message.orEmpty().contains("EADDRINUSE") || e.message.orEmpty().contains("in use", ignoreCase = true))
     private inner class Listener(val binding: Binding) : AutoCloseable {
         val server = ServerSocket().also { socket ->
             try { socket.reuseAddress = true; socket.bind(InetSocketAddress(binding.address, port), 32) }

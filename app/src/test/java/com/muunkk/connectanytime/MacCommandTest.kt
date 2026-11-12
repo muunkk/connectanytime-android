@@ -15,20 +15,21 @@ import java.nio.file.Files
 class MacCommandTest {
     private val ip = "192.168.42.129"
 
-    /** services: name → router; proxied: services whose SOCKS proxy is `ip`. */
-    private fun run(shell: String, command: String, services: Map<String, String>, proxied: Set<String> = emptySet(),
+    /** services: name → router; socks: name → (enabled, port) of its SOCKS proxy. */
+    private fun run(shell: String, command: String, services: Map<String, String>, socks: Map<String, Pair<Boolean, Int>> = emptyMap(),
                     sudoFails: Boolean = false): Pair<String, List<String>> {
         val dir = Files.createTempDirectory("maccmd").toFile()
         val calls = File(dir, "calls")
         val list = services.keys.joinToString("\\n")
         val info = services.entries.joinToString(" ") { (n, r) -> "\"$n\") echo 'Router: $r';;" }
-        val socks = proxied.joinToString(" ") { "\"$it\") echo 'Server: $ip';;" }
+        val socksInfo = socks.entries.joinToString(" ") { (n, v) ->
+            "\"$n\") printf 'Enabled: ${if (v.first) "Yes" else "No"}\\nServer: $ip\\nPort: ${v.second}\\nAuthenticated Proxy Enabled: 0\\n';;" }
         File(dir, "networksetup").writeText("""
             #!/bin/sh
             case "${'$'}1" in
               -listallnetworkservices) printf 'An asterisk (*) denotes that a network service is disabled.\n$list\n';;
               -getinfo) case "${'$'}2" in $info *) echo 'Router: none';; esac;;
-              -getsocksfirewallproxy) case "${'$'}2" in $socks *) echo 'Server: ';; esac;;
+              -getsocksfirewallproxy) case "${'$'}2" in $socksInfo *) printf 'Enabled: No\nServer: \nPort: 0\n';; esac;;
               *) echo "${'$'}*" >> "${calls.path}";;
             esac
         """.trimIndent() + "\n")
@@ -57,7 +58,7 @@ class MacCommandTest {
     }
     @Test fun refusesToGuessBetweenTwoMatches() = shells().forEach { sh ->
         val (out, calls) = run(sh, macCommand(ip, 1080), linkedMapOf("USB A" to ip, "USB B" to ip))
-        assertTrue(sh, out.startsWith("More than one network service matches $ip"))
+        assertTrue(sh, out.startsWith("More than one network service matches."))
         assertEquals(sh, emptyList<String>(), calls)
     }
     @Test fun dotsInTheAddressAreLiteral() = shells().forEach { sh ->
@@ -71,14 +72,21 @@ class MacCommandTest {
     }
     @Test fun turnsTheProxiesOffByTheProxyNotTheRouter() = shells().forEach { sh ->
         // Unplugged: no router any more, but the service still has our proxy.
-        val (out, calls) = run(sh, macOffCommand(ip, 1080), linkedMapOf("Wi-Fi" to "192.168.1.1", "Pixel 9" to "none"),
-            proxied = setOf("Pixel 9"))
+        val (out, calls) = run(sh, macOffCommand(1080), linkedMapOf("Wi-Fi" to "192.168.1.1", "Pixel 9" to "none"),
+            socks = mapOf("Pixel 9" to (true to 1080)))
         assertEquals(sh, "Proxies turned off on Pixel 9", out)
         assertEquals(sh, listOf("-setwebproxystate Pixel 9 off", "-setsecurewebproxystate Pixel 9 off",
             "-setsocksfirewallproxystate Pixel 9 off"), calls)
     }
+    @Test fun turnOffLeavesOtherProxiesAlone() = shells().forEach { sh ->
+        // Another SOCKS proxy on a different port, and ours already switched off: neither is touched.
+        val (out, calls) = run(sh, macOffCommand(1080), linkedMapOf("Wi-Fi" to "192.168.1.1", "Pixel 9" to "none"),
+            socks = mapOf("Wi-Fi" to (true to 9050), "Pixel 9" to (false to 1080)))
+        assertEquals(sh, "No network service uses this proxy. Nothing to turn off.", out)
+        assertEquals(sh, emptyList<String>(), calls)
+    }
     @Test fun oneLineEach() {
         assertFalse(macCommand(ip, 1080).contains('\n'))
-        assertFalse(macOffCommand(ip, 1080).contains('\n'))
+        assertFalse(macOffCommand(1080).contains('\n'))
     }
 }
