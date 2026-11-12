@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
+
 package com.muunkk.connectanytime
 
 import android.Manifest
@@ -11,7 +13,16 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.*
+import androidx.compose.foundation.background
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -51,17 +62,27 @@ class MainActivity : ComponentActivity() {
                 val app = application as ConnectApp
                 val state by ConnectApp.state.collectAsStateWithLifecycle()
                 var activity by rememberSaveable { mutableStateOf(false) }
-                if (activity) {
-                    BackHandler { activity = false }
-                    ActivityScreen(app.log, onBack = { activity = false }, onShare = { lines ->
-                        startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain")
-                            .putExtra(Intent.EXTRA_TEXT, (listOf(BuildConfig.BUILD_DESCRIPTION) + lines).joinToString("\n")), getString(R.string.share_activity)))
-                    })
-                } else HomeScreen(app.store, state, notificationDenied, onConnect = ::connect,
-                    onDisconnect = { Controls.disconnect(this) }, onActivity = { activity = true },
-                    onStayChanged = {
-                        if (state.busy) startService(Intent(this, ConnectVpnService::class.java).setAction(ConnectVpnService.ARM))
-                    })
+                BackHandler(enabled = activity) { activity = false }
+                val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+                val spatial = MaterialTheme.motionScheme.defaultSpatialSpec<IntOffset>()
+                val effects = MaterialTheme.motionScheme.defaultEffectsSpec<Float>()
+                // Activity slides in from the end edge and back out, with the theme's motion.
+                AnimatedContent(activity, Modifier.background(MaterialTheme.colorScheme.surface), transitionSpec = {
+                    val direction = (if (targetState) 1 else -1) * (if (rtl) -1 else 1)
+                    (slideInHorizontally(spatial) { direction * it / 4 } + fadeIn(effects))
+                        .togetherWith(slideOutHorizontally(spatial) { -direction * it / 4 } + fadeOut(effects))
+                }, label = "screen") { showActivity ->
+                    if (showActivity) {
+                        ActivityScreen(app.log, onBack = { activity = false }, onShare = { lines ->
+                            startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain")
+                                .putExtra(Intent.EXTRA_TEXT, (listOf(BuildConfig.BUILD_DESCRIPTION) + lines).joinToString("\n")), getString(R.string.share_activity)))
+                        })
+                    } else HomeScreen(app.store, state, notificationDenied, onConnect = ::connect,
+                        onDisconnect = { Controls.disconnect(this@MainActivity) }, onActivity = { activity = true },
+                        onStayChanged = {
+                            if (state.busy) startService(Intent(this@MainActivity, ConnectVpnService::class.java).setAction(ConnectVpnService.ARM))
+                        })
+                }
             }
         }
     }
