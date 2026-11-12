@@ -25,17 +25,28 @@ object Notices {
         value == "Not connected" -> R.string.not_connected
         else -> R.string.connecting
     })
+    // The line under the status in the ongoing notification.
+    private fun detail(c: Context, value: String): String = when {
+        value.startsWith("Reconnecting") -> c.getString(R.string.status_reconnecting)
+        value == "Connected" -> c.getString(R.string.status_connected, (c.applicationContext as ConnectApp).store.server)
+        else -> c.getString(R.string.status_connecting)
+    }
     private fun open(c: Context) = PendingIntent.getActivity(c, 0, Intent(c, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
     fun ongoing(c: Context, status: String): Notification {
         val disconnect = PendingIntent.getService(c, 1, Intent(c, ConnectVpnService::class.java).setAction(ConnectVpnService.DISCONNECT), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        return Notification.Builder(c, "vpn").setSmallIcon(R.drawable.ic_vpn).setContentTitle(c.getString(R.string.app_name))
-            .setContentText(status(c, status)).setContentIntent(open(c)).setOngoing(true)
+        // Android already shows the app name in the header; lead with the state.
+        return Notification.Builder(c, "vpn").setSmallIcon(R.drawable.ic_vpn).setContentTitle(status(c, status))
+            .setContentText(detail(c, status)).setContentIntent(open(c)).setOngoing(true)
+            .setCategory(Notification.CATEGORY_SERVICE).setShowWhen(false).setOnlyAlertOnce(true)
             .addAction(Notification.Action.Builder(null, c.getString(R.string.disconnect), disconnect).build()).build()
     }
     fun ended(c: Context) {
         if (Build.VERSION.SDK_INT >= 33 && c.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
+        val text = c.getString(R.string.refusal)
         c.getSystemService(NotificationManager::class.java).notify(ENDED, Notification.Builder(c, "session-ended")
-            .setSmallIcon(R.drawable.ic_vpn).setContentTitle(c.getString(R.string.session_ended)).setContentText(c.getString(R.string.refusal)).setContentIntent(open(c)).setAutoCancel(true).build())
+            .setSmallIcon(R.drawable.ic_vpn).setContentTitle(c.getString(R.string.session_ended)).setContentText(text)
+            .setStyle(Notification.BigTextStyle().bigText(text)).setCategory(Notification.CATEGORY_STATUS)
+            .setContentIntent(open(c)).setAutoCancel(true).build())
     }
     fun clear(c: Context) { c.getSystemService(NotificationManager::class.java).cancel(ENDED) }
 }

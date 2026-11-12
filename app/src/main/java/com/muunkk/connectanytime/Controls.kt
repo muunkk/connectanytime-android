@@ -6,6 +6,7 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.graphics.drawable.Icon
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
@@ -41,7 +42,12 @@ class ConnectTileService : TileService() {
         val state = ConnectApp.state.value
         qsTile?.apply {
             this.state = if (state.connected) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
-            subtitle = Notices.status(this@ConnectTileService, state.status)
+            label = getString(R.string.app_name)
+            val status = Notices.status(this@ConnectTileService, state.status)
+            subtitle = status
+            // Monochrome: a checked shield while connected, the app's shield otherwise.
+            icon = Icon.createWithResource(this@ConnectTileService, if (state.connected) R.drawable.ic_shield_check else R.drawable.ic_vpn)
+            if (Build.VERSION.SDK_INT >= 30) stateDescription = status
             updateTile()
         }
     }
