@@ -110,6 +110,8 @@
     <string name="share_off_help">A Mac plugged into this phone can use the VPN through a proxy here.</string>
     <string name="share_vpn_off">Starts once the VPN is connected.</string>
     <string name="share_waiting">Turn on USB tethering to start sharing.</string>
+    <string name="share_waiting_vpn">Resumes once the VPN has reconnected.</string>
+    <string name="share_port_in_use">Another app on this phone is using port 1080, so sharing can\'t start. Close that app, or turn its proxy off.</string>
     <string name="share_sharing">Sharing at %1$s, port %2$d.</string>
     <string name="open_tethering">Open tethering settings</string>
     <string name="share_proxy_label">Proxy for your Mac</string>

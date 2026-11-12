@@ -51,6 +51,8 @@ internal fun ShareSection(store: Store) {
                             !on -> stringResource(R.string.share_off_help)
                             sharing != null -> stringResource(R.string.share_sharing, sharing.address, sharing.port)
                             share == TetherShare.WaitingForUsbTether -> stringResource(R.string.share_waiting)
+                            share == TetherShare.WaitingForVpn -> stringResource(R.string.share_waiting_vpn)
+                            share == TetherShare.PortInUse -> stringResource(R.string.share_port_in_use)
                             else -> stringResource(R.string.share_vpn_off)
                         })
                         if (on && share == TetherShare.WaitingForUsbTether) {
