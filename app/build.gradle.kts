@@ -60,9 +60,15 @@ android {
     lint { abortOnError = true }
 }
 dependencies {
-    implementation(platform("androidx.compose:compose-bom:2025.10.01"))
+    // Compose 1.11.4: the newest stable Compose that still supports AGP 8.13 and compileSdk 36.
+    // BOM 2026.08.00 and later (Compose 1.12) require AGP 9.1 and compileSdk 37.
+    implementation(platform("androidx.compose:compose-bom:2026.06.01"))
     implementation("androidx.activity:activity-compose:1.11.0")
-    implementation("androidx.compose.material3:material3")
+    // Material 3 Expressive (MaterialExpressiveTheme, LoadingIndicator, MaterialShapes,
+    // ButtonShapes, SegmentedListItem, flexible app bars) is not in material3 1.4.0, which
+    // the BOM maps to. 1.5.0-alpha18 is the last release built on Compose 1.11; every later
+    // 1.5.0 build (alpha19 to rc01) also needs AGP 9.1 and compileSdk 37. Pinned exactly.
+    implementation("androidx.compose.material3:material3:1.5.0-alpha18")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.4")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
