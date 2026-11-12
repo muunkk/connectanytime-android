@@ -4,7 +4,8 @@ One-tap Connect/Disconnect for the NYU Shanghai VPN, without Cisco Secure Client
 Save your NetID and password once. Tap Connect and approve Duo on your phone.
 
 This is a standalone Kotlin / Jetpack Compose port of ConnectAnytime for iOS.
-Package: `com.muunkk.connectanytime`. Android 10 (API 29) or later.
+Release package: `com.muunkk.connectanytime`. Debug package: `com.muunkk.connectanytime.debug`.
+Android 10 (API 29) or later.
 Current build: **ConnectAnytime 0.1.0 (build 1)**.
 
 ## How it works
@@ -34,7 +35,9 @@ Only the app button, unlocked Quick Settings tile or launcher Connect shortcut
 can authorize a login. Boot, process restarts and Android Always-on VPN starts
 only rejoin. Repeated automatic starts without a session are counted: log the first,
 notify “VPN session ended”, summarize every 30 minutes, then report the total when
-a start goes ahead. Notification permission is requested on Android 13 and later.
+a start goes ahead. Notification permission is requested on Android 13 and later when you first tap
+Connect in the app. Denial does not prevent connecting. Android still lists the
+foreground VPN service in its active apps panel.
 
 ## Stay Connected
 
@@ -165,11 +168,61 @@ zlib comes from Android's NDK sysroot. Recipe/patch stamps trigger rebuilds.
 CMake statically links the dependencies into libconnectanytime.so; only Android
 system libraries remain dynamically required. APK and ELF support 16 KB pages.
 
-The APK is `app/build/outputs/apk/debug/app-debug.apk`. Copy it to your Android
-phone, open it, allow “Install unknown apps” for the app you used to open the APK,
-then install. Open ConnectAnytime, save your account, tap Connect, allow the VPN,
-and approve Duo. The debug build uses a local debug signing key; it is for sideload
-testing. No publishing or remote repository is required.
+### Release signing
+
+Release builds enable R8 code shrinking, optimization and obfuscation, plus resource
+shrinking. `app/proguard-rules.pro` keeps the native entry points and the four
+callbacks looked up by name in `jni.c`. `versionCode` and `versionName` live in
+`app/build.gradle.kts`; the build description is derived from them.
+
+On this Mac, the release key is at
+`~/.config/connectanytime-android/release.jks`. Its random password and key alias
+are in the gitignored `keystore.properties`. Neither file belongs in Git. Keep a
+secure backup of both: updates to an installed release need the same signing key.
+
+For a fresh checkout, copy `keystore.properties.example` to `keystore.properties`
+and fill in `storeFile`, `storePassword`, `keyAlias` and `keyPassword`. `storeFile`
+should be an absolute path outside the repository; Java properties do not expand
+`~`. To create a new local key, run the following and enter a strong random
+password when keytool prompts. Use the same password for the key and keystore.
+Do not replace an existing release key.
+
+```sh
+mkdir -p ~/.config/connectanytime-android
+chmod 700 ~/.config/connectanytime-android
+keytool -genkeypair -storetype JKS \
+  -keystore ~/.config/connectanytime-android/release.jks \
+  -alias connectanytime -keyalg RSA -keysize 3072 -validity 10000 \
+  -dname "CN=ConnectAnytime Local Release"
+chmod 600 ~/.config/connectanytime-android/release.jks keystore.properties
+```
+
+A release build without complete signing properties fails with a clear message;
+it never falls back to debug signing. Debug builds need no release key.
+
+```sh
+./gradlew assembleDebug assembleRelease testDebugUnitTest lintDebug lintRelease
+python3 scripts/verify-release.py
+scripts/verify-native.sh
+```
+
+The release verification script checks the signature with `apksigner`, 16 KB APK
+alignment, both ABI libraries, package names, labels and version. It inspects the
+release DEX with `dexdump` and the R8 mapping to verify every native entry point
+and every JNI callback name and descriptor. The four Compose UI tests run on the
+JVM with Robolectric; no emulator is needed.
+
+### Sideload
+
+- Release: `app/build/outputs/apk/release/app-release.apk` — **ConnectAnytime**.
+- Debug: `app/build/outputs/apk/debug/app-debug.apk` — **ConnectAnytime Dev**.
+
+Copy the APK to your Android phone, open it, allow “Install unknown apps” for the
+app opening it, then install. Save your account, tap Connect, allow the VPN and
+approve Duo. Debug and release install side by side with separate account and
+session storage. Android allows only one active VPN at a time. The debug build
+uses the local debug key. Release updates must use the release key above.
+Nothing has been published or pushed.
 
 ## Source map
 
@@ -184,8 +237,10 @@ testing. No publishing or remote repository is required.
   config comparison and log filtering; `app/src/test/.../LogicTest.kt` tests these.
 - `Storage.kt`, `Notices.kt`: encrypted state, activity file, refusal summaries,
   foreground/session-ended notifications.
-- `MainActivity.kt`, `Controls.kt`, `ConnectApp.kt`: Compose screens, VPN consent,
-  tile, shortcuts, boot and the process StateFlow.
+- `MainActivity.kt`: VPN consent, notification permission and screen navigation.
+- `AppTheme.kt`, `HomeScreen.kt`, `ActivityScreen.kt`: dynamic Material 3 colors,
+  account and connection controls, and shareable activity with confirmed clearing.
+- `Controls.kt`, `ConnectApp.kt`: tile, shortcuts, boot and the process StateFlow.
 - `app/src/main/AndroidManifest.xml`, `res/`: permissions, Android components,
   icons, shortcuts and backup exclusions.
 - `Vendor/`, `gradle/`, root Gradle files: pinned builds and the five patches.

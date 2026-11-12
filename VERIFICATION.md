@@ -1,156 +1,174 @@
-# Android implementation verification
+# Android production-hardening verification
 
-Verified on the Mac mini on 2026-11-12. No emulator/device was started or driven.
-The iOS source was read and copied from, but not modified. The new repository is
-on local main, with no remote configured.
+Verified on the Mac mini on 2026-11-12, on local `main`. No device or emulator was
+started or driven. No remote was added and nothing was pushed. The iOS sibling at
+`/Users/mini/Master/code/anyconnectios` remains clean and was used read-only.
 
-## Commands and results
+## Final checks
 
-Commands below ran from /Users/mini/Master/code/connectanytime-android.
-Logs were redirected to /tmp to keep generated output outside source control.
-
-```sh
-Vendor/build-deps.sh > /tmp/connectanytime-native-build.log 2>&1
-```
-
-PASS, exit 0: complete builds for arm64-v8a and x86_64, ending in
-“Built arm64-v8a” and “Built x86_64”. A subsequent `Vendor/build-deps.sh`
-verified the tarballs again and reported both ABIs up to date. The script
-checks all three pinned SHA-256s, and its stamp includes the recipe and all five
-patches. libxml2 2.14.6's tarball checksum was independently checked against the
-upstream published .sha256sum before pinning.
+From `/Users/mini/Master/code/connectanytime-android`:
 
 ```sh
-./gradlew --version > /tmp/connectanytime-gradle-version.log 2>&1
-shasum -a 256 gradle/wrapper/gradle-wrapper.jar
-curl -fsSL https://services.gradle.org/distributions/gradle-8.13-wrapper.jar.sha256
+./gradlew assembleDebug assembleRelease testDebugUnitTest lintDebug lintRelease
 ```
 
-PASS: Gradle 8.13 on JDK 21.0.10. Wrapper JAR hash and published checksum both
-`81a82aaea5abcc8ff68b3dfcb58b3c3c429378efd98e7433460610fecd7ae45f`.
-The wrapper also enforces Gradle distribution SHA-256
-`20f1b1176237254a6fc204d8434196fa11a4cfb387567519c61556e8710aed78`.
+PASS, exit 0: `BUILD SUCCESSFUL in 24s`, 123 actionable tasks (42 executed,
+81 up-to-date). A clean build also passed before the final string-only adjustment.
+Both ABIs compiled and linked; release enables R8 and resource shrinking.
+Log: `/tmp/connectanytime-production-checks.log`.
+
+- Existing LogicTest: 9 tests, 0 failures/errors/skips.
+- New JVM-only Robolectric ScreensTest: 4 tests, 0 failures/errors/skips.
+  Covers clear confirmation/cancel/empty state, account validation and password
+  visibility, saved-password removal and disabled server editing while busy, and
+  scrolling to settings/About in landscape at 200% font scale.
+- `lintDebug` and `lintRelease`: each **0 errors, 20 warnings**, no baseline.
+  Warnings concern pinned dependency versions, existing synchronous preference
+  commits and optional KTX editor style. No new lint suppressions were added.
+  The two pre-existing narrow suppressions remain: the API-34 tile fallback and
+  the manifest detector's alarm-only view of the systemExempted VPN exemption.
+
+Reports: `app/build/reports/tests/testDebugUnitTest/index.html`,
+`app/build/reports/lint-results-debug.html`, and
+`app/build/reports/lint-results-release.html`.
 
 ```sh
-./gradlew assembleDebug testDebugUnitTest lintDebug > /tmp/connectanytime-android-checks.log 2>&1
+python3 scripts/verify-release.py
 ```
 
-PASS, exit 0: final run “BUILD SUCCESSFUL in 1s”, 59 actionable tasks
-(8 executed, 51 up-to-date). The preceding run after Kotlin/lifecycle changes was
-also successful (4s, 27 executed). Both ABIs compiled and linked. Native bridge
-compilation uses -Wall -Wextra -Werror and --no-undefined.
+PASS, exit 0. The script invokes build-tools 36.0.0 `apksigner verify --print-certs`,
+`zipalign -c -P 16 4`, `aapt dump badging` and `dexdump`. Log:
+`/tmp/connectanytime-release-verification.log`.
 
-JVM results: **9 tests, 0 failures, 0 errors, 0 skipped**. Cases include:
-
-- Prefix and dotted-mask parsing, network normalization, malformed/noncontiguous
-  masks, IPv4 and IPv6 complements, exhaustive address coverage of a /24.
-- Case-insensitive DNS SAN matching, one-label wildcard, malicious suffixes,
-  partial wildcards, malformed names, IP literals and top-level wildcards.
-- Rejoin delays, cap and 120-second reset.
-- Every manual/automatic × saved/missing session × disconnected/allowed case.
-- Change detection for every tunnel config field.
-- Empty/countdown log filtering and preservation of diagnostic lines.
-
-Lint: **0 errors, 16 warnings**. Warnings concern deliberately pinned older
-dependency versions, synchronous persistence of refusal counters, and optional
-KTX preference-editor style. There is no lint baseline. Two narrow suppressions
-are documented in source: the pre-34 tile Intent fallback (34+ uses PendingIntent),
-and the manifest detector's alarm-only model of systemExempted (configured VPN
-apps also qualify, without an alarm permission).
-
-Generated reports:
-`app/build/reports/tests/testDebugUnitTest/index.html` and
-`app/build/reports/lint-results-debug.html`.
-
-```sh
-NDK_BIN="$HOME/Library/Android/sdk/ndk/27.1.12297006/toolchains/llvm/prebuilt/darwin-x86_64/bin"
-"$NDK_BIN/llvm-nm" -D --defined-only app/build/intermediates/stripped_native_libs/debug/stripDebugDebugSymbols/out/lib/arm64-v8a/libconnectanytime.so
-"$NDK_BIN/llvm-readelf" -d app/build/intermediates/stripped_native_libs/debug/stripDebugDebugSymbols/out/lib/arm64-v8a/libconnectanytime.so
-"$NDK_BIN/llvm-readelf" -l app/build/intermediates/stripped_native_libs/debug/stripDebugDebugSymbols/out/lib/arm64-v8a/libconnectanytime.so
-scripts/verify-native.sh > /tmp/connectanytime-native-verification.log 2>&1
-```
-
-PASS, exit 0: **both ABIs** export JNI_OnLoad and all 11 NativeBridge JNI entry
-points: create, connect, resume, error, saved, config, run, abortBeforePassword,
-command, free, setNetwork. All dependency symbols are hidden from the dynamic
-export table. DT_NEEDED is exactly:
+- Signature verifies. Certificate DN: `CN=ConnectAnytime Local Release`.
+  Certificate SHA-256:
+  `b5e81629e55045309f942e9c954eb7cf8cea7942095ffbabb9c558b63080035e`.
+- Release package `com.muunkk.connectanytime`, label `ConnectAnytime`;
+  debug package `com.muunkk.connectanytime.debug`, label `ConnectAnytime Dev`.
+  Both report version **0.1.0 (1)**. Debug shortcuts also target the debug package.
+- Release contains `lib/arm64-v8a/libconnectanytime.so` (6,614,968 bytes) and
+  `lib/x86_64/libconnectanytime.so` (7,027,680 bytes).
+- Release DEX retains the `NativeBridge` class and all 11 native method names:
+  setNetwork, create, connect, resume, error, saved, config, run,
+  abortBeforePassword, command, free.
+- R8 mapping locates the concrete callback as `com.muunkk.connectanytime.a`.
+  Release DEX retains all four exact names and descriptors:
 
 ```text
-libz.so
-liblog.so
-libandroid.so
-libdl.so
-libm.so
-libc.so
+onLog(Ljava/lang/String;)V
+onEvent(I[Ljava/lang/String;)V
+verify([[BLjava/lang/String;)Z
+protectSocket(I)Z
 ```
 
-No host libraries or C++ shared runtime are required. Arm64 ELF LOAD alignment is
-0x4000. The verification script also runs:
+JNI audit: `jni.c` uses `GetObjectClass` and these four `GetMethodID` calls.
+Its only `FindClass` calls are `java/lang/String` and `[B`, both platform types.
+There are no `GetFieldID` calls, app-class construction or app-class lookups.
+The explicit ProGuard rules therefore keep NativeBridge native methods, the
+Callbacks interface and the four concrete implementation members, without a
+package-wide keep. Core native sources and Logic.kt are unchanged.
 
 ```sh
-"$HOME/Library/Android/sdk/build-tools/36.0.0/zipalign" -c -P 16 4 app/build/outputs/apk/debug/app-debug.apk
+scripts/verify-native.sh
 ```
 
-PASS: APK 16 KB alignment.
+PASS, exit 0: both ABIs export JNI_OnLoad and all 11 JNI entry points, with only
+Android system dynamic dependencies (`libz`, `liblog`, `libandroid`, `libdl`,
+`libm`, `libc`). Debug APK 16 KB alignment passes. Release alignment passes in
+the release script. Log: `/tmp/connectanytime-native-verification.log`.
+The pinned native dependency builds were already present; no dependency recipe
+or source changes were needed for this task.
+
+Signing-negative check: temporarily moved `keystore.properties` into a private
+external temporary directory, ran `./gradlew assembleRelease`, and restored it
+in a Python `finally` block. PASS: nonzero exit with
+“Release signing requires keystore.properties with storeFile, storePassword,
+keyAlias and keyPassword. See keystore.properties.example.”
+Log: `/tmp/connectanytime-missing-signing.log`. Debug remains buildable without
+release signing properties.
 
 ```sh
 git diff --check
 git -C /Users/mini/Master/code/anyconnectios status --porcelain
 git remote -v
+git check-ignore keystore.properties
 ```
 
-PASS: no whitespace errors; iOS working tree clean; no Android remotes.
-No push, repository creation or remote changes were performed.
+PASS: no whitespace errors, iOS clean, no Android remotes, signing properties
+ignored. No secrets were staged or committed. The external keystore and ignored
+properties have mode 600; their parent configuration directory has mode 700.
 
-## Failures found and fixed during implementation
+## Artifacts and signing
 
-Early verification attempts failed; none remains outstanding:
+- Release: `app/build/outputs/apk/release/app-release.apk`, 15,947,344 bytes.
+  SHA-256: `0c66117ced7303f982776807a4d64f5fb0721b3f37692702258b88ab4642bbd2`.
+- Debug: `app/build/outputs/apk/debug/app-debug.apk`, 41,692,180 bytes.
+  SHA-256: `10bf2b8d20aa9c058d46d912e214d3f885329217cf4962a85686055c2b9f4ef2`.
+- Keystore: `/Users/mini/.config/connectanytime-android/release.jks`.
+  Generated locally with keytool, RSA 3072, a cryptographically random password,
+  alias `connectanytime`. Passwords are only in ignored `keystore.properties`.
+  Do not publish that file. Back up the key and properties securely for updates.
 
-- The dependency stamp initially referenced a relative script path after cd.
-  The recipe now hashes its path relative to Vendor.
-- Passing an absolute libxml2 archive to libtool nested an archive inside
-  libopenconnect.a. Using -L/-l dependency flags fixed the final Android link.
-- Bionic lacks explicit_bzero at API 29. A local noinline volatile wipe implements
-  it without introducing an unavailable libc symbol.
-- Kotlin compilation caught nullable saved-session use and IpPrefix construction.
-  Lint additionally caught the API-33 addRoute overload on API 29–32; routes now
-  use the older InetAddress/prefix overload, with API-33 excludeRoute guarded.
-- Lint flagged the tile Intent overload and systemExempted permission model.
-  The versioned fallback and VPN exemption are explicitly documented and narrowly
-  suppressed; no unrelated alarm permission was added.
-- The first verification-script version used grep -q with pipefail, causing
-  SIGPIPE on a large symbol listing. It now consumes the complete input.
+## Implementation boundaries and limits
 
-Nonfatal build messages included SDK metadata XML version skew and a libtool
-static-link portability warning. The actual cross-compiled libraries linked
-successfully and passed dependency inspection.
+The service changes only replace presentation strings with resources; its state,
+login, retry and tunnel decisions are unchanged. Its English status tokens and
+StartRule's pure-JVM refusal constant remain internal protocol values and are
+mapped to string resources for display. Native/server-generated diagnostic text
+continues to appear as received. Storage adds only explicit saved-password removal.
+Password input never enters saved instance state. UI text, notification text,
+channels and app-generated service diagnostics live in string resources.
 
-## Artifact
+Dynamic colors, system bars and splash resources are configured for light/dark.
+Adaptive icon foreground/background/monochrome layers share an original shield
+and linked-chain motif. The tile and notification use a white transparent vector.
+Notification permission is requested on the first eligible Connect tap, with a
+denial explanation and continuation to VPN consent. These Android platform flows,
+real rendering on hardware, NYU login/Duo, trust, traffic and leak checks,
+network transitions, Always-on/boot/process death and actual server logout still
+need device testing. JVM checks do not prove those runtime behaviors.
 
-`app/build/outputs/apk/debug/app-debug.apk`, approximately 41 MB, debug-signed.
+During implementation, two UI-test selectors initially targeted label text rather
+than editable/disabled field semantics. Corrected selectors pass. Moving the icon
+resource between qualifier directories exposed stale incremental resource state;
+a clean build resolved it. No failure remains outstanding.
 
-SHA-256:
-`54ddf7e24cb5ae03dd9b78cf42f23ff12b8e7968cf48345cd3ac666e8e8f84f9`.
+## Files changed
 
-## Remaining verification
+- `.gitignore`
+- `README.md`
+- `VERIFICATION.md`
+- `app/build.gradle.kts`
+- `app/proguard-rules.pro`
+- `app/src/debug/res/values/strings.xml`
+- `app/src/debug/res/xml/shortcuts.xml`
+- `app/src/main/AndroidManifest.xml`
+- `app/src/main/java/com/muunkk/connectanytime/ActivityScreen.kt`
+- `app/src/main/java/com/muunkk/connectanytime/AppTheme.kt`
+- `app/src/main/java/com/muunkk/connectanytime/ConnectVpnService.kt`
+- `app/src/main/java/com/muunkk/connectanytime/Controls.kt`
+- `app/src/main/java/com/muunkk/connectanytime/HomeScreen.kt`
+- `app/src/main/java/com/muunkk/connectanytime/MainActivity.kt`
+- `app/src/main/java/com/muunkk/connectanytime/Notices.kt`
+- `app/src/main/java/com/muunkk/connectanytime/Storage.kt`
+- `app/src/main/res/drawable/ic_back.xml`
+- `app/src/main/res/drawable/ic_launcher_foreground.xml`
+- `app/src/main/res/drawable/ic_visibility.xml`
+- `app/src/main/res/drawable/ic_vpn.xml`
+- `app/src/main/res/mipmap-anydpi/ic_launcher.xml`
+- `app/src/main/res/values-night/colors.xml`
+- `app/src/main/res/values-night/themes.xml`
+- `app/src/main/res/values/colors.xml`
+- `app/src/main/res/values/strings.xml`
+- `app/src/main/res/values/themes.xml`
+- `app/src/test/java/com/muunkk/connectanytime/ScreensTest.kt`
+- `keystore.properties.example`
+- `scripts/verify-release.py`
 
-No implementation path is intentionally stubbed. JVM tests do not validate JNI
-execution or Android framework lifecycle behaviour. Real NYU authentication and
-Duo need credentials and human approval; neither was available or attempted.
-Platform certificate verification, tunnel traffic and IPv6 leak checks, physical
-network transitions, long sleeps, config replacement, sticky/boot/Always-on
-restarts, notification permission, lock-screen tile/shortcut actions, and actual
-server logout still require a real Android device. The native builds and JVM
-tests are the completed verification bar for this task.
+## Commits
 
-The README lists every intentional platform difference and the fd ownership
-evidence from OpenConnect 9.21. Its build script is Mac-host-specific. The APK has
-not been installed, published or distributed.
-
-## Local commits
-
-- `518d2dbb90c4710cd00296657cc9ca52222f27b6`: pinned native build and JNI bridge.
-- `49418b34efce7609087520725d230dee6cdf57ed`: Android app, lifecycle, storage,
-  controls, tests and final native integration.
-- The documentation/verification commit follows these two; use `git log -3`
-  for its full SHA (a commit cannot contain its own SHA).
+- `2285facd6d393c311e1f92cb04d1a473785ac733`: signed shrunk releases, debug identity,
+  signing example and repeatable APK/JNI verification.
+- `d54433545ef348f09a303af9c665d1cba620f6dd`: Material 3 UI, icons, resource strings,
+  permission timing, password removal and JVM Compose tests.
+- Documentation commit follows these; `git log -1 --format=%H` gives its SHA.
