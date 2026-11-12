@@ -1,5 +1,10 @@
 --- a/http.c
 +++ b/http.c
+@@ -934 +934,3 @@
+-			if (rq_retry) {
++			/* A failed write may have sent part or all of a login POST.
++			 * Never replay a request with a body after an ambiguous write. */
++			if (rq_retry && !request_body_type) {
 @@ -944,7 +944,11 @@
  
  	result = process_http_response(vpninfo, 0, header_cb, buf);
