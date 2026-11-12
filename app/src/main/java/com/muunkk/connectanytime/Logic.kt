@@ -104,3 +104,20 @@ data class TunnelConfig(
         private fun lines(s: String) = s.lineSequence().filter(String::isNotBlank).toList()
     }
 }
+
+/** Commands cross the main thread, worker queue and posted restart boundary. */
+class CommandGeneration {
+    private var generation = 0L
+    @Synchronized fun next(): Long = ++generation
+    @Synchronized fun isCurrent(token: Long): Boolean = token == generation
+}
+
+/** The first callback is a baseline, including a callback-derived offline state. */
+class NetworkBaseline {
+    private var identity: String? = null
+    fun changed(next: String): Boolean {
+        val changed = identity != null && identity != next
+        identity = next
+        return changed
+    }
+}

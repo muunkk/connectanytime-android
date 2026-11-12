@@ -4,6 +4,38 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class LogicTest {
+    @Test fun disconnectCancelsQueuedConnect() {
+        val commands = CommandGeneration()
+        commands.next() // Disconnect
+        val queued = commands.next() // Connect while stopping
+        commands.next() // Disconnect before the queue drains
+        assertFalse(commands.isCurrent(queued))
+    }
+    @Test fun disconnectCancelsAlreadyPostedRestart() {
+        val commands = CommandGeneration()
+        commands.next()
+        val posted = commands.next()
+        assertTrue(commands.isCurrent(posted)) // queue posts restart
+        commands.next()
+        assertFalse(commands.isCurrent(posted)) // main executes restart
+        val newer = commands.next()
+        assertTrue(commands.isCurrent(newer))
+        assertFalse(commands.isCurrent(posted))
+    }
+    @Test fun firstNetworkCallbackIsBaseline() {
+        val baseline = NetworkBaseline()
+        assertFalse(baseline.changed("wifi,wlan0,gateway"))
+        assertFalse(baseline.changed("wifi,wlan0,gateway"))
+        assertTrue(baseline.changed("cell,rmnet0,gateway"))
+        assertTrue(baseline.changed("offline"))
+        assertFalse(baseline.changed("offline"))
+    }
+    @Test fun firstOfflineCallbackIsAlsoBaseline() {
+        val baseline = NetworkBaseline()
+        assertFalse(baseline.changed("offline"))
+        assertTrue(baseline.changed("wifi"))
+    }
+
     @Test fun routesAcceptMasksAndNormalize() {
         assertEquals("10.0.0.0/8", Prefix.parse("10.1.2.3/255.0.0.0").text)
         assertEquals("192.168.1.0/24", Prefix.parse("192.168.1.4/24").text)

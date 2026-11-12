@@ -44,7 +44,8 @@ with zipfile.ZipFile(APK) as archive, tempfile.TemporaryDirectory() as folder:
     native = next(b for b in blocks if "Class descriptor  : 'Lcom/muunkk/connectanytime/NativeBridge;'" in b)
     for name in entry_points:
         assert f"name          : '{name}'" in native, name
-    print("PASS: NativeBridge and all 11 native method names survived R8")
+    assert re.search(r"name\s+: 'create'\s+type\s+: '\(\[B\[B\[BLcom/muunkk/connectanytime/NativeBridge\$Callbacks;\)J'", native)
+    print("PASS: NativeBridge, all 11 native methods and UTF-8 create signature survived R8")
     mapping = (ROOT / "app/build/outputs/mapping/release/mapping.txt").read_text()
     concrete = re.search(r'^com.muunkk.connectanytime.ConnectVpnService\$newSession\$1\$cb\$1 -> ([^:]+):', mapping, re.M)[1]
     descriptor = "L" + concrete.replace(".", "/") + ";"

@@ -26,7 +26,7 @@ object Controls {
 
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
+        if (intent.action != Intent.ACTION_BOOT_COMPLETED && intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) return
         val store = (context.applicationContext as ConnectApp).store
         // Credential-encrypted prefs are only available after first unlock. No
         // direct-boot receiver, and no password login from a boot or sticky start.

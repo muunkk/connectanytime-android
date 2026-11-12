@@ -15,30 +15,28 @@ class NetworkWatch(private val cm: ConnectivityManager, private val changed: (Ne
         .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN).build()
     private val callback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
-            if (Build.VERSION.SDK_INT >= 31) synchronized(links) { links.clear() }
-            update(network, cm.getLinkProperties(network))
+            synchronized(links) { links.clear() }
+            // Wait for link properties: onAvailable alone has no stable identity.
         }
         override fun onLinkPropertiesChanged(network: Network, properties: LinkProperties) = update(network, properties)
-        override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) = publish()
-        override fun onLost(network: Network) { synchronized(links) { links.remove(network) }; publish() }
+        override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+            synchronized(links) { if (links.containsKey(network)) publish() }
+        }
+        override fun onLost(network: Network) { synchronized(links) { if (links.remove(network) != null) publish() } }
     }
     private fun update(n: Network, p: LinkProperties?) { synchronized(links) { if (p != null) links[n] = p }; publish() }
     private fun publish() = synchronized(links) {
-        // API 31+ supplies only the best NOT_VPN match. On 29/30 prefer the
-        // system default when physical, otherwise validated Wi-Fi over cellular.
-        val active = cm.activeNetwork
-        val n = links.keys.firstOrNull { it == active } ?: links.keys.maxByOrNull {
-            val caps = cm.getNetworkCapabilities(it)
-            (if (caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true) 10 else 0) +
-                (if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true) 2 else 1)
-        }
+        // Both registrations report the system's best NOT_VPN match. Never use
+        // activeNetwork here: on API 29/30 it can be this VPN itself.
+        val n = links.keys.firstOrNull()
         val p = links[n]
         changed(n, if (n == null) "offline" else "$n,${p?.interfaceName},${p?.routes?.mapNotNull { it.gateway?.hostAddress }?.sorted()}")
     }
     fun start() {
         if (Build.VERSION.SDK_INT >= 31) cm.registerBestMatchingNetworkCallback(request, callback, android.os.Handler(android.os.Looper.getMainLooper()))
-        else cm.registerNetworkCallback(request, callback)
-        publish()
+        // Before API 31, requestNetwork supplies best-match semantics; a passive
+        // registerNetworkCallback lists all networks without their system ranking.
+        else cm.requestNetwork(request, callback)
     }
     fun close() { runCatching { cm.unregisterNetworkCallback(callback) } }
 }

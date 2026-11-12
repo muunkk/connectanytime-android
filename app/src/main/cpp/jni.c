@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <string.h>
 #include "ocbridge.h"
 
 static JavaVM *vm;
@@ -41,6 +42,22 @@ static int leave(callback_env c) {
     return ok;
 }
 static jstring string(JNIEnv *e, const char *s) { return (*e)->NewStringUTF(e, s ? s : ""); }
+static jbyteArray utf8(JNIEnv *e, const char *s) {
+    size_t n = s ? strlen(s) : 0;
+    jbyteArray bytes = (*e)->NewByteArray(e, n);
+    if (bytes) (*e)->SetByteArrayRegion(e, bytes, 0, n, (const jbyte *)s);
+    return bytes;
+}
+static char *from_utf8(JNIEnv *e, jbyteArray bytes) {
+    jsize n = (*e)->GetArrayLength(e, bytes);
+    char *s = calloc((size_t)n + 1, 1);
+    if (s) (*e)->GetByteArrayRegion(e, bytes, 0, n, (jbyte *)s);
+    return s;
+}
+static void wipe(void *p, size_t n) {
+    volatile unsigned char *b = p;
+    while (n--) *b++ = 0;
+}
 static jobjectArray strings(JNIEnv *e, const char **s, int n) {
     jclass cls = (*e)->FindClass(e, "java/lang/String");
     jobjectArray a = (*e)->NewObjectArray(e, n, cls, NULL);
@@ -60,7 +77,7 @@ static jobjectArray config(JNIEnv *e, const ocb_config *c) {
 }
 static void log_cb(void *ctx, int level, const char *line) {
     (void)level; bridge *b = ctx; callback_env c = enter(); if (!c.env) return;
-    (*c.env)->CallVoidMethod(c.env, b->callbacks, b->log, string(c.env, line));
+    (*c.env)->CallVoidMethod(c.env, b->callbacks, b->log, utf8(c.env, line));
     leave(c);
 }
 static void event_cb(void *ctx, int event, const ocb_config *cfg) {
@@ -103,22 +120,26 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *v, void *unused) {
 JNIEXPORT void JNICALL API(setNetwork)(JNIEnv *e, jobject self, jlong handle) {
     (void)e; (void)self; ocb_set_network((uint64_t)handle);
 }
-JNIEXPORT jlong JNICALL API(create)(JNIEnv *e, jobject self, jstring server, jstring user, jstring password, jobject cb) {
+JNIEXPORT jlong JNICALL API(create)(JNIEnv *e, jobject self, jbyteArray server, jbyteArray user, jbyteArray password, jobject cb) {
     (void)self; bridge *b = calloc(1, sizeof *b); if (!b) return 0;
     b->callbacks = (*e)->NewGlobalRef(e, cb);
     jclass cls = (*e)->GetObjectClass(e, cb);
-    b->log = (*e)->GetMethodID(e, cls, "onLog", "(Ljava/lang/String;)V");
+    b->log = (*e)->GetMethodID(e, cls, "onLog", "([B)V");
     b->event = (*e)->GetMethodID(e, cls, "onEvent", "(I[Ljava/lang/String;)V");
     b->trust = (*e)->GetMethodID(e, cls, "verify", "([[BLjava/lang/String;)Z");
     b->protect = (*e)->GetMethodID(e, cls, "protectSocket", "(I)Z");
     (*e)->DeleteLocalRef(e, cls);
-    const char *s = (*e)->GetStringUTFChars(e, server, NULL);
-    const char *u = (*e)->GetStringUTFChars(e, user, NULL);
-    const char *p = (*e)->GetStringUTFChars(e, password, NULL);
-    b->s = ocb_new(s, u, p, "push", log_cb, event_cb, trust_cb, protect_cb, b);
-    (*e)->ReleaseStringUTFChars(e, server, s);
-    (*e)->ReleaseStringUTFChars(e, user, u);
-    (*e)->ReleaseStringUTFChars(e, password, p);
+    char *s = from_utf8(e, server);
+    char *u = from_utf8(e, user);
+    char *p = from_utf8(e, password);
+    if (s && u && p && !(*e)->ExceptionCheck(e))
+        b->s = ocb_new(s, u, p, "push", log_cb, event_cb, trust_cb, protect_cb, b);
+    if (p) {
+        size_t n = (*e)->GetArrayLength(e, password);
+        wipe(p, n);
+        (*e)->SetByteArrayRegion(e, password, 0, n, (const jbyte *)p);
+    }
+    free(s); free(u); free(p);
     if (!b->s) { (*e)->DeleteGlobalRef(e, b->callbacks); free(b); return 0; }
     return (jlong)(intptr_t)b;
 }

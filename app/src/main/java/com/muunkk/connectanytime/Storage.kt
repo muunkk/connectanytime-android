@@ -24,7 +24,7 @@ data class SavedSession(val server: String, val user: String, val url: String, v
     // Deliberately no credential-bearing toString (including crash diagnostics).
     override fun toString() = "SavedSession([private])"
 }
-class Store(context: Context) {
+class Store(private val context: Context) {
     val prefs = context.getSharedPreferences("connectanytime", Context.MODE_PRIVATE)
     var user: String
         get() = prefs.getString("user", "")!!
@@ -51,7 +51,7 @@ class Store(context: Context) {
                 .setRandomizedEncryptionRequired(true).build())
         }.generateKey()
     }
-    private fun write(name: String, value: String) {
+    @Synchronized private fun write(name: String, value: String) {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()); updateAAD(name.toByteArray()) }
         val encrypted = cipher.iv + cipher.doFinal(value.toByteArray(Charsets.UTF_8))
         check(prefs.edit().putString(name, Base64.encodeToString(encrypted, Base64.NO_WRAP)).commit())
@@ -66,9 +66,22 @@ class Store(context: Context) {
         return cipher.doFinal(bytes.copyOfRange(12, bytes.size)).toString(Charsets.UTF_8)
     }
     fun clearPassword() { check(prefs.edit().remove("password").commit()) }
-    fun password() = read("password")
+    // This key is not auth-bound; prefs are credential-encrypted and this app is
+    // not direct-boot aware (API 29+). There is no locked-user/authentication
+    // retry state here. Invalid keys/ciphertext are unusable saved credentials.
+    @Synchronized private fun <T> recover(name: String, decode: (String) -> T): T? = try {
+        read(name)?.let(decode)
+    } catch (e: Exception) {
+        if (e is java.security.InvalidKeyException || e is java.security.UnrecoverableKeyException) {
+            KeyStore.getInstance("AndroidKeyStore").apply { load(null); deleteEntry("connectanytime") }
+        }
+        check(prefs.edit().remove(name).commit())
+        (context.applicationContext as? ConnectApp)?.log?.add(context.getString(if (name == "session") R.string.discarded_session else R.string.discarded_password))
+        null
+    }
+    fun password(): String? = recover("password") { it }
     fun savePassword(value: String) = write("password", value)
-    fun session(): SavedSession? = read("session")?.let {
+    fun session(): SavedSession? = recover("session") {
         val j = JSONObject(it)
         SavedSession(j.getString("server"), j.getString("user"), j.getString("url"), j.getString("cookie"), j.getString("dnsName"), j.getString("ip"))
     }

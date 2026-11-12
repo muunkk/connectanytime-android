@@ -4,13 +4,13 @@
 }
 # GetObjectClass + GetMethodID on the concrete callback, with these exact descriptors.
 -keep interface com.muunkk.connectanytime.NativeBridge$Callbacks {
-    void onLog(java.lang.String);
+    void onLog(byte[]);
     void onEvent(int, java.lang.String[]);
     boolean verify(byte[][], java.lang.String);
     boolean protectSocket(int);
 }
 -keepclassmembers class * implements com.muunkk.connectanytime.NativeBridge$Callbacks {
-    void onLog(java.lang.String);
+    void onLog(byte[]);
     void onEvent(int, java.lang.String[]);
     boolean verify(byte[][], java.lang.String);
     boolean protectSocket(int);

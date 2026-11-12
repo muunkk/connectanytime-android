@@ -9,13 +9,13 @@ import javax.net.ssl.X509TrustManager
 
 class NativeBridge {
     interface Callbacks {
-        fun onLog(line: String)
+        fun onLog(line: ByteArray)
         fun onEvent(event: Int, config: Array<String>?)
         fun verify(chain: Array<ByteArray>, hostname: String): Boolean
         fun protectSocket(fd: Int): Boolean
     }
     external fun setNetwork(handle: Long)
-    external fun create(server: String, user: String, password: String, callbacks: Callbacks): Long
+    external fun create(server: ByteArray, user: ByteArray, password: ByteArray, callbacks: Callbacks): Long
     external fun connect(handle: Long): Int
     external fun resume(handle: Long, saved: Array<String>): Int
     external fun error(handle: Long): String

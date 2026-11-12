@@ -96,4 +96,6 @@
     <string name="refused_first">Stay Connected started the VPN, but there\'s no session to rejoin. %1$s Further automatic starts are counted, not logged, until one goes ahead.</string>
     <string name="refused_still">Still no session to rejoin. Automatic starts refused since %2$s: %1$d</string>
     <string name="refused_total">No session to rejoin. Automatic starts refused (%2$s to %3$s): %1$d</string>
+    <string name="discarded_session">Discarded unreadable saved session</string>
+    <string name="discarded_password">Discarded unreadable saved password</string>
 </resources>

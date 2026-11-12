@@ -35,7 +35,7 @@ class ConnectVpnService : VpnService() {
     private var installed: TunnelConfig? = null
     private var watch: NetworkWatch? = null
     private var underlying: Network? = null
-    private var identity: String? = null
+    private var networkBaseline = NetworkBaseline()
     private var online = false
     private var watchdog: ScheduledFuture<*>? = null
     private var debounce: ScheduledFuture<*>? = null
@@ -48,8 +48,10 @@ class ConnectVpnService : VpnService() {
     private var lastAwake = SystemClock.uptimeMillis()
     @Volatile private var destroyed = false
     @Volatile private var finished = false
-    /** A Connect that arrived while this run was still stopping (on `queue` only). */
-    private var pendingConnect = false
+    /** Latest Connect waiting for cleanup; published on main before queueing it. */
+    @Volatile private var pendingConnect: Long? = null
+    private val commands = CommandGeneration()
+    @Volatile private var latestStartId = 0
     private val main = android.os.Handler(android.os.Looper.getMainLooper())
     private var lastKick = 0L
     private var givingUp = false
@@ -59,13 +61,16 @@ class ConnectVpnService : VpnService() {
     private var foreground = false
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        latestStartId = startId
+        if (intent?.action == ARM && !launched) { stopSelfResult(startId); return START_NOT_STICKY }
         val manual = intent?.action == CONNECT
+        val commandToken = if (manual || intent?.action == DISCONNECT) commands.next() else null
         if (intent?.action == DISCONNECT) {
             // Durable intent first: a crash or concurrent successful login must not
             // resurrect a session after Disconnect.
             synchronized(sessionLock) { store.disconnected = true; store.clearSession() }
             requestStop(true)
-            if (!launched) { stopSelf(); return START_NOT_STICKY }
+            if (!launched) { stopSelfResult(latestStartId); return START_NOT_STICKY }
             return START_NOT_STICKY
         }
         if (manual) manualRequested = true
@@ -74,7 +79,13 @@ class ConnectVpnService : VpnService() {
             // still winding down. Ignoring it would drop the tap; run it once this one has
             // finished. `queue` is serial, so this lands either before finish (which then
             // restarts) or after it.
-            if (manual && stopping) queue.execute { if (finished) main.post { restart() } else pendingConnect = true }
+            if (manual && (stopping || finished)) {
+                pendingConnect = commandToken
+                queue.execute {
+                    val token = checkNotNull(commandToken)
+                    if (commands.isCurrent(token) && finished) main.post { restart(token) }
+                }
+            }
             return if (store.stayConnected && store.hasSession && !stopping) START_STICKY else START_NOT_STICKY
         }
         // Android re-creating the service after its process was killed (sticky). That
@@ -82,7 +93,7 @@ class ConnectVpnService : VpnService() {
         // mustn't bring the VPN back. Always-on VPN starts carry an intent and go ahead.
         if (intent == null && !store.stayConnected) {
             log(getString(R.string.stay_off))
-            stopSelf()
+            stopSelfResult(latestStartId)
             return START_NOT_STICKY
         }
         stopping = false
@@ -93,7 +104,7 @@ class ConnectVpnService : VpnService() {
         if (refusal != null) {
             RefusedStarts(this, store, app.log).note()
             ConnectApp.mutableState.value = VpnState(error = refusal)
-            stopSelf()
+            stopSelfResult(latestStartId)
             return START_NOT_STICKY
         }
         launched = true
@@ -210,7 +221,8 @@ class ConnectVpnService : VpnService() {
         checkNotStopping()
         val token = ++generation
         val cb = object : NativeBridge.Callbacks {
-            override fun onLog(line: String) = log(line)
+            // C caps logs at 1023 bytes; replace any truncated UTF-8 tail.
+            override fun onLog(line: ByteArray) = log(line.toString(Charsets.UTF_8))
             override fun onEvent(event: Int, config: Array<String>?) {
                 val cfg = config?.let(TunnelConfig::from)
                 queue.execute {
@@ -235,7 +247,11 @@ class ConnectVpnService : VpnService() {
             override fun verify(chain: Array<ByteArray>, hostname: String) = PlatformTrust.verify(chain, hostname)
             override fun protectSocket(fd: Int) = protect(fd)
         }
-        native.create(server, user, password, cb).also { check(it != 0L) { getString(R.string.client_error) }; session = it }
+        val bytes = password.toByteArray(Charsets.UTF_8)
+        try {
+            native.create(server.toByteArray(Charsets.UTF_8), user.toByteArray(Charsets.UTF_8), bytes, cb)
+                .also { check(it != 0L) { getString(R.string.client_error) }; session = it }
+        } finally { bytes.fill(0) }
     }
     private fun freeSession() = synchronized(sessionLock) {
         if (session != 0L) native.free(session)
@@ -324,13 +340,12 @@ class ConnectVpnService : VpnService() {
         watch = NetworkWatch(cm) { n, id ->
             native.setNetwork(n?.networkHandle ?: 0)
             queue.execute {
-                val old = identity
+                val changed = networkBaseline.changed(id)
                 underlying = n
                 setUnderlyingNetworks(n?.let { arrayOf(it) } ?: emptyArray())
                 accountDown(SystemClock.uptimeMillis())
                 online = n != null
-                identity = id
-                if (old != null && id != old && !stopping) {
+                if (changed && !stopping) {
                     log(if (n == null) getString(R.string.network_lost) else getString(R.string.network_changed))
                     reconnecting()
                     debounce?.cancel(false)
@@ -380,7 +395,7 @@ class ConnectVpnService : VpnService() {
     }
     private fun applyConfig(cfg: TunnelConfig) {
         if (!cfg.changedFrom(installed)) return
-        val builder = Builder().setSession(getString(R.string.app_name)).setBlocking(false)
+        val builder = Builder().setSession(getString(R.string.app_name)).setBlocking(false).setMetered(false)
         val addr = Prefix.parse("${cfg.address}/${cfg.mask}")
         builder.addAddress(cfg.address, addr.bits)
         val full = cfg.includes.isEmpty()
@@ -447,20 +462,24 @@ class ConnectVpnService : VpnService() {
         state("Not connected", error = error)
         stopForeground(STOP_FOREGROUND_REMOVE)
         // Leave nothing from this run for a restart in the same instance.
-        installed = null; identity = null; online = false; underlying = null
+        installed = null; networkBaseline = NetworkBaseline(); online = false; underlying = null
         down = false; downOnline = 0; givingUp = false; replacingConfig = false
         backoff.reset()
-        if (pendingConnect && !destroyed) { pendingConnect = false; main.post { restart() } }
-        else stopSelf()
+        main.post {
+            val pending = pendingConnect
+            if (pending != null && !destroyed && commands.isCurrent(pending)) restart(pending)
+            else stopSelfResult(latestStartId)
+        }
         if (destroyed) { deadlines.shutdown(); queue.shutdown() }
     }
 
     /** Runs a Connect that waited for the previous run to finish (main thread). */
-    private fun restart() {
-        if (destroyed) return
+    private fun restart(token: Long) {
+        if (destroyed || !commands.isCurrent(token)) return
+        pendingConnect = null
         launched = false
         manualRequested = false
-        onStartCommand(Intent(this, ConnectVpnService::class.java).setAction(CONNECT), 0, 0)
+        onStartCommand(Intent(this, ConnectVpnService::class.java).setAction(CONNECT), 0, latestStartId)
     }
     override fun onRevoke() { requestStop(false); super.onRevoke() }
     override fun onDestroy() {
