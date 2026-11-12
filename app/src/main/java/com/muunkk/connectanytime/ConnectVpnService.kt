@@ -204,7 +204,9 @@ class ConnectVpnService : VpnService() {
     }
 
     private fun safeMessage(e: Exception): String = when (e) {
-        is java.security.GeneralSecurityException -> getString(R.string.credentials_error)
+        // Keystore failures Store.recover kept the data through; ProviderException is
+        // Android Keystore's unchecked one, so it isn't a GeneralSecurityException.
+        is java.security.GeneralSecurityException, is java.security.ProviderException -> getString(R.string.credentials_error)
         else -> e.message ?: getString(R.string.start_error)
     }
     private fun savedSession(): SavedSession? {
