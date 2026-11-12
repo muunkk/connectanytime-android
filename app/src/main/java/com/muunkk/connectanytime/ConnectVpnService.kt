@@ -46,8 +46,11 @@ class ConnectVpnService : VpnService() {
     private var lastCheck = SystemClock.uptimeMillis()
     private var lastElapsed = SystemClock.elapsedRealtime()
     private var lastAwake = SystemClock.uptimeMillis()
-    private var destroyed = false
-    private var finished = false
+    @Volatile private var destroyed = false
+    @Volatile private var finished = false
+    /** A Connect that arrived while this run was still stopping (on `queue` only). */
+    private var pendingConnect = false
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
     private var lastKick = 0L
     private var givingUp = false
     private var server = ""
@@ -66,9 +69,25 @@ class ConnectVpnService : VpnService() {
             return START_NOT_STICKY
         }
         if (manual) manualRequested = true
-        if (launched) return if (store.stayConnected && store.hasSession && !stopping) START_STICKY else START_NOT_STICKY
+        if (launched) {
+            // Connect right after Disconnect (or a failure) reaches this instance while it's
+            // still winding down. Ignoring it would drop the tap; run it once this one has
+            // finished. `queue` is serial, so this lands either before finish (which then
+            // restarts) or after it.
+            if (manual && stopping) queue.execute { if (finished) main.post { restart() } else pendingConnect = true }
+            return if (store.stayConnected && store.hasSession && !stopping) START_STICKY else START_NOT_STICKY
+        }
+        // Android re-creating the service after its process was killed (sticky). That
+        // only stands for Stay Connected; once you turn it off, the earlier sticky return
+        // mustn't bring the VPN back. Always-on VPN starts carry an intent and go ahead.
+        if (intent == null && !store.stayConnected) {
+            log("Android restarted the VPN, but Stay Connected is off; staying off")
+            stopSelf()
+            return START_NOT_STICKY
+        }
         stopping = false
         logout = false
+        finished = false
         if (manual) store.disconnected = false
         val refusal = StartRule.refusal(manual, store.hasSession, store.disconnected)
         if (refusal != null) {
@@ -427,8 +446,21 @@ class ConnectVpnService : VpnService() {
         foreground = false
         state("Not connected", error = error)
         stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        // Leave nothing from this run for a restart in the same instance.
+        installed = null; identity = null; online = false; underlying = null
+        down = false; downOnline = 0; givingUp = false; replacingConfig = false
+        backoff.reset()
+        if (pendingConnect && !destroyed) { pendingConnect = false; main.post { restart() } }
+        else stopSelf()
         if (destroyed) { deadlines.shutdown(); queue.shutdown() }
+    }
+
+    /** Runs a Connect that waited for the previous run to finish (main thread). */
+    private fun restart() {
+        if (destroyed) return
+        launched = false
+        manualRequested = false
+        onStartCommand(Intent(this, ConnectVpnService::class.java).setAction(CONNECT), 0, 0)
     }
     override fun onRevoke() { requestStop(false); super.onRevoke() }
     override fun onDestroy() {
