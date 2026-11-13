@@ -55,7 +55,8 @@ fun VpnState.phase(): Phase = when {
 
 @Composable
 fun HomeScreen(store: Store, state: VpnState, notificationDenied: Boolean, onConnect: () -> Unit,
-    onDisconnect: () -> Unit, onActivity: () -> Unit, onStayChanged: () -> Unit) {
+    onDisconnect: () -> Unit, onActivity: () -> Unit, onStayChanged: () -> Unit,
+    update: UpdateState = UpdateState.Idle, onCheckUpdate: () -> Unit = {}, onInstallUpdate: () -> Unit = {}) {
     val focus = LocalFocusManager.current
     var user by rememberSaveable { mutableStateOf(store.user) }
     var server by rememberSaveable { mutableStateOf(store.server) }
@@ -81,10 +82,11 @@ fun HomeScreen(store: Store, state: VpnState, notificationDenied: Boolean, onCon
         BoxWithConstraints(Modifier.fillMaxSize().padding(insets).consumeWindowInsets(insets).imePadding()) {
             val status = @Composable { modifier: Modifier ->
                 StatusPanel(state, store.server, ready, problem, notificationDenied, primary, modifier)
+                UpdateBanner(update, state, store.stayConnected, onInstallUpdate)
             }
             val settings = @Composable {
                 Settings(store, state, user, { user = it; store.user = it }, server, { server = it; store.server = it },
-                    hasPassword, { hasPassword = it; if (it) problem = null }, onActivity, onStayChanged)
+                    hasPassword, { hasPassword = it; if (it) problem = null }, onActivity, onStayChanged, update, onCheckUpdate, onInstallUpdate)
             }
             if (maxWidth >= 600.dp) {
                 // Side by side on tablets and wide landscape: the status stays in view.
@@ -260,7 +262,8 @@ private fun PrimaryButton(busy: Boolean, onClick: () -> Unit) {
 
 @Composable
 private fun Settings(store: Store, state: VpnState, user: String, onUser: (String) -> Unit, server: String, onServer: (String) -> Unit,
-    hasPassword: Boolean, onHasPassword: (Boolean) -> Unit, onActivity: () -> Unit, onStayChanged: () -> Unit) {
+    hasPassword: Boolean, onHasPassword: (Boolean) -> Unit, onActivity: () -> Unit, onStayChanged: () -> Unit,
+    update: UpdateState, onCheckUpdate: () -> Unit, onInstallUpdate: () -> Unit) {
     val context = LocalContext.current
     val focus = LocalFocusManager.current
     // Passwords deliberately never enter saved instance state.
@@ -361,13 +364,13 @@ private fun Settings(store: Store, state: VpnState, user: String, onUser: (Strin
     }
 
     SectionTitle(R.string.about)
-    Group(1) {
-        FieldSegment(0, 1, padded = false) {
+    Group(3) { index ->
+        if (index == 0) FieldSegment(0, 3, padded = false) {
             ListItem(headlineContent = { Text(BuildConfig.BUILD_DESCRIPTION) },
                 leadingContent = { Icon(painterResource(R.drawable.ic_info), contentDescription = null) },
                 supportingContent = { Text(stringResource(R.string.affiliation)) },
                 colors = ListItemDefaults.colors(containerColor = Color.Transparent))
-        }
+        } else UpdateSegment(index, 3, store, update, state, onCheckUpdate, onInstallUpdate)
     }
     Spacer(Modifier.height(24.dp))
 

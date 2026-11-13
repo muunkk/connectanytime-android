@@ -10,6 +10,7 @@ class ConnectApp : Application() {
     private lateinit var tetherPreferenceListener: android.content.SharedPreferences.OnSharedPreferenceChangeListener
     lateinit var store: Store
     lateinit var log: ActivityLog
+    val updater by lazy { Updater(this) }
     override fun onCreate() {
         super.onCreate()
         store = Store(this)

@@ -13,10 +13,12 @@ import android.os.Build
 object Notices {
     const val ONGOING = 1
     const val ENDED = 2
+    const val UPDATED = 3
     fun channels(c: Context) {
         val manager = c.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel("vpn", c.getString(R.string.vpn_channel), NotificationManager.IMPORTANCE_LOW))
         manager.createNotificationChannel(NotificationChannel("session-ended", c.getString(R.string.session_ended), NotificationManager.IMPORTANCE_DEFAULT))
+        manager.createNotificationChannel(NotificationChannel("updates", c.getString(R.string.updates_channel), NotificationManager.IMPORTANCE_LOW))
     }
     // Service status strings are internal protocol values; localize at display boundaries.
     fun status(c: Context, value: String): String = c.getString(when {
@@ -46,6 +48,14 @@ object Notices {
         c.getSystemService(NotificationManager::class.java).notify(ENDED, Notification.Builder(c, "session-ended")
             .setSmallIcon(R.drawable.ic_vpn).setContentTitle(c.getString(R.string.session_ended)).setContentText(text)
             .setStyle(Notification.BigTextStyle().bigText(text)).setCategory(Notification.CATEGORY_STATUS)
+            .setContentIntent(open(c)).setAutoCancel(true).build())
+    }
+    /** After an update this app installed: Android doesn't reopen the app, so say it's done. */
+    fun updated(c: Context) {
+        if (Build.VERSION.SDK_INT >= 33 && c.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
+        c.getSystemService(NotificationManager::class.java).notify(UPDATED, Notification.Builder(c, "updates")
+            .setSmallIcon(R.drawable.ic_vpn).setContentTitle(c.getString(R.string.updated_title, BuildConfig.VERSION_NAME))
+            .setContentText(c.getString(R.string.updated_body)).setCategory(Notification.CATEGORY_STATUS)
             .setContentIntent(open(c)).setAutoCancel(true).build())
     }
     fun clear(c: Context) { c.getSystemService(NotificationManager::class.java).cancel(ENDED) }

@@ -645,3 +645,108 @@ Full logs: `/tmp/tether-review-gradle-final.log`, `/tmp/tether-review-release.lo
 `/tmp/tether-review-native.log`. An initial race-test attempt failed on JNI library
 loading; suppressing only that initializer in the test fixed the harness. The
 complete command above was rerun afterwards and passed.
+
+# In-app updates from GitHub releases (2026-11-12)
+
+Version 0.1.2 (3). Checks this repo's GitHub releases, downloads a newer APK,
+verifies it, and installs it with `PackageInstaller`.
+
+## Design
+
+- **Release selection (`ReleaseFeed.newest`).** Pure and JVM-tested. It takes the
+  highest version code above the installed one. It needs:
+  - an asset named exactly `ConnectAnytime-<name>-<code>.apk`;
+  - a `sha256:` digest of 64 lowercase hex characters;
+  - a `browser_download_url` under `https://github.com/muunkk/connectanytime-android/releases/download/`,
+    ending in the asset name, without `..`;
+  - state `uploaded` and a size from 1 byte to 200 MB;
+  - a release page in this repo.
+
+  Drafts are skipped. Prereleases count.
+- **Download.** One operation at a time on a single IO thread.
+  - The release-list body is capped at 2 MB.
+  - The APK streams to `cacheDir/updates/<name>.part` while it is hashed. It is refused
+    once it grows past the expected size, and must match the size and SHA-256 exactly
+    before it is renamed.
+  - A download that was already verified stays until a newer one verifies, so a failed
+    newer download leaves the earlier one ready to install.
+- **Verification before every install, and when a saved download is restored at startup.**
+  - Size and SHA-256 again.
+  - `getPackageArchiveInfo`: the package must be `com.muunkk.connectanytime` and the
+    version code must equal the one in the asset name.
+  - The installed signing certificates must all appear in the archive's signers or its
+    signing history. Where Android returns no `signingInfo`, the installer's own
+    signature check still applies.
+- **Install.**
+  - A `MODE_FULL_INSTALL` session with `setAppPackageName` and
+    `INSTALL_REASON_USER`. On API 31+ it also sets `USER_ACTION_NOT_REQUIRED`, and the
+    `UPDATE_PACKAGES_WITHOUT_USER_ACTION` permission is declared.
+  - The status goes to the non-exported `InstallReceiver` through a mutable, explicit
+    `PendingIntent`. `PENDING_USER_ACTION` launches the system confirmation. Abort and
+    failure codes return to Ready with a note, and failures are logged.
+  - A 90 s watchdog offers Install again if no status arrives.
+- **After the update.** `BootReceiver` sees `MY_PACKAGE_REPLACED` with `updatingFrom`
+  set. It logs "Updated from X to Y", posts a low-importance "Updated to version …"
+  notification on a new `updates` channel, and clears the marker. The existing Stay
+  Connected restart is unchanged.
+- **Network.** GitHub API with `X-GitHub-Api-Version: 2022-11-28` and the generic
+  User-Agent `ConnectAnytime-Android`. HTTP 403 and 429 show "GitHub is limiting update
+  checks". A failed check keeps a download that is already verified.
+
+## UI (Material 3 Expressive)
+
+- **Update ready card under the status panel.** It shows only when an update is ready
+  or installing. It uses `surfaceContainerHigh`, so it doesn't merge with the status
+  colours, and has a filled Install button. While installing, a `LoadingIndicator`
+  replaces the button.
+- **About group in three segments:**
+  - the build;
+  - a check row: idle, checking with a `LoadingIndicator`, up to date with a relative
+    time, or a failure in error colour;
+  - the Check automatically switch.
+
+  While downloading, the check row becomes a `LinearWavyProgressIndicator` with a
+  percentage. When an update is ready, it shows Install and What's new plus a line
+  about what happens to the VPN: rejoins without Duo, turns off, or the app closes
+  briefly. The first time, it explains that Android will ask to allow installs.
+
+## Checks
+
+- **Live data:** I captured `GET /repos/muunkk/connectanytime-android/releases` on
+  2026-11-12, trimmed to the fields used, as `app/src/test/resources/github-releases.json`.
+  `readsTheLiveFeed` picks v0.1.1 (2) with digest `d29b1be5…eb90e` and returns nothing
+  above build 2. Downloading `…/v0.1.1/ConnectAnytime-0.1.1-2.apk` with the same
+  headers made one https→https redirect to `release-assets.githubusercontent.com`. The
+  bytes matched the API digest, and `aapt2` reads them as `com.muunkk.connectanytime`
+  version 2. Its signer is `b5e81629…080035e`, the same as this build's release signer.
+- **`./gradlew :app:testDebugUnitTest`:** 117 tests, 0 failures. They include 11 in
+  `UpdatesTest`:
+  - selection;
+  - 15 rejection cases;
+  - a malformed feed;
+  - the `Release` round trip;
+  - the update notice on `MY_PACKAGE_REPLACED` only;
+  - check-row states;
+  - Install in both places;
+  - the VPN note;
+  - installing;
+  - the auto-check switch.
+
+  `ScreenshotTest` has three update states, in light and dark.
+- **`./gradlew :app:lintDebug`:** 0 errors.
+- **`assembleRelease`:** passes, as do `scripts/verify-release.py` (0.1.2 (3), signer
+  `b5e81629…`, R8-kept JNI) and `scripts/verify-native.sh`. The release manifest keeps
+  `InstallReceiver` and both install permissions.
+
+## Limits
+
+No Android device or emulator was available: the Android device tools on this Mac
+lack the SDK command-line tools. So these have not been run on a device:
+
+- the `PackageInstaller` commit;
+- the first-install confirmation;
+- silent later updates;
+- the VPN rejoining after `MY_PACKAGE_REPLACED`.
+
+The first real test is installing 0.1.2 by hand, then updating to the next release
+from inside the app.

@@ -29,6 +29,12 @@ class BootReceiver : BroadcastReceiver() {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED && intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) return
         val app = context.applicationContext as ConnectApp
         val store = app.store
+        if (intent.action == Intent.ACTION_MY_PACKAGE_REPLACED) store.updatingFrom?.let { from ->
+            // An update this app installed (Updater.install) has gone in.
+            store.updatingFrom = null
+            app.log.add(context.getString(R.string.updated_log, from, BuildConfig.BUILD_DESCRIPTION))
+            Notices.updated(context)
+        }
         // A marker left from before the restart or update is explained by the next start
         // (RunStamp), including one Always-on VPN makes before this broadcast arrives.
         // Don't touch it here: that run may already be connected and own it.

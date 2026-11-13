@@ -39,6 +39,21 @@ class Store(private val context: Context) {
     var shareWithTether: Boolean
         get() = prefs.getBoolean("shareWithTether", false)
         set(v) { prefs.edit().putBoolean("shareWithTether", v).apply() }
+    /** Check GitHub for a newer release when the app opens (Updater.checkIfDue). */
+    var autoUpdate: Boolean
+        get() = prefs.getBoolean("autoUpdate", true)
+        set(v) { prefs.edit().putBoolean("autoUpdate", v).apply() }
+    var lastUpdateCheck: Long
+        get() = prefs.getLong("lastUpdateCheck", 0)
+        set(v) { prefs.edit().putLong("lastUpdateCheck", v).apply() }
+    /** The verified download waiting to be installed, as Release.json. */
+    var pendingUpdate: String?
+        get() = prefs.getString("pendingUpdate", null)
+        set(v) { check(prefs.edit().apply { if (v == null) remove("pendingUpdate") else putString("pendingUpdate", v) }.commit()) }
+    /** The build that started an install, so the updated app can say it worked. */
+    var updatingFrom: String?
+        get() = prefs.getString("updatingFrom", null)
+        set(v) { check(prefs.edit().apply { if (v == null) remove("updatingFrom") else putString("updatingFrom", v) }.commit()) }
     var stayConnected: Boolean
         get() = prefs.getBoolean("stayConnected", true)
         set(v) { prefs.edit().putBoolean("stayConnected", v).apply() }

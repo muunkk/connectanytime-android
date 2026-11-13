@@ -53,6 +53,10 @@ class MainActivity : ComponentActivity() {
             requestVpn()
         }
     }
+    override fun onStart() {
+        super.onStart()
+        (application as ConnectApp).updater.checkIfDue()
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
@@ -61,6 +65,7 @@ class MainActivity : ComponentActivity() {
             ConnectTheme {
                 val app = application as ConnectApp
                 val state by ConnectApp.state.collectAsStateWithLifecycle()
+                val update by app.updater.state.collectAsStateWithLifecycle()
                 var activity by rememberSaveable { mutableStateOf(false) }
                 BackHandler(enabled = activity) { activity = false }
                 val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
@@ -81,7 +86,7 @@ class MainActivity : ComponentActivity() {
                         onDisconnect = { Controls.disconnect(this@MainActivity) }, onActivity = { activity = true },
                         onStayChanged = {
                             if (state.busy) startService(Intent(this@MainActivity, ConnectVpnService::class.java).setAction(ConnectVpnService.ARM))
-                        })
+                        }, update = update, onCheckUpdate = app.updater::check, onInstallUpdate = app.updater::install)
                 }
             }
         }
