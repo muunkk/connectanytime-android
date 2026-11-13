@@ -126,7 +126,8 @@ class Updater internal constructor(
     private val inspect: (File) -> ApkFacts? = { platformFacts(app, it) },
     private val installedSigners: () -> Set<String>? = { platformSigners(app) },
     dispatcher: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(1),
-    private val clock: () -> Long = System::currentTimeMillis,
+    // For the retry window only: elapsed time, which a clock change can't move.
+    private val clock: () -> Long = android.os.SystemClock::elapsedRealtime,
 ) {
     constructor(app: ConnectApp) : this(app, Http(::platformGet))
 
@@ -215,8 +216,11 @@ class Updater internal constructor(
                 }
                 ready != null && ready.release == release -> { store.lastUpdateCheck = now; mutable.value = ready }
                 // Rejected once, by this app or by Android: don't fetch 16 MB again.
-                release.sha256 == store.rejectedUpdate -> mutable.value = ready ?: UpdateState.Failed(
-                    if (store.rejectedBy == REJECTED_BY_ANDROID) R.string.update_refused else R.string.update_wrong_app)
+                release.sha256 == store.rejectedUpdate -> {
+                    store.lastUpdateCheck = now // a working check: no need to ask again at every opening
+                    mutable.value = ready ?: UpdateState.Failed(
+                        if (store.rejectedBy == REJECTED_BY_ANDROID) R.string.update_refused else R.string.update_wrong_app)
+                }
                 else -> {
                     store.upToDateAt = 0
                     download(release)
@@ -342,15 +346,22 @@ class Updater internal constructor(
             val release = when (val s = mutable.value) {
                 is UpdateState.Ready -> s.release
                 is UpdateState.Installing -> {
-                    // Try again. Within seconds of committing, it's the second tap of a double tap:
-                    // Android may be installing already, so leave that attempt alone.
-                    if (clock() - committedAt < RETRY_AFTER) return@launch
+                    // Try again (offered after RETRY_AFTER). Sooner, it's a double tap: leave the
+                    // attempt alone, as Android may be installing already.
+                    val since = clock() - committedAt
+                    if (since < RETRY_AFTER) return@launch
+                    val info = installer.getSessionInfo(store.installSession)
                     // A confirmation that's still open is shown again rather than replaced.
                     val confirm = lastConfirm
-                    if (confirm != null && installer.getSessionInfo(store.installSession) != null) {
+                    if (confirm != null && info != null) {
                         Notices.clearConfirmInstall(app)
                         confirmations.value = confirm; return@launch
                     }
+                    // No confirmation, and Android still has the session this process committed:
+                    // most likely a silent install (Android 12+) checking and optimising the APK.
+                    // Replacing it would only start that over. (In a new process committedAt is
+                    // 0, so a session left from before is replaced.)
+                    if (confirm == null && info != null && since < SILENT_GRACE) return@launch
                     s.release
                 }
                 else -> return@launch
@@ -477,7 +488,9 @@ class Updater internal constructor(
         const val NO_SESSION = -1
         const val REJECTED_BY_APP = "app"
         const val REJECTED_BY_ANDROID = "android"
-        private const val RETRY_AFTER = 10_000L
+        /** When Try again appears (UpdateSection) and starts to count. */
+        const val RETRY_AFTER = 30_000L
+        private const val SILENT_GRACE = 120_000L
         private const val STAGING = "download.apk"
         internal fun hex(bytes: ByteArray) = bytes.joinToString("") { "%02x".format(it) }
 

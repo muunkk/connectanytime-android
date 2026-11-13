@@ -178,6 +178,9 @@ class UpdatesTest {
         var installs = 0
         home(UpdateState.Installing(ready), onInstall = { installs++ })
         shows("update-banner", "Installing version 0.1.2")
+        // Not at first: a silent install takes a while, and a double tap mustn't land on it.
+        compose.onNode(hasText("Try again") and hasAnyAncestor(hasTestTag("update-banner"))).assertDoesNotExist()
+        compose.mainClock.advanceTimeBy(Updater.RETRY_AFTER + 1_000)
         shows("update-banner", "Nothing showing? Tap Try again")
         compose.onNode(hasText("Install") and hasAnyAncestor(hasTestTag("update-banner"))).assertDoesNotExist()
         compose.onNode(hasText("Try again") and hasAnyAncestor(hasTestTag("update-banner"))).performClick()

@@ -650,7 +650,7 @@ complete command above was rerun afterwards and passed.
 
 Version 0.1.2 (3). Checks this repo's GitHub releases, downloads a newer APK,
 verifies it, and installs it with `PackageInstaller`. This section describes the code as
-it is after three council rounds. The rounds are listed at the end.
+it is after the council rounds. The rounds are listed at the end.
 
 ## Design
 
@@ -689,7 +689,9 @@ it is after three council rounds. The rounds are listed at the end.
   - It's verified in staging, then renamed over the kept APK. An earlier verified
     download, even one with the same name, survives any failure.
   - An APK rejected for package, version or signer, or permanently by Android's installer,
-    is remembered by digest (`rejectedUpdate`, `rejectedBy`) and not downloaded again.
+    is remembered by digest (`rejectedUpdate`, `rejectedBy`) and not downloaded again. A
+    check that finds only that release counts as a check that worked, so the app doesn't
+    ask GitHub again at every opening.
 - **Verification before every install, and on restore.**
   - Size and SHA-256.
   - `getPackageArchiveInfo`: the package must be `com.muunkk.connectanytime` and the
@@ -711,13 +713,19 @@ it is after three council rounds. The rounds are listed at the end.
 - **Confirmation.**
   - Held in a StateFlow that `MainActivity` launches while started, taken once. The
     receiver never starts activities.
-  - With no started activity, a notification is posted whose `PendingIntent` opens the
-    system's confirmation directly, so it works after process death. Once that
-    notification has been tapped or dismissed, the app doesn't open the confirmation
-    again.
-  - **Try again** within 10 s of commit is ignored, because Android may be installing.
-    After that, a confirmation still open is shown again. Otherwise a new session
-    replaces the old one.
+  - With no started activity, a notification is posted on the `update-confirm` channel
+    (default importance). Its immutable `PendingIntent` opens the system's confirmation
+    directly, so it works after process death.
+  - Once that notification has been tapped or dismissed, the app doesn't open the
+    confirmation again.
+  - If notifications are off for the app or that channel, nothing is posted. The app then
+    opens the confirmation itself when you return.
+  - **Try again** appears 30 s after commit, measured on `elapsedRealtime`; earlier taps
+    are ignored. Then:
+    - a confirmation still open is shown again;
+    - with no confirmation and the session still held by Android, it's left alone for up
+      to 2 minutes, because that's a silent install being checked and optimised;
+    - otherwise a new session replaces the old one.
 - **Answers.**
   - Abort: Ready, with "cancelled".
   - CONFLICT (which is how a different signer comes back), INCOMPATIBLE and INVALID:
@@ -761,14 +769,14 @@ it is after three council rounds. The rounds are listed at the end.
   https→https redirect, and the bytes matched the digest. `aapt2` reads them as
   `com.muunkk.connectanytime` version 2, signer `b5e81629…080035e`, the same as this
   build's release signer.
-- **`./gradlew :app:testDebugUnitTest`:** 139 tests, 0 failures.
+- **`./gradlew :app:testDebugUnitTest`:** 141 tests, 0 failures.
   - `UpdatesTest` (13 tests):
     - feed selection, 15 rejection cases, the live feed and malformed feeds;
     - the `Release` round trip;
     - the updated notice on `MY_PACKAGE_REPLACED` only;
     - check-row states, Install in both places, the four VPN notes, Try again, and the
       auto-check switch.
-  - `UpdaterTest` (20 tests):
+  - `UpdaterTest` (22 tests):
     - up to date;
     - download, verify, Ready, each across a restart;
     - corrupt and oversized downloads;
@@ -779,7 +787,11 @@ it is after three council rounds. The rounds are listed at the end.
     - ETag 304, and no ETag without a cache;
     - 403 and bad lists;
     - unexpected exceptions and `Error`s;
-    - one session, with a double tap ignored and Try again replacing it;
+    - one session: a double tap ignored, a silent install left alone, and a later Try
+      again replacing it;
+    - the notification opening the confirmation itself, and a tapped notification not
+      opening it twice;
+    - with notifications off, the app opening the confirmation;
     - Try again re-showing an open confirmation;
     - installer answers, including the confirmation notification;
     - a restart during an install;
@@ -802,8 +814,11 @@ usage.
 |---|---|---|---|
 | 1 | 7.5 | 7 | Sessions tracked; confirmation via the activity; no crashes in the VPN process; up to date only when true; staging download; VPN note follows `BootReceiver`; copy; `Updater` tests |
 | 2 | 8 | 8 | `goAsync`; the notification opens the confirmation itself; retry after a failed download; double tap; Try again re-shows the confirmation; fresh-process answers; CONFLICT is permanent; error wording; rejoin copy names the ended-session case; ETag claim corrected |
+| 3 | 8.5 | 8.5 | Try again only after 30 s, and never over a silent install in progress; notifications turned off no longer swallow the confirmation; its own default-importance channel; `elapsedRealtime` for the window; a refused release doesn't trigger a check at every opening; manifest comment |
 
 ## Limits
+
+Round 3 found nothing blocking, so there was no fourth round.
 
 No Android device or emulator was available: the Android device tools on this Mac lack
 the SDK command-line tools. These need checking on a device:

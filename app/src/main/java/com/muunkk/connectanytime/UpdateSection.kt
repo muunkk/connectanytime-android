@@ -25,6 +25,17 @@ import androidx.compose.ui.semantics.*
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.unit.dp
 
+/** Whether Try again should show yet: only after [Updater.RETRY_AFTER], so a silent install
+ *  isn't interrupted and a double tap on Install doesn't land on it. */
+@Composable
+private fun retryShown(update: UpdateState): Boolean {
+    var shown by remember(update is UpdateState.Installing) { mutableStateOf(false) }
+    LaunchedEffect(update is UpdateState.Installing) {
+        if (update is UpdateState.Installing) { kotlinx.coroutines.delay(Updater.RETRY_AFTER); shown = true }
+    }
+    return shown && update is UpdateState.Installing
+}
+
 /** What installing does to the VPN right now, in one line. [restarts] is whether BootReceiver
  *  will start it again after the update (Controls.restartsAutomatically). */
 @Composable
@@ -50,6 +61,7 @@ internal fun UpdateBanner(update: UpdateState, vpn: VpnState, restarts: Boolean,
         enter = expandVertically(motion.defaultSpatialSpec()) + fadeIn(motion.defaultEffectsSpec()),
         exit = shrinkVertically(motion.fastSpatialSpec()) + fadeOut(motion.fastEffectsSpec())) {
         val r = shown ?: return@AnimatedVisibility
+        val retry = retryShown(update)
         // Outlined on the page colour, so it never reads as part of the status panel above,
         // whatever colour that has.
         Surface(Modifier.fillMaxWidth().padding(top = 12.dp).testTag("update-banner"), shape = MaterialTheme.shapes.extraLarge,
@@ -63,13 +75,19 @@ internal fun UpdateBanner(update: UpdateState, vpn: VpnState, restarts: Boolean,
                     verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(stringResource(if (update is UpdateState.Installing) R.string.update_installing else R.string.update_banner, r.versionName),
                         style = MaterialTheme.typography.titleMediumEmphasized)
-                    Text(if (update is UpdateState.Installing) stringResource(R.string.update_installing_help) else installNote(vpn, restarts),
+                    Text(when {
+                        retry -> stringResource(R.string.update_installing_help) + " " + stringResource(R.string.update_installing_slow)
+                        update is UpdateState.Installing -> stringResource(R.string.update_installing_help)
+                        else -> installNote(vpn, restarts)
+                    },
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                if (update is UpdateState.Installing) {
+                if (retry) {
                     OutlinedButton(onClick = onInstall, shapes = ButtonDefaults.shapes(), modifier = Modifier.heightIn(min = 48.dp)) {
                         Text(stringResource(R.string.update_try_again))
                     }
+                } else if (update is UpdateState.Installing) {
+                    LoadingIndicator(Modifier.size(40.dp))
                 } else {
                     Button(onClick = onInstall, shapes = ButtonDefaults.shapes(), modifier = Modifier.heightIn(min = 48.dp)) {
                         Text(stringResource(R.string.update_install))
@@ -141,6 +159,7 @@ private fun Downloading(update: UpdateState.Downloading) {
 
 @Composable
 private fun Installing(update: UpdateState.Installing, onRetry: () -> Unit) {
+    val retry = retryShown(update)
     Column(Modifier.testTag("update-installing"), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Column(Modifier.semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite }) {
             Text(stringResource(R.string.update_installing, update.release.versionName), style = MaterialTheme.typography.bodyLarge)
@@ -148,8 +167,13 @@ private fun Installing(update: UpdateState.Installing, onRetry: () -> Unit) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         LinearWavyProgressIndicator(Modifier.fillMaxWidth())
-        TextButton(onClick = onRetry, shapes = ButtonDefaults.shapes(), modifier = Modifier.heightIn(min = 48.dp),
-            contentPadding = PaddingValues(horizontal = 0.dp)) { Text(stringResource(R.string.update_try_again)) }
+        if (retry) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(stringResource(R.string.update_installing_slow), style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f, fill = false))
+            TextButton(onClick = onRetry, shapes = ButtonDefaults.shapes(), modifier = Modifier.heightIn(min = 48.dp)) {
+                Text(stringResource(R.string.update_try_again))
+            }
+        }
     }
 }
 

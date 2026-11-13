@@ -9,7 +9,7 @@
     <!-- VPN apps qualify for systemExempted after VPN consent. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SYSTEM_EXEMPTED" />
     <!-- In-app updates from this repo's GitHub releases (Updates.kt). The second lets Android 12+
-         install later updates without asking, once an update installed from here. -->
+         install the app's update of itself without asking, where it allows that. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
     <application android:name=".ConnectApp" android:label="@string/app_name"

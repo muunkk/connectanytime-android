@@ -292,9 +292,10 @@ From 0.1.2 the app updates itself from this repo's GitHub releases (`Updates.kt`
     shows its confirmation, and may first ask you to allow installs from ConnectAnytime.
   - The confirmation is opened by the app's screen. If the app isn't in front, a
     notification opens the confirmation itself, even if the app has been closed since.
-  - **Try again** shows a confirmation that's still open again. Otherwise it replaces the
-    attempt, and answers from replaced attempts are ignored. A second tap within 10 s of
-    Install is ignored, as Android may already be installing.
+  - **Try again** appears 30 s after Install. It shows a confirmation that's still open
+    again. With no confirmation, it leaves alone a session Android is still working on, for
+    up to 2 minutes, since that's a silent install. Otherwise it replaces the attempt, and
+    answers from replaced attempts are ignored.
   - A refusal that can never succeed (a different signer, a downgrade, an unsupported SDK
     or a broken package) drops the APK, and that release isn't downloaded again.
   - Releases must keep a current targetSdk for installs without asking to keep working.

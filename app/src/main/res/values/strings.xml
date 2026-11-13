@@ -140,7 +140,9 @@
     <string name="update_install">Install</string>
     <string name="update_whats_new">What’s new</string>
     <string name="update_installing">Installing version %1$s…</string>
-    <string name="update_installing_help">Android may ask you to confirm. Nothing showing? Tap Try again.</string>
+    <string name="update_installing_help">Android may ask you to confirm.</string>
+    <string name="update_installing_slow">Nothing showing? Tap Try again.</string>
+    <string name="update_confirm_channel">Updates waiting for you</string>
     <string name="update_try_again">Try again</string>
     <string name="update_confirm_title">Finish installing version %1$s</string>
     <string name="update_confirm_body">Tap to continue the update.</string>

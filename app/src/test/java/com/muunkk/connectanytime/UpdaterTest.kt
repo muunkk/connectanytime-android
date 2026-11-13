@@ -232,8 +232,12 @@ class UpdaterTest {
         now += 2_000
         u.install()
         assertEquals(first, app.store.installSession)
-        // Later, Try again replaces the attempt; the old one's answers no longer count.
+        // While Android is still working on it with no confirmation (a silent install), Try
+        // again leaves it alone; long after, it replaces the attempt.
         now += 60_000
+        u.install()
+        assertEquals(first, app.store.installSession)
+        now += 200_000
         u.install()
         val second = app.store.installSession
         assertNotEquals(first, second)
@@ -311,6 +315,35 @@ class UpdaterTest {
         now += 60_000
         u.install()
         assertEquals(session, app.store.installSession) // same attempt, not a new one
+        assertEquals(confirm, u.takeConfirmation())
+    }
+
+    private val notices get() = shadowOf(app.getSystemService(NotificationManager::class.java))
+    private fun confirmNotice() = notices.allNotifications.firstOrNull { it.extras.getString("android.title")!!.startsWith("Finish installing") }
+
+    @Test fun theNotificationOpensTheConfirmationItself() {
+        shadowOf(app).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+        val (u, _) = readyUpdater()
+        u.install()
+        val confirm = Intent("android.content.pm.action.CONFIRM_INSTALL").setPackage("com.android.packageinstaller")
+        u.onStatus(app.store.installSession, PackageInstaller.STATUS_PENDING_USER_ACTION, null, confirm)
+        val tap = shadowOf(confirmNotice()!!.contentIntent)
+        assertTrue(tap.isActivityIntent)
+        assertEquals(confirm.action, tap.savedIntent.action)
+        assertEquals("update-confirm", confirmNotice()!!.channelId)
+        // Tapped (Android removes it): the app doesn't open the confirmation a second time.
+        app.getSystemService(NotificationManager::class.java).cancel(Notices.CONFIRM_INSTALL)
+        assertNull(u.takeConfirmation())
+    }
+
+    @Test fun withNotificationsOffTheAppStillOpensTheConfirmation() {
+        shadowOf(app).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+        notices.setNotificationsEnabled(false)
+        val (u, _) = readyUpdater()
+        u.install()
+        val confirm = Intent("android.content.pm.action.CONFIRM_INSTALL")
+        u.onStatus(app.store.installSession, PackageInstaller.STATUS_PENDING_USER_ACTION, null, confirm)
+        assertNull(confirmNotice())
         assertEquals(confirm, u.takeConfirmation())
     }
 

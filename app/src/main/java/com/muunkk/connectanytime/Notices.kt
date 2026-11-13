@@ -20,6 +20,8 @@ object Notices {
         manager.createNotificationChannel(NotificationChannel("vpn", c.getString(R.string.vpn_channel), NotificationManager.IMPORTANCE_LOW))
         manager.createNotificationChannel(NotificationChannel("session-ended", c.getString(R.string.session_ended), NotificationManager.IMPORTANCE_DEFAULT))
         manager.createNotificationChannel(NotificationChannel("updates", c.getString(R.string.updates_channel), NotificationManager.IMPORTANCE_LOW))
+        // Waiting on you, so it makes a sound, unlike the "updated" note.
+        manager.createNotificationChannel(NotificationChannel("update-confirm", c.getString(R.string.update_confirm_channel), NotificationManager.IMPORTANCE_DEFAULT))
     }
     // Service status strings are internal protocol values; localize at display boundaries.
     fun status(c: Context, value: String): String = c.getString(when {
@@ -64,8 +66,13 @@ object Notices {
      *  even if this process has ended since. */
     fun confirmInstall(c: Context, version: String, confirm: Intent, session: Int) {
         if (Build.VERSION.SDK_INT >= 33 && c.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
+        val manager = c.getSystemService(NotificationManager::class.java)
+        // Turned off for the app or this channel: nothing would show, so don't count it as
+        // posted, or the app would think it was tapped and not open the confirmation itself.
+        if (!manager.areNotificationsEnabled() ||
+            manager.getNotificationChannel("update-confirm")?.importance == NotificationManager.IMPORTANCE_NONE) return
         val tap = PendingIntent.getActivity(c, 100 + (session and 0xffff), confirm, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        c.getSystemService(NotificationManager::class.java).notify(CONFIRM_INSTALL, Notification.Builder(c, "updates")
+        manager.notify(CONFIRM_INSTALL, Notification.Builder(c, "update-confirm")
             .setSmallIcon(R.drawable.ic_vpn).setContentTitle(c.getString(R.string.update_confirm_title, version))
             .setContentText(c.getString(R.string.update_confirm_body)).setCategory(Notification.CATEGORY_STATUS)
             .setContentIntent(tap).setAutoCancel(true).build())
