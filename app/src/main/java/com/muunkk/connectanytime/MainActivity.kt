@@ -56,11 +56,11 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         val updater = (application as ConnectApp).updater
-        updater.foreground = true
+        updater.activityStarted()
         updater.checkIfDue()
     }
     override fun onStop() {
-        (application as ConnectApp).updater.foreground = false
+        (application as ConnectApp).updater.activityStopped()
         super.onStop()
     }
     override fun onCreate(savedInstanceState: Bundle?) {

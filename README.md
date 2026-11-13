@@ -266,9 +266,9 @@ From 0.1.2 the app updates itself from this repo's GitHub releases (`Updates.kt`
   tried again the next time you open the app. You can also tap **Check for updates**.
   - It reads `api.github.com/repos/muunkk/connectanytime-android/releases`,
     prereleases included, with a generic User-Agent and no account.
-  - It revalidates with the list's ETag. GitHub doesn't count a 304 against its
-    unauthenticated limit, which matters because the VPN's address is shared with other
-    people.
+  - It revalidates with the list's ETag, so an unchanged list isn't sent again. Without
+    an account, GitHub allows 60 requests an hour per address. That could run out on the
+    VPN's shared address; the app then says GitHub is limiting checks.
   - The app's traffic goes through the VPN when it's connected.
 - **What it accepts.** The highest build number above this one among release assets
   named `ConnectAnytime-<versionName>-<versionCode>.apk`, served from this repo's
@@ -291,19 +291,23 @@ From 0.1.2 the app updates itself from this repo's GitHub releases (`Updates.kt`
     (`USER_ACTION_NOT_REQUIRED`, `UPDATE_PACKAGES_WITHOUT_USER_ACTION`). Otherwise it
     shows its confirmation, and may first ask you to allow installs from ConnectAnytime.
   - The confirmation is opened by the app's screen. If the app isn't in front, a
-    notification brings it back.
-  - **Try again** replaces an attempt that's still open. Answers from replaced attempts
-    are ignored.
+    notification opens the confirmation itself, even if the app has been closed since.
+  - **Try again** shows a confirmation that's still open again. Otherwise it replaces the
+    attempt, and answers from replaced attempts are ignored. A second tap within 10 s of
+    Install is ignored, as Android may already be installing.
+  - A refusal that can never succeed (a different signer, a downgrade, an unsupported SDK
+    or a broken package) drops the APK, and that release isn't downloaded again.
   - Releases must keep a current targetSdk for installs without asking to keep working.
 - **The VPN during an update.** Android stops the app to replace it. The note on the
   card says what happens, using the same rule as `BootReceiver`
   (`Controls.restartsAutomatically`):
   - With Stay Connected on, a saved session, and no Disconnect, the VPN restarts
     afterwards and rejoins without Duo. An automatic start never logs in with the password.
+    If the server has ended that session meanwhile, it stays off and you tap Connect.
   - Otherwise it stays off until you tap Connect.
 
-  The updated app logs "Updated from … to …" and posts an "Updated to version …"
-  notification, since Android doesn't reopen it.
+  The updated app logs "Updated from … to …". If notifications are allowed, it also posts
+  "Updated to version …", since Android doesn't reopen it.
 
 To release: bump `versionCode` and `versionName` in `app/build.gradle.kts`, build and
 verify, then attach `ConnectAnytime-<versionName>-<versionCode>.apk` to a new tag.

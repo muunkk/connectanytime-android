@@ -65,7 +65,8 @@ class UpdaterTest {
         } else Response(downloadCode, null, served[url]?.inputStream())
     }
 
-    private fun updater() = Updater(app, http, { f -> facts(f.readBytes()) }, { installed }, Dispatchers.Unconfined)
+    private var now = 1_000_000L
+    private fun updater() = Updater(app, http, { f -> facts(f.readBytes()) }, { installed }, Dispatchers.Unconfined, { now })
 
     @Before fun reset() {
         app = ApplicationProvider.getApplicationContext()
@@ -227,7 +228,12 @@ class UpdaterTest {
         val first = app.store.installSession
         assertNotEquals(Updater.NO_SESSION, first)
         assertEquals(BuildConfig.BUILD_DESCRIPTION, app.store.updatingFrom)
-        // Try again replaces the attempt; the old one's answers no longer count.
+        // The second tap of a double tap is ignored: Android may be installing already.
+        now += 2_000
+        u.install()
+        assertEquals(first, app.store.installSession)
+        // Later, Try again replaces the attempt; the old one's answers no longer count.
+        now += 60_000
         u.install()
         val second = app.store.installSession
         assertNotEquals(first, second)
@@ -242,7 +248,6 @@ class UpdaterTest {
         var session = app.store.installSession
         // Confirmation: held for the activity; with the app in the background, a notification too.
         shadowOf(app).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
-        u.foreground = false
         val confirm = Intent("android.content.pm.action.CONFIRM_INSTALL")
         u.onStatus(session, PackageInstaller.STATUS_PENDING_USER_ACTION, null, confirm)
         assertEquals(confirm, u.confirmation.value)
@@ -259,9 +264,11 @@ class UpdaterTest {
         assertNull(app.store.updatingFrom)
 
         // A transient failure keeps the file; an incompatible APK is dropped for good.
+        now += 60_000
         u.install(); session = app.store.installSession
         u.onStatus(session, PackageInstaller.STATUS_FAILURE_STORAGE, "full", null)
         assertEquals(UpdateState.Ready(release, R.string.update_refused), u.state.value)
+        now += 60_000
         u.install(); session = app.store.installSession
         u.onStatus(session, PackageInstaller.STATUS_FAILURE_INCOMPATIBLE, "signatures", null)
         assertEquals(UpdateState.Failed(R.string.update_refused), u.state.value)
@@ -285,7 +292,88 @@ class UpdaterTest {
         facts = { throw IllegalStateException("boom") }
         val u = updater()
         u.check()
+        // Not blamed on the connection.
+        assertEquals(UpdateState.Failed(R.string.update_error), u.state.value)
+        // An Error escapes the step and reaches the scope's handler, not the process.
+        facts = { throw AssertionError("worse") }
+        u.check()
+        assertEquals(UpdateState.Failed(R.string.update_error), u.state.value)
+        assertTrue(app.log.state.value.last().contains("AssertionError"))
+    }
+
+    @Test fun tryAgainShowsAnOpenConfirmationAgain() {
+        val (u, _) = readyUpdater()
+        u.install()
+        val session = app.store.installSession
+        val confirm = Intent("android.content.pm.action.CONFIRM_INSTALL")
+        u.onStatus(session, PackageInstaller.STATUS_PENDING_USER_ACTION, null, confirm)
+        assertEquals(confirm, u.takeConfirmation())
+        now += 60_000
+        u.install()
+        assertEquals(session, app.store.installSession) // same attempt, not a new one
+        assertEquals(confirm, u.takeConfirmation())
+    }
+
+    @Test fun anAnswerForAFreshProcessIsStillHeard() {
+        val (u, release) = readyUpdater()
+        u.install()
+        val session = app.store.installSession
+        // The process dies; Android drops the session and starts a new process to say so.
+        app.packageManager.packageInstaller.abandonSession(session)
+        val fresh = updater()
+        assertEquals(UpdateState.Ready(release), fresh.state.value)
+        fresh.onStatus(session, PackageInstaller.STATUS_FAILURE_CONFLICT, "signatures do not match", null)
+        assertEquals(UpdateState.Failed(R.string.update_refused), fresh.state.value)
+        assertEquals(Updater.REJECTED_BY_ANDROID, app.store.rejectedBy)
+        assertTrue(app.log.state.value.last().contains("signatures do not match"))
+        // And it isn't downloaded again, with Android's reason.
+        val downloads = requests.count { it.first != ReleaseFeed.API }
+        fresh.check()
+        assertEquals(downloads, requests.count { it.first != ReleaseFeed.API })
+        assertEquals(UpdateState.Failed(R.string.update_refused), fresh.state.value)
+    }
+
+    @Test fun aFailedCheckIsRetriedNextOpening() {
+        publish(current to apk(current))
+        val u = updater()
+        u.checkIfDue()
+        assertTrue(u.state.value is UpdateState.UpToDate)
+        val asked = requests.size
+        u.checkIfDue() // just checked
+        assertEquals(asked, requests.size)
+        // A newer release whose download fails, soon after that success.
+        publish(current + 1 to apk(current + 1))
+        downloadCode = 500
+        u.check()
         assertTrue(u.state.value is UpdateState.Failed)
+        downloadCode = 200
+        updater().checkIfDue()
+        assertTrue(app.store.pendingUpdate != null)
+        // Off means off.
+        reset(); requests.clear(); app.store.autoUpdate = false
+        updater().checkIfDue()
+        assertTrue(requests.isEmpty())
+    }
+
+    @Test fun aListWithoutItsCacheIsFetchedWhole() {
+        publish(current to apk(current))
+        val u = updater()
+        u.check()
+        File(app.noBackupFilesDir, "release-feed.json").delete()
+        u.check()
+        assertNull(requests.last().second)
+        assertTrue(u.state.value is UpdateState.UpToDate)
+    }
+
+    @Test fun theAppOpensTheConfirmationWhileInFront() {
+        app.store.autoUpdate = false // no real network from MainActivity.onStart
+        val activity = org.robolectric.Robolectric.buildActivity(MainActivity::class.java).setup().get()
+        val confirm = Intent("android.content.pm.action.CONFIRM_INSTALL")
+        app.updater.offerConfirmation(confirm)
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        assertEquals(confirm.action, shadowOf(activity).nextStartedActivity?.action)
+        assertNull(app.updater.takeConfirmation()) // taken once
     }
 
     @Test fun anUpdateDoesNotChangeWhetherTheVpnRestarts() {

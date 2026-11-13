@@ -58,6 +58,10 @@ class Store(private val context: Context) {
     var rejectedUpdate: String?
         get() = prefs.getString("rejectedUpdate", null)
         set(v) { prefs.edit().putString("rejectedUpdate", v).apply() }
+    /** Who rejected [rejectedUpdate]: Updater.REJECTED_BY_APP or REJECTED_BY_ANDROID. */
+    var rejectedBy: String?
+        get() = prefs.getString("rejectedBy", null)
+        set(v) { prefs.edit().putString("rejectedBy", v).apply() }
     // The updater's markers are written with commit() but never throw: it shares the VPN's process.
     /** The verified download waiting to be installed, as Release.json. */
     var pendingUpdate: String?

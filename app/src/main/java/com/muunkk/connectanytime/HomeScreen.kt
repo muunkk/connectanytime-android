@@ -65,7 +65,8 @@ fun HomeScreen(store: Store, state: VpnState, notificationDenied: Boolean, onCon
     var problem by remember { mutableStateOf<Int?>(null) }
     // Hoisted: the switch and the update notes must agree.
     var stay by remember { mutableStateOf(store.stayConnected) }
-    val restarts = stay && store.hasSession && !store.disconnected
+    // BootReceiver's rule; reading `stay` recomposes this when the switch changes.
+    val restarts = stay && Controls.restartsAutomatically(store)
     val ready = user.isNotBlank() && (hasPassword || store.hasSession)
     val primary = {
         focus.clearFocus(); problem = null

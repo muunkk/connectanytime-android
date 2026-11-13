@@ -147,9 +147,9 @@
     <string name="update_missing">The downloaded update is gone from the phone. Tap Check for updates to get it again.</string>
     <string name="update_error">Something went wrong with the update. Try again.</string>
     <string name="update_error_log">Update stopped by an unexpected error (%1$s)</string>
-    <string name="update_note_idle">ConnectAnytime closes while it updates. A notification says when it’s done.</string>
-    <string name="update_note_starts">ConnectAnytime closes while it updates, then Stay Connected starts the VPN with your saved session, without Duo.</string>
-    <string name="update_note_rejoin">The VPN drops for a few seconds and reconnects by itself, without Duo.</string>
+    <string name="update_note_idle">ConnectAnytime closes while it updates. Open it again afterwards.</string>
+    <string name="update_note_starts">ConnectAnytime closes while it updates, then Stay Connected rejoins your saved session, without Duo. If that session has ended, tap Connect.</string>
+    <string name="update_note_rejoin">The VPN drops for a few seconds, then rejoins your saved session by itself, without Duo. If that session has ended, tap Connect.</string>
     <string name="update_note_off">The VPN turns off for the update. Tap Connect again afterwards.</string>
     <string name="update_first_time">Android may ask you to allow installs from ConnectAnytime. Turn that on, then go back.</string>
     <string name="update_cancelled">The install was cancelled. Tap Install to try again.</string>

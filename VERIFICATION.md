@@ -649,7 +649,8 @@ complete command above was rerun afterwards and passed.
 # In-app updates from GitHub releases (2026-11-12)
 
 Version 0.1.2 (3). Checks this repo's GitHub releases, downloads a newer APK,
-verifies it, and installs it with `PackageInstaller`.
+verifies it, and installs it with `PackageInstaller`. This section describes the code as
+it is after three council rounds. The rounds are listed at the end.
 
 ## Design
 
@@ -663,42 +664,83 @@ verifies it, and installs it with `PackageInstaller`.
   - a release page in this repo.
 
   Drafts are skipped. Prereleases count.
-- **Download.** One operation at a time on a single IO thread.
-  - The release-list body is capped at 2 MB.
-  - The APK streams to `cacheDir/updates/<name>.part` while it is hashed. It is refused
-    once it grows past the expected size, and must match the size and SHA-256 exactly
-    before it is renamed.
-  - A download that was already verified stays until a newer one verifies, so a failed
-    newer download leaves the earlier one ready to install.
-- **Verification before every install, and when a saved download is restored at startup.**
-  - Size and SHA-256 again.
+- **One thread.**
+  - `Updater` runs every step on a single IO thread, in order: restore at startup,
+    checks, installs and the installer's answers.
+  - An atomic gate stops checks from overlapping.
+  - A `CoroutineExceptionHandler` logs anything unexpected, so nothing in the updater
+    can take down the process it shares with the VPN.
+  - Seams for tests: `Http`, `inspect` (APK facts), `installedSigners`, the dispatcher and
+    the clock.
+- **Check.**
+  - The release list is fetched with `X-GitHub-Api-Version: 2022-11-28` and the generic
+    User-Agent `ConnectAnytime-Android`. It's capped at 2 MB and revalidated with its ETag.
+  - The list is parsed before it's cached in `noBackupFilesDir/release-feed.json`, so a
+    bad list isn't kept.
+  - Up to date is shown only when a check found nothing newer (`upToDateAt`).
+  - The next automatic check is due 6 h after the last check that worked
+    (`lastUpdateCheck`). A failure resets that, so the next opening retries.
+  - HTTP 403 and 429 show "limiting". Other I/O shows "couldn't reach". JSON errors show
+    "couldn't read". Anything else shows "something went wrong".
+- **Download.**
+  - The APK streams to `noBackupFilesDir/updates/download.apk` while it is hashed. It is
+    refused once it grows past the expected size, and must match the size and SHA-256
+    exactly.
+  - It's verified in staging, then renamed over the kept APK. An earlier verified
+    download, even one with the same name, survives any failure.
+  - An APK rejected for package, version or signer, or permanently by Android's installer,
+    is remembered by digest (`rejectedUpdate`, `rejectedBy`) and not downloaded again.
+- **Verification before every install, and on restore.**
+  - Size and SHA-256.
   - `getPackageArchiveInfo`: the package must be `com.muunkk.connectanytime` and the
     version code must equal the one in the asset name.
-  - The installed signing certificates must all appear in the archive's signers or its
-    signing history. Where Android returns no `signingInfo`, the installer's own
-    signature check still applies.
+  - The installed current signers must all appear in the archive's signers or its
+    rotation history.
+  - Where Android returns no signing info, the installer's own same-signer rule still
+    applies.
 - **Install.**
-  - A `MODE_FULL_INSTALL` session with `setAppPackageName` and
-    `INSTALL_REASON_USER`. On API 31+ it also sets `USER_ACTION_NOT_REQUIRED`, and the
-    `UPDATE_PACKAGES_WITHOUT_USER_ACTION` permission is declared.
-  - The status goes to the non-exported `InstallReceiver` through a mutable, explicit
-    `PendingIntent`. `PENDING_USER_ACTION` launches the system confirmation. Abort and
-    failure codes return to Ready with a note, and failures are logged.
-  - A 90 s watchdog offers Install again if no status arrives.
-- **After the update.** `BootReceiver` sees `MY_PACKAGE_REPLACED` with `updatingFrom`
-  set. It logs "Updated from X to Y", posts a low-importance "Updated to version …"
-  notification on a new `updates` channel, and clears the marker. The existing Stay
-  Connected restart is unchanged.
-- **Network.** GitHub API with `X-GitHub-Api-Version: 2022-11-28` and the generic
-  User-Agent `ConnectAnytime-Android`. HTTP 403 and 429 show "GitHub is limiting update
-  checks". A failed check keeps a download that is already verified.
+  - Abandons the app's own open sessions, then creates a `MODE_FULL_INSTALL` session with
+    `setAppPackageName` and `INSTALL_REASON_USER`. On API 31+ it also sets
+    `USER_ACTION_NOT_REQUIRED`, and `UPDATE_PACKAGES_WITHOUT_USER_ACTION` is declared.
+  - The session ID and `updatingFrom` are saved before commit.
+  - Status goes to the non-exported `InstallReceiver` through a mutable, explicit
+    `PendingIntent`. The receiver holds `goAsync()` until the updater has handled it.
+  - Answers for any other session are ignored. A fresh process still accepts the saved
+    session's answer, because restore keeps the ID when Android no longer has that
+    session.
+- **Confirmation.**
+  - Held in a StateFlow that `MainActivity` launches while started, taken once. The
+    receiver never starts activities.
+  - With no started activity, a notification is posted whose `PendingIntent` opens the
+    system's confirmation directly, so it works after process death. Once that
+    notification has been tapped or dismissed, the app doesn't open the confirmation
+    again.
+  - **Try again** within 10 s of commit is ignored, because Android may be installing.
+    After that, a confirmation still open is shown again. Otherwise a new session
+    replaces the old one.
+- **Answers.**
+  - Abort: Ready, with "cancelled".
+  - CONFLICT (which is how a different signer comes back), INCOMPATIBLE and INVALID:
+    drop the APK, remember it, Failed "Android didn't install the update".
+  - Other failures: Ready, with that note. Failures are logged.
+  - Success: nothing. Android stops the process. `BootReceiver` then logs "Updated from X
+    to Y", posts "Updated to version …" if notifications are allowed, and clears
+    `updatingFrom`.
+- **VPN.** The install note uses `Controls.restartsAutomatically` (Stay Connected, saved
+  session, no Disconnect), the rule `BootReceiver` uses:
+  - rejoins without Duo, "if that session has ended, tap Connect";
+  - turns off;
+  - Stay Connected rejoins afterwards;
+  - the app closes.
+
+  An automatic start never logs in with the password (`ConnectVpnService`'s login gate).
+  So an update can't cause a second Duo push.
 
 ## UI (Material 3 Expressive)
 
-- **Update ready card under the status panel.** It shows only when an update is ready
-  or installing. It uses `surfaceContainerHigh`, so it doesn't merge with the status
-  colours, and has a filled Install button. While installing, a `LoadingIndicator`
-  replaces the button.
+- **Update ready card under the status panel.** It shows only when an update is ready or
+  installing. It's outlined on the page colour, so it never merges with the status
+  panel. It has a filled Install button, or Try again while installing.
 - **About group in three segments:**
   - the build;
   - a check row: idle, checking with a `LoadingIndicator`, up to date with a relative
@@ -706,122 +748,71 @@ verifies it, and installs it with `PackageInstaller`.
   - the Check automatically switch.
 
   While downloading, the check row becomes a `LinearWavyProgressIndicator` with a
-  percentage. When an update is ready, it shows Install and What's new plus a line
-  about what happens to the VPN: rejoins without Duo, turns off, or the app closes
-  briefly. The first time, it explains that Android will ask to allow installs.
+  percentage. When an update is ready, it shows Install and What's new, the VPN note, and
+  "may ask to allow installs" while that's not yet allowed. While installing, it shows
+  progress and Try again.
+- Stay Connected is state in `HomeScreen`, shared by the switch and the update notes.
 
 ## Checks
 
-- **Live data:** I captured `GET /repos/muunkk/connectanytime-android/releases` on
-  2026-11-12, trimmed to the fields used, as `app/src/test/resources/github-releases.json`.
-  `readsTheLiveFeed` picks v0.1.1 (2) with digest `d29b1be5…eb90e` and returns nothing
-  above build 2. Downloading `…/v0.1.1/ConnectAnytime-0.1.1-2.apk` with the same
-  headers made one https→https redirect to `release-assets.githubusercontent.com`. The
-  bytes matched the API digest, and `aapt2` reads them as `com.muunkk.connectanytime`
-  version 2. Its signer is `b5e81629…080035e`, the same as this build's release signer.
-- **`./gradlew :app:testDebugUnitTest`:** 117 tests, 0 failures. They include 11 in
-  `UpdatesTest`:
-  - selection;
-  - 15 rejection cases;
-  - a malformed feed;
-  - the `Release` round trip;
-  - the update notice on `MY_PACKAGE_REPLACED` only;
-  - check-row states;
-  - Install in both places;
-  - the VPN note;
-  - installing;
-  - the auto-check switch.
+- **Live data.** I captured `GET /repos/muunkk/connectanytime-android/releases` on
+  2026-11-12, trimmed, as `app/src/test/resources/github-releases.json`. `readsTheLiveFeed`
+  picks v0.1.1 (2), digest `d29b1be5…eb90e`. A download with the same headers made one
+  https→https redirect, and the bytes matched the digest. `aapt2` reads them as
+  `com.muunkk.connectanytime` version 2, signer `b5e81629…080035e`, the same as this
+  build's release signer.
+- **`./gradlew :app:testDebugUnitTest`:** 139 tests, 0 failures.
+  - `UpdatesTest` (14 tests):
+    - feed selection, 15 rejection cases, the live feed and malformed feeds;
+    - the `Release` round trip;
+    - the updated notice on `MY_PACKAGE_REPLACED` only;
+    - check-row states, Install in both places, the four VPN notes, Try again, and the
+      auto-check switch.
+  - `UpdaterTest` (21 tests):
+    - up to date;
+    - download, verify, Ready, each across a restart;
+    - corrupt and oversized downloads;
+    - wrong signer, package or version, rejected once;
+    - signer rules;
+    - a failed newer download and a broken republish both keep the verified APK;
+    - stale and missing restores;
+    - ETag 304, and no ETag without a cache;
+    - 403 and bad lists;
+    - unexpected exceptions and `Error`s;
+    - one session, with a double tap ignored and Try again replacing it;
+    - Try again re-showing an open confirmation;
+    - installer answers, including the confirmation notification;
+    - a restart during an install;
+    - a fresh process hearing a CONFLICT refusal;
+    - retrying after a failed download right after a successful check, and auto-check off;
+    - `MainActivity` opening the confirmation once;
+    - `updatingFrom` plus Disconnect starting nothing.
+  - `ScreenshotTest` has three update states, in light and dark.
+- **`./gradlew :app:lintDebug`:** 0 errors, and no warnings in the update files.
+- **`assembleRelease`:** passes, as do `scripts/verify-release.py` and
+  `scripts/verify-native.sh`. The release manifest keeps `InstallReceiver` and both
+  install permissions.
 
-  `ScreenshotTest` has three update states, in light and dark.
-- **`./gradlew :app:lintDebug`:** 0 errors.
-- **`assembleRelease`:** passes, as do `scripts/verify-release.py` (0.1.2 (3), signer
-  `b5e81629…`, R8-kept JNI) and `scripts/verify-native.sh`. The release manifest keeps
-  `InstallReceiver` and both install permissions.
+## Council rounds
+
+Gemini was unavailable in every round: Cursor said Gemini 4 Carbon isn't in this week's
+usage.
+
+| Round | Opus | GPT Sol | Main findings fixed after it |
+|---|---|---|---|
+| 1 | 7.5 | 7 | Sessions tracked; confirmation via the activity; no crashes in the VPN process; up to date only when true; staging download; VPN note follows `BootReceiver`; copy; `Updater` tests |
+| 2 | 8 | 8 | `goAsync`; the notification opens the confirmation itself; retry after a failed download; double tap; Try again re-shows the confirmation; fresh-process answers; CONFLICT is permanent; error wording; rejoin copy names the ended-session case; ETag claim corrected |
 
 ## Limits
 
-No Android device or emulator was available: the Android device tools on this Mac
-lack the SDK command-line tools. So these have not been run on a device:
+No Android device or emulator was available: the Android device tools on this Mac lack
+the SDK command-line tools. These need checking on a device:
 
 - the `PackageInstaller` commit;
-- the first-install confirmation;
-- silent later updates;
+- installs without asking on Android 12+, compared with the confirmation;
+- the "Install unknown apps" detour;
+- a confirmation in the background, and its notification;
 - the VPN rejoining after `MY_PACKAGE_REPLACED`.
 
-The first real test is installing 0.1.2 by hand, then updating to the next release
-from inside the app.
-
-## Council round 1 (in-app updates)
-
-**Scores:** Opus 7.5/10, GPT Sol 7/10. Gemini was unavailable: Cursor said Gemini 4 Carbon
-isn't in this week's usage. Neither reviewer found anything blocking.
-
-These fixes supersede the matching lines in the design above.
-
-- **Install sessions.**
-  - The active session ID is saved to prefs.
-  - `InstallReceiver` passes `EXTRA_SESSION_ID`, and `onStatus` ignores any other session.
-  - All status handling runs on the updater's single thread.
-  - Install, and Try again, first abandon the app's own open sessions.
-  - The 90 s watchdog is gone: while installing, both places offer **Try again**.
-  - A restart finds a session Android still holds and shows Installing. Otherwise it
-    shows Ready and clears `updatingFrom`.
-- **Confirmation in the background.** The receiver no longer starts activities. It holds
-  the confirmation `Intent` in a StateFlow that `MainActivity` launches while started,
-  taking it once. If the app isn't started, a notification ("Finish installing version …")
-  brings it back, and is cleared once the confirmation is shown.
-- **Crash safety.**
-  - The updater scope has a `CoroutineExceptionHandler` that logs the error and shows
-    "Something went wrong".
-  - `InstallReceiver.onReceive` is wrapped.
-  - It reads `EXTRA_INTENT` with the untyped call.
-  - The updater's prefs writes use `commit()` without `check()`.
-- **"Latest version" only when it is.**
-  - `lastUpdateCheck` (when the next check is due) is set only when a check finds nothing
-    newer or a download verifies.
-  - Up to date shows only from `upToDateAt`, which a newer release resets.
-  - A failed download is retried the next time the app opens.
-- **Kept APK survives failures.** Downloads go to `updates/download.apk` and are verified
-  there. They replace the kept file only after verification, so a republished release
-  with the same name can't delete the verified one. Files moved from `cacheDir` to
-  `noBackupFilesDir`, so the OS can't evict them.
-- **VPN note.**
-  - Stay Connected is now state in `HomeScreen`, shared by the switch and both update
-    surfaces.
-  - The note uses `Controls.restartsAutomatically` (Stay Connected, saved session, no
-    Disconnect), the same rule `BootReceiver` uses. It has four cases: rejoins, turns
-    off, starts the VPN afterwards, or the app closes.
-- **Copy.**
-  - The first-time prompt now says "may".
-  - The idle note says a notification tells you when it's done.
-  - The size is gone from the auto-check help.
-  - The README describes installs without asking as something Android *can* do.
-- **Other nits.**
-  - Incompatible or invalid installer results drop the APK and remember its digest.
-  - An APK rejected for package, version or signer isn't downloaded again.
-  - The release list is revalidated with an ETag, and a bad list is never cached.
-  - An oversized list is reported as unreadable, not offline.
-  - The update card is outlined on the page colour.
-- **Tests.**
-  - `UpdaterTest` adds 15 tests through `Http`, `inspect`, `installedSigners` and
-    `Dispatchers.Unconfined` seams:
-    - up to date, kept across a restart;
-    - download, verify, Ready, kept across a restart;
-    - corrupt and oversized downloads deleted, not up to date, retried;
-    - wrong signer, package or version rejected, and never downloaded again;
-    - signer rules, including rotation;
-    - a failed newer download keeps the ready one;
-    - a broken republish keeps the verified file;
-    - restore of stale and missing downloads;
-    - ETag 304;
-    - 403 and bad lists;
-    - one Robolectric `PackageInstaller` session, remembered, with a stale session's
-      answer ignored;
-    - installer answers: confirmation held and notified, cancel, transient and
-      incompatible failures;
-    - a restart during an install;
-    - an unexpected error doesn't crash;
-    - `updatingFrom` plus Disconnect starts nothing.
-  - `UpdatesTest` UI checks now cover all four notes and Try again.
-- **Totals:** `testDebugUnitTest` runs 134 tests with 0 failures, and `lintDebug` reports
-  0 errors.
+The first real test is installing 0.1.2 by hand, then updating to the next release from
+inside the app.

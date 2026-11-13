@@ -145,7 +145,7 @@ class UpdatesTest {
         app.store.prefs.edit().putString("session", "presence-only").commit()
         home(UpdateState.Ready(ready), VpnState("Connected", busy = true, connected = true), onInstall = { installs++ })
         shows("update-banner", "Update ready: version 0.1.2")
-        shows("update-banner", "reconnects by itself, without Duo")
+        shows("update-banner", "rejoins your saved session by itself, without Duo")
         compose.onNode(hasText("Install") and hasAnyAncestor(hasTestTag("update-banner"))).performClick()
         compose.onNodeWithTag("update-install").performScrollTo().performClick()
         assertEquals(2, installs)
@@ -163,7 +163,7 @@ class UpdatesTest {
     @Test fun installNoteSaysTheVpnStartsWhenStayConnectedWill() {
         app.store.prefs.edit().putString("session", "presence-only").commit()
         home(UpdateState.Ready(ready))
-        shows("update-banner", "Stay Connected starts the VPN")
+        shows("update-banner", "Stay Connected rejoins your saved session")
     }
 
     @Test fun installNoteAfterDisconnect() {
@@ -171,7 +171,7 @@ class UpdatesTest {
         app.store.prefs.edit().putString("session", "presence-only").commit()
         app.store.disconnected = true
         home(UpdateState.Ready(ready))
-        shows("update-banner", "A notification says when it’s done")
+        shows("update-banner", "Open it again afterwards")
     }
 
     @Test fun installingOffersTryAgain() {
