@@ -14,6 +14,7 @@ object Notices {
     const val ONGOING = 1
     const val ENDED = 2
     const val UPDATED = 3
+    const val CONFIRM_INSTALL = 4
     fun channels(c: Context) {
         val manager = c.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel("vpn", c.getString(R.string.vpn_channel), NotificationManager.IMPORTANCE_LOW))
@@ -58,6 +59,16 @@ object Notices {
             .setContentText(c.getString(R.string.updated_body)).setCategory(Notification.CATEGORY_STATUS)
             .setContentIntent(open(c)).setAutoCancel(true).build())
     }
+    /** Android's install confirmation arrived while the app wasn't open; it can't open a
+     *  screen from the background, so this brings the app back to show it. */
+    fun confirmInstall(c: Context, version: String) {
+        if (Build.VERSION.SDK_INT >= 33 && c.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
+        c.getSystemService(NotificationManager::class.java).notify(CONFIRM_INSTALL, Notification.Builder(c, "updates")
+            .setSmallIcon(R.drawable.ic_vpn).setContentTitle(c.getString(R.string.update_confirm_title, version))
+            .setContentText(c.getString(R.string.update_confirm_body)).setCategory(Notification.CATEGORY_STATUS)
+            .setContentIntent(open(c)).setAutoCancel(true).build())
+    }
+    fun clearConfirmInstall(c: Context) { c.getSystemService(NotificationManager::class.java).cancel(CONFIRM_INSTALL) }
     fun clear(c: Context) { c.getSystemService(NotificationManager::class.java).cancel(ENDED) }
 }
 

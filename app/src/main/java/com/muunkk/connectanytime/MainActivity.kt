@@ -55,7 +55,13 @@ class MainActivity : ComponentActivity() {
     }
     override fun onStart() {
         super.onStart()
-        (application as ConnectApp).updater.checkIfDue()
+        val updater = (application as ConnectApp).updater
+        updater.foreground = true
+        updater.checkIfDue()
+    }
+    override fun onStop() {
+        (application as ConnectApp).updater.foreground = false
+        super.onStop()
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
@@ -66,6 +72,12 @@ class MainActivity : ComponentActivity() {
                 val app = application as ConnectApp
                 val state by ConnectApp.state.collectAsStateWithLifecycle()
                 val update by app.updater.state.collectAsStateWithLifecycle()
+                // Android's install confirmation, shown from here: a broadcast receiver may not
+                // open a screen, and this only runs while the app is in front.
+                val confirm by app.updater.confirmation.collectAsStateWithLifecycle()
+                LaunchedEffect(confirm) {
+                    app.updater.takeConfirmation()?.let { runCatching { startActivity(it) } }
+                }
                 var activity by rememberSaveable { mutableStateOf(false) }
                 BackHandler(enabled = activity) { activity = false }
                 val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl

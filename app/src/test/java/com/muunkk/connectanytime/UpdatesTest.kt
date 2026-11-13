@@ -142,6 +142,7 @@ class UpdatesTest {
 
     @Test fun readyUpdateOffersInstallInBothPlaces() {
         var installs = 0
+        app.store.prefs.edit().putString("session", "presence-only").commit()
         home(UpdateState.Ready(ready), VpnState("Connected", busy = true, connected = true), onInstall = { installs++ })
         shows("update-banner", "Update ready: version 0.1.2")
         shows("update-banner", "reconnects by itself, without Duo")
@@ -159,10 +160,29 @@ class UpdatesTest {
         shows("update-ready", "install was cancelled")
     }
 
-    @Test fun installingShowsProgressNotButtons() {
-        home(UpdateState.Installing(ready))
-        shows("update-banner", "Android may ask you to confirm")
+    @Test fun installNoteSaysTheVpnStartsWhenStayConnectedWill() {
+        app.store.prefs.edit().putString("session", "presence-only").commit()
+        home(UpdateState.Ready(ready))
+        shows("update-banner", "Stay Connected starts the VPN")
+    }
+
+    @Test fun installNoteAfterDisconnect() {
+        // Disconnect pauses automatic starts, so an update doesn't start the VPN.
+        app.store.prefs.edit().putString("session", "presence-only").commit()
+        app.store.disconnected = true
+        home(UpdateState.Ready(ready))
+        shows("update-banner", "A notification says when it’s done")
+    }
+
+    @Test fun installingOffersTryAgain() {
+        var installs = 0
+        home(UpdateState.Installing(ready), onInstall = { installs++ })
+        shows("update-banner", "Installing version 0.1.2")
+        shows("update-banner", "Nothing showing? Tap Try again")
         compose.onNode(hasText("Install") and hasAnyAncestor(hasTestTag("update-banner"))).assertDoesNotExist()
+        compose.onNode(hasText("Try again") and hasAnyAncestor(hasTestTag("update-banner"))).performClick()
+        compose.onNode(hasText("Try again") and hasAnyAncestor(hasTestTag("update-installing"))).performScrollTo().performClick()
+        assertEquals(2, installs)
     }
 
     @Test fun automaticChecksCanBeTurnedOff() {

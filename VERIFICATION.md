@@ -750,3 +750,78 @@ lack the SDK command-line tools. So these have not been run on a device:
 
 The first real test is installing 0.1.2 by hand, then updating to the next release
 from inside the app.
+
+## Council round 1 (in-app updates)
+
+**Scores:** Opus 7.5/10, GPT Sol 7/10. Gemini was unavailable: Cursor said Gemini 4 Carbon
+isn't in this week's usage. Neither reviewer found anything blocking.
+
+These fixes supersede the matching lines in the design above.
+
+- **Install sessions.**
+  - The active session ID is saved to prefs.
+  - `InstallReceiver` passes `EXTRA_SESSION_ID`, and `onStatus` ignores any other session.
+  - All status handling runs on the updater's single thread.
+  - Install, and Try again, first abandon the app's own open sessions.
+  - The 90 s watchdog is gone: while installing, both places offer **Try again**.
+  - A restart finds a session Android still holds and shows Installing. Otherwise it
+    shows Ready and clears `updatingFrom`.
+- **Confirmation in the background.** The receiver no longer starts activities. It holds
+  the confirmation `Intent` in a StateFlow that `MainActivity` launches while started,
+  taking it once. If the app isn't started, a notification ("Finish installing version …")
+  brings it back, and is cleared once the confirmation is shown.
+- **Crash safety.**
+  - The updater scope has a `CoroutineExceptionHandler` that logs the error and shows
+    "Something went wrong".
+  - `InstallReceiver.onReceive` is wrapped.
+  - It reads `EXTRA_INTENT` with the untyped call.
+  - The updater's prefs writes use `commit()` without `check()`.
+- **"Latest version" only when it is.**
+  - `lastUpdateCheck` (when the next check is due) is set only when a check finds nothing
+    newer or a download verifies.
+  - Up to date shows only from `upToDateAt`, which a newer release resets.
+  - A failed download is retried the next time the app opens.
+- **Kept APK survives failures.** Downloads go to `updates/download.apk` and are verified
+  there. They replace the kept file only after verification, so a republished release
+  with the same name can't delete the verified one. Files moved from `cacheDir` to
+  `noBackupFilesDir`, so the OS can't evict them.
+- **VPN note.**
+  - Stay Connected is now state in `HomeScreen`, shared by the switch and both update
+    surfaces.
+  - The note uses `Controls.restartsAutomatically` (Stay Connected, saved session, no
+    Disconnect), the same rule `BootReceiver` uses. It has four cases: rejoins, turns
+    off, starts the VPN afterwards, or the app closes.
+- **Copy.**
+  - The first-time prompt now says "may".
+  - The idle note says a notification tells you when it's done.
+  - The size is gone from the auto-check help.
+  - The README describes installs without asking as something Android *can* do.
+- **Other nits.**
+  - Incompatible or invalid installer results drop the APK and remember its digest.
+  - An APK rejected for package, version or signer isn't downloaded again.
+  - The release list is revalidated with an ETag, and a bad list is never cached.
+  - An oversized list is reported as unreadable, not offline.
+  - The update card is outlined on the page colour.
+- **Tests.**
+  - `UpdaterTest` adds 15 tests through `Http`, `inspect`, `installedSigners` and
+    `Dispatchers.Unconfined` seams:
+    - up to date, kept across a restart;
+    - download, verify, Ready, kept across a restart;
+    - corrupt and oversized downloads deleted, not up to date, retried;
+    - wrong signer, package or version rejected, and never downloaded again;
+    - signer rules, including rotation;
+    - a failed newer download keeps the ready one;
+    - a broken republish keeps the verified file;
+    - restore of stale and missing downloads;
+    - ETag 304;
+    - 403 and bad lists;
+    - one Robolectric `PackageInstaller` session, remembered, with a stale session's
+      answer ignored;
+    - installer answers: confirmation held and notified, cancel, transient and
+      incompatible failures;
+    - a restart during an install;
+    - an unexpected error doesn't crash;
+    - `updatingFrom` plus Disconnect starts nothing.
+  - `UpdatesTest` UI checks now cover all four notes and Try again.
+- **Totals:** `testDebugUnitTest` runs 134 tests with 0 failures, and `lintDebug` reports
+  0 errors.

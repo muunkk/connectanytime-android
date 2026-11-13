@@ -8,23 +8,26 @@ import android.content.pm.PackageInfo
 import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
 import android.os.Build
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
+import java.io.Closeable
 import java.io.File
 import java.io.IOException
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** A release on GitHub that this app can update to. */
 data class Release(val versionName: String, val versionCode: Int, val apkUrl: String, val size: Long, val sha256: String, val page: String) {
@@ -96,62 +99,117 @@ sealed interface UpdateState {
 }
 
 /** Why a check or download stopped, as the string the app shows. */
-private class UpdateFailure(val reason: Int, message: String) : IOException(message)
+internal class UpdateFailure(val reason: Int, message: String) : IOException(message)
+
+/** What Android reads from an APK: enough to tell whether it's this app's next release.
+ *  [signers] are SHA-256 digests of certificates; null where Android can't say. */
+internal data class ApkFacts(val packageName: String, val versionCode: Long, val signers: Set<String>?)
+
+/** One HTTP GET. A seam, so tests drive the updater without a network. */
+internal fun interface Http { fun get(url: String, accept: String, etag: String?): Response }
+internal class Response(val code: Int, val etag: String?, val body: InputStream?, private val onClose: () -> Unit = {}) : Closeable {
+    override fun close() { runCatching { body?.close() }; onClose() }
+}
 
 /**
  * Checks this repo's GitHub releases, downloads a newer APK, and verifies it before
  * Android's installer sees it: GitHub's SHA-256 digest, then the package name, version code
  * and signing certificate. Android itself also refuses an update signed by anyone else.
  *
- * One operation at a time, on one thread. App traffic goes through the VPN when it's up.
+ * Everything runs in order on one thread, including the installer's answers, so no two
+ * steps interleave. App traffic goes through the VPN when it's up.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
-class Updater(private val app: ConnectApp) {
+class Updater internal constructor(
+    private val app: ConnectApp,
+    private val http: Http = Http(::platformGet),
+    private val inspect: (File) -> ApkFacts? = { platformFacts(app, it) },
+    private val installedSigners: () -> Set<String>? = { platformSigners(app) },
+    dispatcher: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(1),
+) {
+    constructor(app: ConnectApp) : this(app, Http(::platformGet))
+
     private val store get() = app.store
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1))
     private val mutable = MutableStateFlow<UpdateState>(UpdateState.Idle)
     val state = mutable.asStateFlow()
-    private var job: Job? = null
-    private var watchdog: Job? = null
-    private val dir get() = File(app.cacheDir, "updates")
+    // Nothing here may take the process down: it's the VPN's process too.
+    private val scope = CoroutineScope(SupervisorJob() + dispatcher + CoroutineExceptionHandler { _, e ->
+        app.log.add(app.getString(R.string.update_error_log, e.javaClass.simpleName))
+        if (mutable.value !is UpdateState.Ready) mutable.value = UpdateState.Failed(R.string.update_error)
+    })
+    private val checking = AtomicBoolean(false)
+    private val confirmations = MutableStateFlow<Intent?>(null)
+    /** Android's install confirmation, waiting for MainActivity to show it (see [takeConfirmation]). */
+    val confirmation = confirmations.asStateFlow()
+    /** Whether MainActivity is started; if not, a confirmation also gets a notification. */
+    @Volatile var foreground = false
+    private val dir get() = File(app.noBackupFilesDir, "updates")
+    private val feed get() = File(app.noBackupFilesDir, "release-feed.json")
     private val current get() = BuildConfig.VERSION_CODE
 
     init { scope.launch { restore() } }
 
-    /** A download kept from earlier is ready again if it still verifies; anything else goes. */
+    /**
+     * After a restart: a download kept from earlier is ready again if it still verifies, and
+     * an install still in Android's hands shows as installing. Anything else is cleared.
+     */
     private fun restore() {
         val pending = store.pendingUpdate?.let(Release::parse)
-        if (pending != null && pending.versionCode > current && runCatching { verify(File(dir, pending.fileName), pending) }.isSuccess) {
-            mutable.value = UpdateState.Ready(pending)
+        if (pending != null && pending.versionCode <= current) {
+            // Installed (BootReceiver reports it) or overtaken: the download has done its job.
+            forget(); store.installSession = NO_SESSION
+        } else if (pending != null && runCatching { verify(File(dir, pending.fileName), pending) }.isSuccess) {
+            val session = store.installSession
+            mutable.value = if (session != NO_SESSION && app.packageManager.packageInstaller.getSessionInfo(session) != null)
+                UpdateState.Installing(pending) else UpdateState.Ready(pending)
+            if (mutable.value is UpdateState.Ready) endSession()
             return
+        } else {
+            forget(); endSession()
         }
-        store.pendingUpdate = null
-        dir.listFiles()?.forEach { it.delete() }
-        store.lastUpdateCheck.takeIf { it > 0 }?.let { mutable.value = UpdateState.UpToDate(it) }
+        store.upToDateAt.takeIf { it > 0 }?.let { mutable.value = UpdateState.UpToDate(it) }
     }
 
-    /** On opening the app: with automatic checks on, at most every [INTERVAL]. */
+    /** On opening the app: with automatic checks on, at most every [INTERVAL] after the
+     *  last check that worked. A failed one is tried again next time. */
     fun checkIfDue() {
         if (store.autoUpdate && System.currentTimeMillis() - store.lastUpdateCheck >= INTERVAL) check()
     }
 
-    @Synchronized fun check() {
-        if (job?.isActive == true || mutable.value is UpdateState.Installing) return
-        job = scope.launch {
-            val ready = mutable.value as? UpdateState.Ready
-            mutable.value = UpdateState.Checking
-            try {
-                val release = fetch()
-                store.lastUpdateCheck = System.currentTimeMillis()
-                when {
-                    release == null -> { forget(); mutable.value = UpdateState.UpToDate(store.lastUpdateCheck) }
-                    ready?.release == release -> mutable.value = ready.copy(note = null)
-                    else -> download(release)
+    fun check() {
+        if (!checking.compareAndSet(false, true)) return
+        scope.launch {
+            try { runCheck() } finally { checking.set(false) }
+        }
+    }
+
+    private fun runCheck() {
+        val before = mutable.value
+        if (before is UpdateState.Installing) return
+        // A ready update stays on screen while it checks for a newer one.
+        val ready = before as? UpdateState.Ready
+        if (ready == null) mutable.value = UpdateState.Checking
+        try {
+            val release = fetch()
+            val now = System.currentTimeMillis()
+            when {
+                release == null -> {
+                    forget()
+                    store.lastUpdateCheck = now; store.upToDateAt = now
+                    mutable.value = UpdateState.UpToDate(now)
                 }
-            } catch (e: Exception) {
-                // A failed check doesn't throw away an update that's already downloaded.
-                mutable.value = ready ?: UpdateState.Failed(reasonFor(e))
+                ready != null && ready.release == release -> { store.lastUpdateCheck = now; mutable.value = ready }
+                // Rejected once (wrong package, version or signer): don't fetch 16 MB again.
+                release.sha256 == store.rejectedUpdate -> mutable.value = ready ?: UpdateState.Failed(R.string.update_wrong_app)
+                else -> {
+                    store.upToDateAt = 0
+                    download(release)
+                    store.lastUpdateCheck = now
+                }
             }
+        } catch (e: Exception) {
+            // A failed check or download doesn't throw away an update that's already verified.
+            mutable.value = ready ?: UpdateState.Failed(reasonFor(e))
         }
     }
 
@@ -161,49 +219,50 @@ class Updater(private val app: ConnectApp) {
         else -> R.string.update_offline
     }
 
-    private fun open(url: String, accept: String): HttpURLConnection {
-        val c = URL(url).openConnection() as HttpURLConnection
-        c.connectTimeout = 15_000; c.readTimeout = 30_000
-        // A generic name: GitHub asks API clients for one, and it says nothing about who's asking.
-        c.setRequestProperty("User-Agent", "ConnectAnytime-Android")
-        c.setRequestProperty("Accept", accept)
-        if (accept.contains("github")) c.setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
-        when (val code = c.responseCode) {
-            200 -> return c
-            403, 429 -> { c.disconnect(); throw UpdateFailure(R.string.update_busy, "HTTP $code") }
-            else -> { c.disconnect(); throw IOException("HTTP $code") }
-        }
-    }
-
+    /** The release list, revalidated with its ETag: GitHub doesn't count a 304 against the
+     *  hourly limit, which matters when the VPN shares one address with many people. */
     private fun fetch(): Release? {
-        val c = open(ReleaseFeed.API, "application/vnd.github+json")
-        try {
-            val body = c.inputStream.use { input ->
-                val bytes = input.readNBytesCompat(2 * 1024 * 1024)
-                bytes.toString(Charsets.UTF_8)
+        val cached = feed.takeIf { it.isFile }
+        val body = http.get(ReleaseFeed.API, "application/vnd.github+json", store.feedEtag.takeIf { cached != null }).use { r ->
+            when (r.code) {
+                200 -> {
+                    val text = (r.body ?: throw IOException("no body")).readCapped(2 * 1024 * 1024).toString(Charsets.UTF_8)
+                    ReleaseFeed.newest(text, current) // parse before caching, so a bad list isn't kept
+                    feed.parentFile?.mkdirs(); feed.writeText(text)
+                    store.feedEtag = r.etag
+                    text
+                }
+                304 -> cached?.readText() ?: throw IOException("304 without a cached list")
+                403, 429 -> throw UpdateFailure(R.string.update_busy, "HTTP ${r.code}")
+                else -> throw IOException("HTTP ${r.code}")
             }
-            return ReleaseFeed.newest(body, current)
-        } finally { c.disconnect() }
+        }
+        return ReleaseFeed.newest(body, current)
     }
 
-    /** Keeps an earlier verified download until this one has verified, so a failure here
-     *  leaves it ready to install. */
+    /**
+     * Downloads to a staging file and only then replaces the kept APK, so a failure here
+     * leaves an earlier verified download (even one with the same name) ready to install.
+     */
     private fun download(release: Release) {
         mutable.value = UpdateState.Downloading(release, 0f)
         dir.mkdirs()
         val kept = store.pendingUpdate?.let(Release::parse)?.fileName
         dir.listFiles()?.forEach { if (it.name != kept) it.delete() }
         if (dir.usableSpace < release.size * 2) throw UpdateFailure(R.string.update_storage, "low space")
-        val part = File(dir, release.fileName + ".part")
-        val file = File(dir, release.fileName)
+        val staging = File(dir, STAGING)
         try {
-            val c = open(release.apkUrl, "application/octet-stream")
-            try {
+            http.get(release.apkUrl, "application/octet-stream", null).use { r ->
+                when (r.code) {
+                    200 -> Unit
+                    403, 429 -> throw UpdateFailure(R.string.update_busy, "HTTP ${r.code}")
+                    else -> throw IOException("HTTP ${r.code}")
+                }
                 val digest = MessageDigest.getInstance("SHA-256")
                 var done = 0L
                 var shown = -1
-                c.inputStream.use { input ->
-                    part.outputStream().use { output ->
+                (r.body ?: throw IOException("no body")).let { input ->
+                    staging.outputStream().use { output ->
                         val buffer = ByteArray(64 * 1024)
                         while (true) {
                             val n = input.read(buffer)
@@ -219,64 +278,61 @@ class Updater(private val app: ConnectApp) {
                 }
                 if (done != release.size || hex(digest.digest()) != release.sha256)
                     throw UpdateFailure(R.string.update_corrupt, "digest mismatch")
-            } finally { c.disconnect() }
-            if (!part.renameTo(file)) throw IOException("rename")
-            verify(file, release)
+            }
+            try { verify(staging, release) } catch (e: UpdateFailure) {
+                if (e.reason == R.string.update_wrong_app) {
+                    store.rejectedUpdate = release.sha256
+                    app.log.add(app.getString(R.string.update_rejected, release.versionName, e.message ?: ""))
+                }
+                throw e
+            }
+            val file = File(dir, release.fileName)
+            if (!staging.renameTo(file)) throw IOException("rename")
             store.pendingUpdate = release.json()
             dir.listFiles()?.forEach { if (it.name != file.name) it.delete() }
             app.log.add(app.getString(R.string.update_downloaded, release.versionName, release.versionCode))
             mutable.value = UpdateState.Ready(release)
-        } catch (e: Exception) {
-            part.delete(); file.delete()
-            if (e is UpdateFailure && e.reason == R.string.update_wrong_app)
-                app.log.add(app.getString(R.string.update_rejected, release.versionName, e.message ?: ""))
-            throw e
+        } finally {
+            staging.delete()
         }
     }
 
     /** Throws unless [file] is exactly [release], for this app, signed like this app. */
     private fun verify(file: File, release: Release) {
-        if (!file.isFile || file.length() != release.size) throw UpdateFailure(R.string.update_corrupt, "missing or wrong size")
+        if (!file.isFile || file.length() != release.size) throw UpdateFailure(R.string.update_missing, "missing or wrong size")
         val digest = MessageDigest.getInstance("SHA-256")
         file.inputStream().use { input ->
             val buffer = ByteArray(64 * 1024)
             while (true) { val n = input.read(buffer); if (n < 0) break; digest.update(buffer, 0, n) }
         }
         if (hex(digest.digest()) != release.sha256) throw UpdateFailure(R.string.update_corrupt, "digest mismatch")
-        val pm = app.packageManager
-        val flags = PackageManager.GET_SIGNING_CERTIFICATES
-        val archive = if (Build.VERSION.SDK_INT >= 33) pm.getPackageArchiveInfo(file.path, PackageManager.PackageInfoFlags.of(flags.toLong()))
-            else @Suppress("DEPRECATION") pm.getPackageArchiveInfo(file.path, flags)
-        archive ?: throw UpdateFailure(R.string.update_wrong_app, "not an APK")
-        if (archive.packageName != app.packageName) throw UpdateFailure(R.string.update_wrong_app, "package ${archive.packageName}")
-        if (archive.longVersionCode != release.versionCode.toLong()) throw UpdateFailure(R.string.update_wrong_app, "version code ${archive.longVersionCode}")
-        val installed = if (Build.VERSION.SDK_INT >= 33) pm.getPackageInfo(app.packageName, PackageManager.PackageInfoFlags.of(flags.toLong()))
-            else @Suppress("DEPRECATION") pm.getPackageInfo(app.packageName, flags)
-        if (!sameSigner(installed, archive)) throw UpdateFailure(R.string.update_wrong_app, "different signing certificate")
+        val facts = inspect(file) ?: throw UpdateFailure(R.string.update_wrong_app, "not an APK")
+        if (facts.packageName != app.packageName) throw UpdateFailure(R.string.update_wrong_app, "package ${facts.packageName}")
+        if (facts.versionCode != release.versionCode.toLong()) throw UpdateFailure(R.string.update_wrong_app, "version code ${facts.versionCode}")
+        if (!signedAlike(installedSigners(), facts.signers)) throw UpdateFailure(R.string.update_wrong_app, "different signing certificate")
     }
 
-    /** The installed certificates must appear in the update's (its history allows key rotation).
-     *  Where Android can't read an archive's certificates, its installer still enforces this. */
-    private fun sameSigner(installed: PackageInfo, update: PackageInfo): Boolean {
-        val mine = installed.signingInfo ?: return true
-        val theirs = update.signingInfo ?: return true
-        val ours = (if (mine.hasMultipleSigners()) mine.apkContentsSigners else mine.signingCertificateHistory)?.toSet().orEmpty()
-        val accepted = theirs.apkContentsSigners.orEmpty().toSet() + theirs.signingCertificateHistory.orEmpty().toSet()
-        return ours.isNotEmpty() && accepted.containsAll(ours)
-    }
-
-    /** Hands the verified APK to Android. After the first update made from here, Android 12+
-     *  installs later ones without asking; the first one asks, as it came from elsewhere. */
-    @Synchronized fun install() {
-        val ready = mutable.value as? UpdateState.Ready ?: return
-        if (job?.isActive == true) return
-        val release = ready.release
-        mutable.value = UpdateState.Installing(release)
-        job = scope.launch {
+    /**
+     * Hands the verified APK to Android. Android may install it straight away (Android 12+
+     * allows an app to update itself without asking) or show its confirmation first, and the
+     * first time perhaps ask to allow installs from this app. Tapping Install again replaces
+     * an attempt that's still open, so a lost confirmation never strands the update.
+     */
+    fun install() {
+        scope.launch {
+            val release = when (val s = mutable.value) {
+                is UpdateState.Ready -> s.release
+                is UpdateState.Installing -> s.release
+                else -> return@launch
+            }
+            mutable.value = UpdateState.Installing(release)
+            val installer = app.packageManager.packageInstaller
             try {
                 val file = File(dir, release.fileName)
                 verify(file, release)
-                val installer = app.packageManager.packageInstaller
+                // Only one attempt at a time; answers from an older one are ignored (onStatus).
+                installer.mySessions.forEach { runCatching { installer.abandonSession(it.sessionId) } }
+                endSession()
                 val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
                     setAppPackageName(app.packageName)
                     setSize(file.length())
@@ -290,42 +346,79 @@ class Updater(private val app: ConnectApp) {
                             file.inputStream().use { it.copyTo(output) }
                             session.fsync(output)
                         }
+                        store.installSession = id
                         // Read back after the update to say it worked (BootReceiver).
                         store.updatingFrom = BuildConfig.BUILD_DESCRIPTION
                         val intent = Intent(app, InstallReceiver::class.java).setPackage(app.packageName)
                         // Mutable: the installer adds the status extras. The intent is explicit.
                         val sender = PendingIntent.getBroadcast(app, id, intent, PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT).intentSender
+                        app.log.add(app.getString(R.string.update_installing_log, release.versionName, release.versionCode))
                         session.commit(sender)
                     }
                 } catch (e: Exception) {
                     runCatching { installer.abandonSession(id) }
                     throw e
                 }
-                app.log.add(app.getString(R.string.update_installing_log, release.versionName, release.versionCode))
-                // If no answer comes (a confirmation left open, then lost), offer Install again.
-                watchdog?.cancel()
-                watchdog = scope.launch {
-                    delay(90_000)
-                    if (mutable.value == UpdateState.Installing(release)) mutable.value = UpdateState.Ready(release)
-                }
             } catch (e: Exception) {
-                store.updatingFrom = null
+                endSession()
                 if (e is UpdateFailure) { forget(); mutable.value = UpdateState.Failed(e.reason) }
                 else mutable.value = UpdateState.Ready(release, R.string.update_install_failed)
             }
         }
     }
 
-    /** From InstallReceiver: the install didn't go ahead. Success needs no call, as Android
-     *  stops this process to replace the app. */
-    internal fun installStopped(status: Int, message: String?) {
-        watchdog?.cancel()
+    /** The installer's answer, from InstallReceiver. Success needs nothing: Android stops this
+     *  process to replace the app, and BootReceiver reports it afterwards. */
+    internal fun onStatus(session: Int, status: Int, message: String?, confirm: Intent?) {
+        scope.launch {
+            if (session == NO_SESSION || session != store.installSession) return@launch
+            val release = (mutable.value as? UpdateState.Installing)?.release ?: store.pendingUpdate?.let(Release::parse) ?: return@launch
+            when (status) {
+                PackageInstaller.STATUS_PENDING_USER_ACTION -> {
+                    if (confirm == null) { stopped(release, PackageInstaller.STATUS_FAILURE, "no confirmation"); return@launch }
+                    confirmations.value = confirm
+                    if (!foreground) Notices.confirmInstall(app, release.versionName)
+                }
+                PackageInstaller.STATUS_SUCCESS -> Unit
+                else -> stopped(release, status, message)
+            }
+        }
+    }
+
+    private fun stopped(release: Release, status: Int, message: String?) {
+        endSession()
+        mutable.value = when (status) {
+            PackageInstaller.STATUS_FAILURE_ABORTED -> UpdateState.Ready(release, R.string.update_cancelled)
+            // This APK can never go in (a different signer or a broken package): don't offer it again.
+            PackageInstaller.STATUS_FAILURE_INCOMPATIBLE, PackageInstaller.STATUS_FAILURE_INVALID -> {
+                app.log.add(app.getString(R.string.update_refused_log, release.versionName, message ?: status.toString()))
+                store.rejectedUpdate = release.sha256
+                forget()
+                UpdateState.Failed(R.string.update_refused)
+            }
+            else -> {
+                app.log.add(app.getString(R.string.update_refused_log, release.versionName, message ?: status.toString()))
+                UpdateState.Ready(release, R.string.update_refused)
+            }
+        }
+    }
+
+    /** For MainActivity: the confirmation to show now, at most once. */
+    fun takeConfirmation(): Intent? {
+        val intent = confirmations.getAndUpdateCompat()
+        if (intent != null) Notices.clearConfirmInstall(app)
+        return intent
+    }
+
+    private fun MutableStateFlow<Intent?>.getAndUpdateCompat(): Intent? {
+        while (true) { val v = value ?: return null; if (compareAndSet(v, null)) return v }
+    }
+
+    private fun endSession() {
+        store.installSession = NO_SESSION
         store.updatingFrom = null
-        val release = (mutable.value as? UpdateState.Installing)?.release ?: store.pendingUpdate?.let(Release::parse) ?: return
-        val note = if (status == PackageInstaller.STATUS_FAILURE_ABORTED) R.string.update_cancelled else R.string.update_refused
-        if (status != PackageInstaller.STATUS_FAILURE_ABORTED)
-            app.log.add(app.getString(R.string.update_refused_log, release.versionName, message ?: status.toString()))
-        mutable.value = UpdateState.Ready(release, note)
+        confirmations.value = null
+        Notices.clearConfirmInstall(app)
     }
 
     private fun forget() {
@@ -335,19 +428,65 @@ class Updater(private val app: ConnectApp) {
 
     companion object {
         const val INTERVAL = 6 * 60 * 60 * 1000L
-        private fun hex(bytes: ByteArray) = bytes.joinToString("") { "%02x".format(it) }
+        const val NO_SESSION = -1
+        private const val STAGING = "download.apk"
+        internal fun hex(bytes: ByteArray) = bytes.joinToString("") { "%02x".format(it) }
+
+        /** The installed certificates must all be among the update's signers or its history
+         *  (which allows key rotation). Where Android can't read them, its installer's own
+         *  check still applies. */
+        internal fun signedAlike(installed: Set<String>?, update: Set<String>?) =
+            installed == null || update == null || (installed.isNotEmpty() && update.containsAll(installed))
     }
 }
 
+private fun platformGet(url: String, accept: String, etag: String?): Response {
+    val c = URL(url).openConnection() as HttpURLConnection
+    c.connectTimeout = 15_000; c.readTimeout = 30_000
+    // A generic name: GitHub asks API clients for one, and it says nothing about who's asking.
+    c.setRequestProperty("User-Agent", "ConnectAnytime-Android")
+    c.setRequestProperty("Accept", accept)
+    if (accept.contains("github")) c.setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
+    if (etag != null) c.setRequestProperty("If-None-Match", etag)
+    return try {
+        val code = c.responseCode
+        Response(code, c.getHeaderField("ETag"), if (code == 200) c.inputStream else null) { c.disconnect() }
+    } catch (e: Exception) { c.disconnect(); throw e }
+}
+
+private fun digests(signatures: Array<android.content.pm.Signature>?) =
+    signatures?.map { Updater.hex(MessageDigest.getInstance("SHA-256").digest(it.toByteArray())) }?.toSet()
+
+private fun platformFacts(app: Context, file: File): ApkFacts? {
+    val pm = app.packageManager
+    val flags = PackageManager.GET_SIGNING_CERTIFICATES
+    val info: PackageInfo = (if (Build.VERSION.SDK_INT >= 33) pm.getPackageArchiveInfo(file.path, PackageManager.PackageInfoFlags.of(flags.toLong()))
+        else @Suppress("DEPRECATION") pm.getPackageArchiveInfo(file.path, flags)) ?: return null
+    val signing = info.signingInfo
+    val signers = signing?.let { digests(it.apkContentsSigners).orEmpty() + digests(it.signingCertificateHistory).orEmpty() }
+    return ApkFacts(info.packageName, info.longVersionCode, signers?.takeIf { it.isNotEmpty() })
+}
+
+/** This app's current signing certificates (not past ones). */
+private fun platformSigners(app: Context): Set<String>? {
+    val pm = app.packageManager
+    val flags = PackageManager.GET_SIGNING_CERTIFICATES
+    val info = if (Build.VERSION.SDK_INT >= 33) pm.getPackageInfo(app.packageName, PackageManager.PackageInfoFlags.of(flags.toLong()))
+        else @Suppress("DEPRECATION") pm.getPackageInfo(app.packageName, flags)
+    val signing = info.signingInfo ?: return null
+    return (if (signing.hasMultipleSigners()) digests(signing.apkContentsSigners)
+        else digests(signing.signingCertificateHistory?.takeLast(1)?.toTypedArray()))?.takeIf { it.isNotEmpty() }
+}
+
 /** Reads at most [limit] bytes; a longer body is refused rather than cut short. */
-private fun java.io.InputStream.readNBytesCompat(limit: Int): ByteArray {
+private fun InputStream.readCapped(limit: Int): ByteArray {
     val out = java.io.ByteArrayOutputStream()
     val buffer = ByteArray(16 * 1024)
     while (true) {
         val n = read(buffer)
         if (n < 0) break
         out.write(buffer, 0, n)
-        if (out.size() > limit) throw IOException("release list too large")
+        if (out.size() > limit) throw UpdateFailure(R.string.update_bad_feed, "release list too large")
     }
     return out.toByteArray()
 }
@@ -356,17 +495,15 @@ private fun java.io.InputStream.readNBytesCompat(limit: Int): ByteArray {
  *  the PendingIntent the app gave the installer reaches it. */
 class InstallReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        val app = context.applicationContext as ConnectApp
-        when (val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)) {
-            PackageInstaller.STATUS_PENDING_USER_ACTION -> {
-                val confirm = if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)
-                    else @Suppress("DEPRECATION") intent.getParcelableExtra(Intent.EXTRA_INTENT)
-                if (confirm == null) { app.updater.installStopped(PackageInstaller.STATUS_FAILURE, "no confirmation"); return }
-                runCatching { context.startActivity(confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
-                    .onFailure { app.updater.installStopped(PackageInstaller.STATUS_FAILURE, it.message) }
-            }
-            PackageInstaller.STATUS_SUCCESS -> Unit
-            else -> app.updater.installStopped(status, intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE))
+        // Never let a bad answer crash the process: it's the VPN's process too.
+        runCatching {
+            val app = context.applicationContext as ConnectApp
+            val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)
+            // The untyped call: the typed one is unreliable on Android 13.
+            @Suppress("DEPRECATION") val confirm = if (status == PackageInstaller.STATUS_PENDING_USER_ACTION)
+                intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT) else null
+            app.updater.onStatus(intent.getIntExtra(PackageInstaller.EXTRA_SESSION_ID, Updater.NO_SESSION), status,
+                intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE), confirm)
         }
     }
 }

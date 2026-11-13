@@ -11,6 +11,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -24,11 +25,13 @@ import androidx.compose.ui.semantics.*
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.unit.dp
 
-/** What installing does to the VPN right now, in one line. */
+/** What installing does to the VPN right now, in one line. [restarts] is whether BootReceiver
+ *  will start it again after the update (Controls.restartsAutomatically). */
 @Composable
-private fun installNote(vpn: VpnState, stay: Boolean) = stringResource(when {
-    vpn.connected && stay -> R.string.update_note_rejoin
+private fun installNote(vpn: VpnState, restarts: Boolean) = stringResource(when {
+    vpn.busy && restarts -> R.string.update_note_rejoin
     vpn.busy -> R.string.update_note_off
+    restarts -> R.string.update_note_starts
     else -> R.string.update_note_idle
 })
 
@@ -37,7 +40,7 @@ private fun installNote(vpn: VpnState, stay: Boolean) = stringResource(when {
  * the screen. Nothing shows while checking or downloading: that happens by itself.
  */
 @Composable
-internal fun UpdateBanner(update: UpdateState, vpn: VpnState, stay: Boolean, onInstall: () -> Unit) {
+internal fun UpdateBanner(update: UpdateState, vpn: VpnState, restarts: Boolean, onInstall: () -> Unit) {
     val release = (update as? UpdateState.Ready)?.release ?: (update as? UpdateState.Installing)?.release
     // Keep the last release while the banner animates out.
     var shown by remember { mutableStateOf(release) }
@@ -47,21 +50,26 @@ internal fun UpdateBanner(update: UpdateState, vpn: VpnState, stay: Boolean, onI
         enter = expandVertically(motion.defaultSpatialSpec()) + fadeIn(motion.defaultEffectsSpec()),
         exit = shrinkVertically(motion.fastSpatialSpec()) + fadeOut(motion.fastEffectsSpec())) {
         val r = shown ?: return@AnimatedVisibility
+        // Outlined on the page colour, so it never reads as part of the status panel above,
+        // whatever colour that has.
         Surface(Modifier.fillMaxWidth().padding(top = 12.dp).testTag("update-banner"), shape = MaterialTheme.shapes.extraLarge,
-            // A neutral surface, so it doesn't read as part of the coloured status panel above.
-            color = MaterialTheme.colorScheme.surfaceContainerHigh, contentColor = MaterialTheme.colorScheme.onSurface) {
+            color = MaterialTheme.colorScheme.surface, contentColor = MaterialTheme.colorScheme.onSurface,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
             Row(Modifier.padding(start = 20.dp, end = 16.dp, top = 16.dp, bottom = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(painterResource(R.drawable.ic_update), contentDescription = null, tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(24.dp))
                 Column(Modifier.weight(1f).semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
                     verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(stringResource(R.string.update_banner, r.versionName), style = MaterialTheme.typography.titleMediumEmphasized)
-                    Text(if (update is UpdateState.Installing) stringResource(R.string.update_installing_help) else installNote(vpn, stay),
+                    Text(stringResource(if (update is UpdateState.Installing) R.string.update_installing else R.string.update_banner, r.versionName),
+                        style = MaterialTheme.typography.titleMediumEmphasized)
+                    Text(if (update is UpdateState.Installing) stringResource(R.string.update_installing_help) else installNote(vpn, restarts),
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 if (update is UpdateState.Installing) {
-                    LoadingIndicator(Modifier.size(40.dp))
+                    OutlinedButton(onClick = onInstall, shapes = ButtonDefaults.shapes(), modifier = Modifier.heightIn(min = 48.dp)) {
+                        Text(stringResource(R.string.update_try_again))
+                    }
                 } else {
                     Button(onClick = onInstall, shapes = ButtonDefaults.shapes(), modifier = Modifier.heightIn(min = 48.dp)) {
                         Text(stringResource(R.string.update_install))
@@ -74,7 +82,7 @@ internal fun UpdateBanner(update: UpdateState, vpn: VpnState, stay: Boolean, onI
 
 /** The update rows of the About group: [index] 1 is the check or progress, 2 the switch. */
 @Composable
-internal fun UpdateSegment(index: Int, count: Int, store: Store, update: UpdateState, vpn: VpnState,
+internal fun UpdateSegment(index: Int, count: Int, store: Store, update: UpdateState, vpn: VpnState, restarts: Boolean,
     onCheck: () -> Unit, onInstall: () -> Unit) {
     val context = LocalContext.current
     val shapes = ListItemDefaults.segmentedShapes(index, count)
@@ -89,8 +97,8 @@ internal fun UpdateSegment(index: Int, count: Int, store: Store, update: UpdateS
     }
     when (update) {
         is UpdateState.Downloading -> FieldSegment(index, count) { Downloading(update) }
-        is UpdateState.Ready -> FieldSegment(index, count) { ReadyToInstall(context, update, vpn, store.stayConnected, onInstall) }
-        is UpdateState.Installing -> FieldSegment(index, count) { Installing(update) }
+        is UpdateState.Ready -> FieldSegment(index, count) { ReadyToInstall(context, update, vpn, restarts, onInstall) }
+        is UpdateState.Installing -> FieldSegment(index, count) { Installing(update, onInstall) }
         else -> {
             val checking = update == UpdateState.Checking
             SegmentedListItem(colors = segmentColors(), onClick = onCheck, enabled = !checking, shapes = shapes,
@@ -132,27 +140,29 @@ private fun Downloading(update: UpdateState.Downloading) {
 }
 
 @Composable
-private fun Installing(update: UpdateState.Installing) {
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+private fun Installing(update: UpdateState.Installing, onRetry: () -> Unit) {
+    Column(Modifier.testTag("update-installing"), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Column(Modifier.semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite }) {
             Text(stringResource(R.string.update_installing, update.release.versionName), style = MaterialTheme.typography.bodyLarge)
             Text(stringResource(R.string.update_installing_help), style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         LinearWavyProgressIndicator(Modifier.fillMaxWidth())
+        TextButton(onClick = onRetry, shapes = ButtonDefaults.shapes(), modifier = Modifier.heightIn(min = 48.dp),
+            contentPadding = PaddingValues(horizontal = 0.dp)) { Text(stringResource(R.string.update_try_again)) }
     }
 }
 
 @Composable
-private fun ReadyToInstall(context: Context, update: UpdateState.Ready, vpn: VpnState, stay: Boolean, onInstall: () -> Unit) {
-    // Android asks once, for the first update installed from here; say so before it does.
+private fun ReadyToInstall(context: Context, update: UpdateState.Ready, vpn: VpnState, restarts: Boolean, onInstall: () -> Unit) {
+    // Without "Install unknown apps" for this app, Android may stop to ask for it.
     val firstTime = remember { !context.packageManager.canRequestPackageInstalls() }
     Column(Modifier.testTag("update-ready"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Column(Modifier.semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
             verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(stringResource(R.string.update_ready, update.release.versionName), style = MaterialTheme.typography.bodyLarge)
             update.note?.let { Text(stringResource(it), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error) }
-            Text(installNote(vpn, stay), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(installNote(vpn, restarts), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (firstTime) Text(stringResource(R.string.update_first_time), style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }

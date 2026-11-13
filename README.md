@@ -261,31 +261,49 @@ Nothing has been published or pushed.
 From 0.1.2 the app updates itself from this repo's GitHub releases (`Updates.kt`,
 `UpdateSection.kt`).
 
-- **When it checks.** On opening the app, at most every 6 hours, while **Check
-  automatically** (under About) is on; or when you tap **Check for updates**. It reads
-  `api.github.com/repos/muunkk/connectanytime-android/releases`, prereleases included,
-  with a generic User-Agent and no account. The app's traffic goes through the VPN
-  when it's connected.
+- **When it checks.** On opening the app, at most every 6 hours after the last
+  check that worked, while **Check automatically** (under About) is on. A failed check is
+  tried again the next time you open the app. You can also tap **Check for updates**.
+  - It reads `api.github.com/repos/muunkk/connectanytime-android/releases`,
+    prereleases included, with a generic User-Agent and no account.
+  - It revalidates with the list's ETag. GitHub doesn't count a 304 against its
+    unauthenticated limit, which matters because the VPN's address is shared with other
+    people.
+  - The app's traffic goes through the VPN when it's connected.
 - **What it accepts.** The highest build number above this one among release assets
   named `ConnectAnytime-<versionName>-<versionCode>.apk`, served from this repo's
   release downloads, with a GitHub `sha256:` digest. Drafts and assets without a digest
   are ignored, so publish releases with `gh release create` or the web upload, which
   record one.
-- **Before installing.** The download is streamed to the app's cache and must match
-  the digest and size exactly. Android must then read it as `com.muunkk.connectanytime`
-  with the expected version code, signed with this app's certificate. Anything else is
-  deleted. Android's installer also refuses an update signed with any other key.
-- **Installing.** An **Update ready** card appears under the status panel, and the
-  About section has **Install** and **What's new**. Install hands the APK to
-  `PackageInstaller`. The first update asks you to allow installs from ConnectAnytime and
-  to confirm. After that, Android 12+ installs updates from ConnectAnytime without
-  asking (`UPDATE_PACKAGES_WITHOUT_USER_ACTION`), because the app is then their
-  installer of record.
-- **The VPN during an update.** Android stops the app to replace it. With Stay
-  Connected on and a saved session, `MY_PACKAGE_REPLACED` restarts the VPN, which
-  rejoins without Duo. Otherwise it stays off until you tap Connect. The updated app
-  logs "Updated from … to …" and posts an "Updated to version …" notification, since
-  Android doesn't reopen it.
+- **Before installing.**
+  - The download goes to a staging file in the app's no-backup storage and must
+    match the digest and size exactly.
+  - Android must then read it as `com.muunkk.connectanytime`, with the expected version
+    code, signed with this app's certificate. Anything else is deleted, and that
+    release isn't downloaded again.
+  - Only then does it replace an earlier verified download. A failed download never
+    costs you one that was ready.
+  - Android's installer also refuses an update signed with any other key.
+- **Installing.**
+  - An **Update ready** card appears under the status panel, and the About section
+    has **Install** and **What's new**. Install hands the APK to `PackageInstaller`.
+  - On Android 12+, Android can let an app update itself without asking
+    (`USER_ACTION_NOT_REQUIRED`, `UPDATE_PACKAGES_WITHOUT_USER_ACTION`). Otherwise it
+    shows its confirmation, and may first ask you to allow installs from ConnectAnytime.
+  - The confirmation is opened by the app's screen. If the app isn't in front, a
+    notification brings it back.
+  - **Try again** replaces an attempt that's still open. Answers from replaced attempts
+    are ignored.
+  - Releases must keep a current targetSdk for installs without asking to keep working.
+- **The VPN during an update.** Android stops the app to replace it. The note on the
+  card says what happens, using the same rule as `BootReceiver`
+  (`Controls.restartsAutomatically`):
+  - With Stay Connected on, a saved session, and no Disconnect, the VPN restarts
+    afterwards and rejoins without Duo. An automatic start never logs in with the password.
+  - Otherwise it stays off until you tap Connect.
+
+  The updated app logs "Updated from … to …" and posts an "Updated to version …"
+  notification, since Android doesn't reopen it.
 
 To release: bump `versionCode` and `versionName` in `app/build.gradle.kts`, build and
 verify, then attach `ConnectAnytime-<versionName>-<versionCode>.apk` to a new tag.
