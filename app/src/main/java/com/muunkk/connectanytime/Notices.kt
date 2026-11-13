@@ -13,10 +13,15 @@ import android.os.Build
 object Notices {
     const val ONGOING = 1
     const val ENDED = 2
+    const val UPDATED = 3
+    const val CONFIRM_INSTALL = 4
     fun channels(c: Context) {
         val manager = c.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel("vpn", c.getString(R.string.vpn_channel), NotificationManager.IMPORTANCE_LOW))
         manager.createNotificationChannel(NotificationChannel("session-ended", c.getString(R.string.session_ended), NotificationManager.IMPORTANCE_DEFAULT))
+        manager.createNotificationChannel(NotificationChannel("updates", c.getString(R.string.updates_channel), NotificationManager.IMPORTANCE_LOW))
+        // Waiting on you, so it makes a sound, unlike the "updated" note.
+        manager.createNotificationChannel(NotificationChannel("update-confirm", c.getString(R.string.update_confirm_channel), NotificationManager.IMPORTANCE_DEFAULT))
     }
     // Service status strings are internal protocol values; localize at display boundaries.
     fun status(c: Context, value: String): String = c.getString(when {
@@ -47,6 +52,39 @@ object Notices {
             .setSmallIcon(R.drawable.ic_vpn).setContentTitle(c.getString(R.string.session_ended)).setContentText(text)
             .setStyle(Notification.BigTextStyle().bigText(text)).setCategory(Notification.CATEGORY_STATUS)
             .setContentIntent(open(c)).setAutoCancel(true).build())
+    }
+    /** After an update this app installed: Android doesn't reopen the app, so say it's done. */
+    fun updated(c: Context) {
+        if (Build.VERSION.SDK_INT >= 33 && c.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
+        c.getSystemService(NotificationManager::class.java).notify(UPDATED, Notification.Builder(c, "updates")
+            .setSmallIcon(R.drawable.ic_vpn).setContentTitle(c.getString(R.string.updated_title, BuildConfig.VERSION_NAME))
+            .setContentText(c.getString(R.string.updated_body)).setCategory(Notification.CATEGORY_STATUS)
+            .setContentIntent(open(c)).setAutoCancel(true).build())
+    }
+    /** Android's install confirmation arrived while the app wasn't open. Tapping this opens
+     *  that confirmation directly (it was made by the system for this session), so it works
+     *  even if this process has ended since. */
+    fun confirmInstall(c: Context, version: String, confirm: Intent, session: Int) {
+        if (Build.VERSION.SDK_INT >= 33 && c.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
+        val manager = c.getSystemService(NotificationManager::class.java)
+        // Turned off for the app or this channel: nothing would show, so don't count it as
+        // posted, or the app would think it was tapped and not open the confirmation itself.
+        if (!manager.areNotificationsEnabled() ||
+            manager.getNotificationChannel("update-confirm")?.importance == NotificationManager.IMPORTANCE_NONE) return
+        val tap = PendingIntent.getActivity(c, 100 + (session and 0xffff), confirm, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        manager.notify(CONFIRM_INSTALL, Notification.Builder(c, "update-confirm")
+            .setSmallIcon(R.drawable.ic_vpn).setContentTitle(c.getString(R.string.update_confirm_title, version))
+            .setContentText(c.getString(R.string.update_confirm_body)).setCategory(Notification.CATEGORY_STATUS)
+            .setContentIntent(tap).setAutoCancel(true).build())
+        confirmInstallPosted = true
+    }
+    /** Whether [confirmInstall] posted in this process (see Updater.takeConfirmation). */
+    @Volatile var confirmInstallPosted = false
+    fun confirmInstallShowing(c: Context) =
+        c.getSystemService(NotificationManager::class.java).activeNotifications.any { it.id == CONFIRM_INSTALL }
+    fun clearConfirmInstall(c: Context) {
+        confirmInstallPosted = false
+        c.getSystemService(NotificationManager::class.java).cancel(CONFIRM_INSTALL)
     }
     fun clear(c: Context) { c.getSystemService(NotificationManager::class.java).cancel(ENDED) }
 }

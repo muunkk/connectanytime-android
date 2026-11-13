@@ -39,6 +39,42 @@ class Store(private val context: Context) {
     var shareWithTether: Boolean
         get() = prefs.getBoolean("shareWithTether", false)
         set(v) { prefs.edit().putBoolean("shareWithTether", v).apply() }
+    /** Check GitHub for a newer release when the app opens (Updater.checkIfDue). */
+    var autoUpdate: Boolean
+        get() = prefs.getBoolean("autoUpdate", true)
+        set(v) { prefs.edit().putBoolean("autoUpdate", v).apply() }
+    /** The last check that worked (found nothing newer, or a verified download). */
+    var lastUpdateCheck: Long
+        get() = prefs.getLong("lastUpdateCheck", 0)
+        set(v) { prefs.edit().putLong("lastUpdateCheck", v).apply() }
+    /** When a check last found nothing newer; 0 once one did. Only this says "up to date". */
+    var upToDateAt: Long
+        get() = prefs.getLong("upToDateAt", 0)
+        set(v) { prefs.edit().putLong("upToDateAt", v).apply() }
+    var feedEtag: String?
+        get() = prefs.getString("feedEtag", null)
+        set(v) { prefs.edit().putString("feedEtag", v).apply() }
+    /** The digest of a release Android or the app refused, so it isn't downloaded again. */
+    var rejectedUpdate: String?
+        get() = prefs.getString("rejectedUpdate", null)
+        set(v) { prefs.edit().putString("rejectedUpdate", v).apply() }
+    /** Who rejected [rejectedUpdate]: Updater.REJECTED_BY_APP or REJECTED_BY_ANDROID. */
+    var rejectedBy: String?
+        get() = prefs.getString("rejectedBy", null)
+        set(v) { prefs.edit().putString("rejectedBy", v).apply() }
+    // The updater's markers are written with commit() but never throw: it shares the VPN's process.
+    /** The verified download waiting to be installed, as Release.json. */
+    var pendingUpdate: String?
+        get() = prefs.getString("pendingUpdate", null)
+        set(v) { prefs.edit().apply { if (v == null) remove("pendingUpdate") else putString("pendingUpdate", v) }.commit() }
+    /** The installer session of the current attempt, or Updater.NO_SESSION. */
+    var installSession: Int
+        get() = prefs.getInt("installSession", Updater.NO_SESSION)
+        set(v) { prefs.edit().putInt("installSession", v).commit() }
+    /** The build that started an install, so the updated app can say it worked. */
+    var updatingFrom: String?
+        get() = prefs.getString("updatingFrom", null)
+        set(v) { prefs.edit().apply { if (v == null) remove("updatingFrom") else putString("updatingFrom", v) }.commit() }
     var stayConnected: Boolean
         get() = prefs.getBoolean("stayConnected", true)
         set(v) { prefs.edit().putBoolean("stayConnected", v).apply() }

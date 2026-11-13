@@ -645,3 +645,189 @@ Full logs: `/tmp/tether-review-gradle-final.log`, `/tmp/tether-review-release.lo
 `/tmp/tether-review-native.log`. An initial race-test attempt failed on JNI library
 loading; suppressing only that initializer in the test fixed the harness. The
 complete command above was rerun afterwards and passed.
+
+# In-app updates from GitHub releases (2026-11-12)
+
+Version 0.1.2 (3). Checks this repo's GitHub releases, downloads a newer APK,
+verifies it, and installs it with `PackageInstaller`. This section describes the code as
+it is after the council rounds. The rounds are listed at the end.
+
+## Design
+
+- **Release selection (`ReleaseFeed.newest`).** Pure and JVM-tested. It takes the
+  highest version code above the installed one. It needs:
+  - an asset named exactly `ConnectAnytime-<name>-<code>.apk`;
+  - a `sha256:` digest of 64 lowercase hex characters;
+  - a `browser_download_url` under `https://github.com/muunkk/connectanytime-android/releases/download/`,
+    ending in the asset name, without `..`;
+  - state `uploaded` and a size from 1 byte to 200 MB;
+  - a release page in this repo.
+
+  Drafts are skipped. Prereleases count.
+- **One thread.**
+  - `Updater` runs every step on a single IO thread, in order: restore at startup,
+    checks, installs and the installer's answers.
+  - An atomic gate stops checks from overlapping.
+  - A `CoroutineExceptionHandler` logs anything unexpected, so nothing in the updater
+    can take down the process it shares with the VPN.
+  - Seams for tests: `Http`, `inspect` (APK facts), `installedSigners`, the dispatcher and
+    the clock.
+- **Check.**
+  - The release list is fetched with `X-GitHub-Api-Version: 2022-11-28` and the generic
+    User-Agent `ConnectAnytime-Android`. It's capped at 2 MB and revalidated with its ETag.
+  - The list is parsed before it's cached in `noBackupFilesDir/release-feed.json`, so a
+    bad list isn't kept.
+  - Up to date is shown only when a check found nothing newer (`upToDateAt`).
+  - The next automatic check is due 6 h after the last check that worked
+    (`lastUpdateCheck`). A failure resets that, so the next opening retries.
+  - HTTP 403 and 429 show "limiting". Other I/O shows "couldn't reach". JSON errors show
+    "couldn't read". Anything else shows "something went wrong".
+- **Download.**
+  - The APK streams to `noBackupFilesDir/updates/download.apk` while it is hashed. It is
+    refused once it grows past the expected size, and must match the size and SHA-256
+    exactly.
+  - It's verified in staging, then renamed over the kept APK. An earlier verified
+    download, even one with the same name, survives any failure.
+  - An APK rejected for package, version or signer, or permanently by Android's installer,
+    is remembered by digest (`rejectedUpdate`, `rejectedBy`) and not downloaded again. A
+    check that finds only that release counts as a check that worked, so the app doesn't
+    ask GitHub again at every opening.
+- **Verification before every install, and on restore.**
+  - Size and SHA-256.
+  - `getPackageArchiveInfo`: the package must be `com.muunkk.connectanytime` and the
+    version code must equal the one in the asset name.
+  - The installed current signers must all appear in the archive's signers or its
+    rotation history.
+  - Where Android returns no signing info, the installer's own same-signer rule still
+    applies.
+- **Install.**
+  - Abandons the app's own open sessions, then creates a `MODE_FULL_INSTALL` session with
+    `setAppPackageName` and `INSTALL_REASON_USER`. On API 31+ it also sets
+    `USER_ACTION_NOT_REQUIRED`, and `UPDATE_PACKAGES_WITHOUT_USER_ACTION` is declared.
+  - The session ID and `updatingFrom` are saved before commit.
+  - Status goes to the non-exported `InstallReceiver` through a mutable, explicit
+    `PendingIntent`. The receiver holds `goAsync()` until the updater has handled it.
+  - Answers for any other session are ignored. A fresh process still accepts the saved
+    session's answer, because restore keeps the ID when Android no longer has that
+    session.
+- **Confirmation.**
+  - Held in a StateFlow that `MainActivity` launches while started, taken once. The
+    receiver never starts activities.
+  - With no started activity, a notification is posted on the `update-confirm` channel
+    (default importance). Its immutable `PendingIntent` opens the system's confirmation
+    directly, so it works after process death.
+  - Once that notification has been tapped or dismissed, the app doesn't open the
+    confirmation again.
+  - If notifications are off for the app or that channel, nothing is posted. The app then
+    opens the confirmation itself when you return.
+  - **Try again** appears 30 s after commit, measured on `elapsedRealtime`; earlier taps
+    are ignored. Then:
+    - a confirmation still open is shown again;
+    - with no confirmation and the session still held by Android, it's left alone for up
+      to 2 minutes, because that's a silent install being checked and optimised;
+    - otherwise a new session replaces the old one.
+- **Answers.**
+  - Abort: Ready, with "cancelled".
+  - CONFLICT (which is how a different signer comes back), INCOMPATIBLE and INVALID:
+    drop the APK, remember it, Failed "Android didn't install the update".
+  - Other failures: Ready, with that note. Failures are logged.
+  - Success: nothing. Android stops the process. `BootReceiver` then logs "Updated from X
+    to Y", posts "Updated to version …" if notifications are allowed, and clears
+    `updatingFrom`.
+- **VPN.** The install note uses `Controls.restartsAutomatically` (Stay Connected, saved
+  session, no Disconnect), the rule `BootReceiver` uses:
+  - rejoins without Duo, "if that session has ended, tap Connect";
+  - turns off;
+  - Stay Connected rejoins afterwards;
+  - the app closes.
+
+  An automatic start never logs in with the password (`ConnectVpnService`'s login gate).
+  So an update can't cause a second Duo push.
+
+## UI (Material 3 Expressive)
+
+- **Update ready card under the status panel.** It shows only when an update is ready or
+  installing. It's outlined on the page colour, so it never merges with the status
+  panel. It has a filled Install button, or Try again while installing.
+- **About group in three segments:**
+  - the build;
+  - a check row: idle, checking with a `LoadingIndicator`, up to date with a relative
+    time, or a failure in error colour;
+  - the Check automatically switch.
+
+  While downloading, the check row becomes a `LinearWavyProgressIndicator` with a
+  percentage. When an update is ready, it shows Install and What's new, the VPN note, and
+  "may ask to allow installs" while that's not yet allowed. While installing, it shows
+  progress and Try again.
+- Stay Connected is state in `HomeScreen`, shared by the switch and the update notes.
+
+## Checks
+
+- **Live data.** I captured `GET /repos/muunkk/connectanytime-android/releases` on
+  2026-11-12, trimmed, as `app/src/test/resources/github-releases.json`. `readsTheLiveFeed`
+  picks v0.1.1 (2), digest `d29b1be5…eb90e`. A download with the same headers made one
+  https→https redirect, and the bytes matched the digest. `aapt2` reads them as
+  `com.muunkk.connectanytime` version 2, signer `b5e81629…080035e`, the same as this
+  build's release signer.
+- **`./gradlew :app:testDebugUnitTest`:** 141 tests, 0 failures.
+  - `UpdatesTest` (13 tests):
+    - feed selection, 15 rejection cases, the live feed and malformed feeds;
+    - the `Release` round trip;
+    - the updated notice on `MY_PACKAGE_REPLACED` only;
+    - check-row states, Install in both places, the four VPN notes, Try again, and the
+      auto-check switch.
+  - `UpdaterTest` (22 tests):
+    - up to date;
+    - download, verify, Ready, each across a restart;
+    - corrupt and oversized downloads;
+    - wrong signer, package or version, rejected once;
+    - signer rules;
+    - a failed newer download and a broken republish both keep the verified APK;
+    - stale and missing restores;
+    - ETag 304, and no ETag without a cache;
+    - 403 and bad lists;
+    - unexpected exceptions and `Error`s;
+    - one session: a double tap ignored, a silent install left alone, and a later Try
+      again replacing it;
+    - the notification opening the confirmation itself, and a tapped notification not
+      opening it twice;
+    - with notifications off, the app opening the confirmation;
+    - Try again re-showing an open confirmation;
+    - installer answers, including the confirmation notification;
+    - a restart during an install;
+    - a fresh process hearing a CONFLICT refusal;
+    - retrying after a failed download right after a successful check, and auto-check off;
+    - `MainActivity` opening the confirmation once;
+    - `updatingFrom` plus Disconnect starting nothing.
+  - `ScreenshotTest` has three update states, in light and dark.
+- **`./gradlew :app:lintDebug`:** 0 errors, and no warnings in the update files.
+- **`assembleRelease`:** passes, as do `scripts/verify-release.py` and
+  `scripts/verify-native.sh`. The release manifest keeps `InstallReceiver` and both
+  install permissions.
+
+## Council rounds
+
+Gemini was unavailable in every round: Cursor said Gemini 4 Carbon isn't in this week's
+usage.
+
+| Round | Opus | GPT Sol | Main findings fixed after it |
+|---|---|---|---|
+| 1 | 7.5 | 7 | Sessions tracked; confirmation via the activity; no crashes in the VPN process; up to date only when true; staging download; VPN note follows `BootReceiver`; copy; `Updater` tests |
+| 2 | 8 | 8 | `goAsync`; the notification opens the confirmation itself; retry after a failed download; double tap; Try again re-shows the confirmation; fresh-process answers; CONFLICT is permanent; error wording; rejoin copy names the ended-session case; ETag claim corrected |
+| 3 | 8.5 | 8.5 | Try again only after 30 s, and never over a silent install in progress; notifications turned off no longer swallow the confirmation; its own default-importance channel; `elapsedRealtime` for the window; a refused release doesn't trigger a check at every opening; manifest comment |
+
+## Limits
+
+Round 3 found nothing blocking, so there was no fourth round.
+
+No Android device or emulator was available: the Android device tools on this Mac lack
+the SDK command-line tools. These need checking on a device:
+
+- the `PackageInstaller` commit;
+- installs without asking on Android 12+, compared with the confirmation;
+- the "Install unknown apps" detour;
+- a confirmation in the background, and its notification;
+- the VPN rejoining after `MY_PACKAGE_REPLACED`.
+
+The first real test is installing 0.1.2 by hand, then updating to the next release from
+inside the app.

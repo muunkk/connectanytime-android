@@ -256,6 +256,63 @@ session storage. Android allows only one active VPN at a time. The debug build
 uses the local debug key. Release updates must use the release key above.
 Nothing has been published or pushed.
 
+## Updates
+
+From 0.1.2 the app updates itself from this repo's GitHub releases (`Updates.kt`,
+`UpdateSection.kt`).
+
+- **When it checks.** On opening the app, at most every 6 hours after the last
+  check that worked, while **Check automatically** (under About) is on. A failed check is
+  tried again the next time you open the app. You can also tap **Check for updates**.
+  - It reads `api.github.com/repos/muunkk/connectanytime-android/releases`,
+    prereleases included, with a generic User-Agent and no account.
+  - It revalidates with the list's ETag, so an unchanged list isn't sent again. Without
+    an account, GitHub allows 60 requests an hour per address. That could run out on the
+    VPN's shared address; the app then says GitHub is limiting checks.
+  - The app's traffic goes through the VPN when it's connected.
+- **What it accepts.** The highest build number above this one among release assets
+  named `ConnectAnytime-<versionName>-<versionCode>.apk`, served from this repo's
+  release downloads, with a GitHub `sha256:` digest. Drafts and assets without a digest
+  are ignored, so publish releases with `gh release create` or the web upload, which
+  record one.
+- **Before installing.**
+  - The download goes to a staging file in the app's no-backup storage and must
+    match the digest and size exactly.
+  - Android must then read it as `com.muunkk.connectanytime`, with the expected version
+    code, signed with this app's certificate. Anything else is deleted, and that
+    release isn't downloaded again.
+  - Only then does it replace an earlier verified download. A failed download never
+    costs you one that was ready.
+  - Android's installer also refuses an update signed with any other key.
+- **Installing.**
+  - An **Update ready** card appears under the status panel, and the About section
+    has **Install** and **What's new**. Install hands the APK to `PackageInstaller`.
+  - On Android 12+, Android can let an app update itself without asking
+    (`USER_ACTION_NOT_REQUIRED`, `UPDATE_PACKAGES_WITHOUT_USER_ACTION`). Otherwise it
+    shows its confirmation, and may first ask you to allow installs from ConnectAnytime.
+  - The confirmation is opened by the app's screen. If the app isn't in front, a
+    notification opens the confirmation itself, even if the app has been closed since.
+  - **Try again** appears 30 s after Install. It shows a confirmation that's still open
+    again. With no confirmation, it leaves alone a session Android is still working on, for
+    up to 2 minutes, since that's a silent install. Otherwise it replaces the attempt, and
+    answers from replaced attempts are ignored.
+  - A refusal that can never succeed (a different signer, a downgrade, an unsupported SDK
+    or a broken package) drops the APK, and that release isn't downloaded again.
+  - Releases must keep a current targetSdk for installs without asking to keep working.
+- **The VPN during an update.** Android stops the app to replace it. The note on the
+  card says what happens, using the same rule as `BootReceiver`
+  (`Controls.restartsAutomatically`):
+  - With Stay Connected on, a saved session, and no Disconnect, the VPN restarts
+    afterwards and rejoins without Duo. An automatic start never logs in with the password.
+    If the server has ended that session meanwhile, it stays off and you tap Connect.
+  - Otherwise it stays off until you tap Connect.
+
+  The updated app logs "Updated from … to …". If notifications are allowed, it also posts
+  "Updated to version …", since Android doesn't reopen it.
+
+To release: bump `versionCode` and `versionName` in `app/build.gradle.kts`, build and
+verify, then attach `ConnectAnytime-<versionName>-<versionCode>.apk` to a new tag.
+
 ## Source map
 
 - `app/src/main/cpp/ocbridge.{c,h}`: iOS bridge port, one-answer login, cookie
@@ -274,6 +331,8 @@ Nothing has been published or pushed.
   (dynamic and fallback colors, motion, reduced-motion handling), the status area and
   settings, and shareable activity grouped by day with confirmed clearing.
 - `Controls.kt`, `ConnectApp.kt`: tile, shortcuts, boot and the process StateFlow.
+- `Updates.kt`, `UpdateSection.kt`: GitHub release check, verified download,
+  PackageInstaller session and its status receiver, and their UI.
 - `app/src/main/AndroidManifest.xml`, `res/`: permissions, Android components,
   icons, shortcuts and backup exclusions.
 - `Vendor/`, `gradle/`, root Gradle files: pinned builds and the five patches.

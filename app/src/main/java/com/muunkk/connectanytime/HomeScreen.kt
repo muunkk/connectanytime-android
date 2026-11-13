@@ -55,13 +55,18 @@ fun VpnState.phase(): Phase = when {
 
 @Composable
 fun HomeScreen(store: Store, state: VpnState, notificationDenied: Boolean, onConnect: () -> Unit,
-    onDisconnect: () -> Unit, onActivity: () -> Unit, onStayChanged: () -> Unit) {
+    onDisconnect: () -> Unit, onActivity: () -> Unit, onStayChanged: () -> Unit,
+    update: UpdateState = UpdateState.Idle, onCheckUpdate: () -> Unit = {}, onInstallUpdate: () -> Unit = {}) {
     val focus = LocalFocusManager.current
     var user by rememberSaveable { mutableStateOf(store.user) }
     var server by rememberSaveable { mutableStateOf(store.server) }
     var hasPassword by remember { mutableStateOf(store.hasPassword) }
     // Validation shown in the status area, cleared by the next tap.
     var problem by remember { mutableStateOf<Int?>(null) }
+    // Hoisted: the switch and the update notes must agree.
+    var stay by remember { mutableStateOf(store.stayConnected) }
+    // BootReceiver's rule; reading `stay` recomposes this when the switch changes.
+    val restarts = stay && Controls.restartsAutomatically(store)
     val ready = user.isNotBlank() && (hasPassword || store.hasSession)
     val primary = {
         focus.clearFocus(); problem = null
@@ -81,10 +86,12 @@ fun HomeScreen(store: Store, state: VpnState, notificationDenied: Boolean, onCon
         BoxWithConstraints(Modifier.fillMaxSize().padding(insets).consumeWindowInsets(insets).imePadding()) {
             val status = @Composable { modifier: Modifier ->
                 StatusPanel(state, store.server, ready, problem, notificationDenied, primary, modifier)
+                UpdateBanner(update, state, restarts, onInstallUpdate)
             }
             val settings = @Composable {
                 Settings(store, state, user, { user = it; store.user = it }, server, { server = it; store.server = it },
-                    hasPassword, { hasPassword = it; if (it) problem = null }, onActivity, onStayChanged)
+                    hasPassword, { hasPassword = it; if (it) problem = null }, onActivity,
+                    stay, { stay = it; store.stayConnected = it; onStayChanged() }, update, restarts, onCheckUpdate, onInstallUpdate)
             }
             if (maxWidth >= 600.dp) {
                 // Side by side on tablets and wide landscape: the status stays in view.
@@ -260,13 +267,13 @@ private fun PrimaryButton(busy: Boolean, onClick: () -> Unit) {
 
 @Composable
 private fun Settings(store: Store, state: VpnState, user: String, onUser: (String) -> Unit, server: String, onServer: (String) -> Unit,
-    hasPassword: Boolean, onHasPassword: (Boolean) -> Unit, onActivity: () -> Unit, onStayChanged: () -> Unit) {
+    hasPassword: Boolean, onHasPassword: (Boolean) -> Unit, onActivity: () -> Unit, stay: Boolean, onStay: (Boolean) -> Unit,
+    update: UpdateState, restarts: Boolean, onCheckUpdate: () -> Unit, onInstallUpdate: () -> Unit) {
     val context = LocalContext.current
     val focus = LocalFocusManager.current
     // Passwords deliberately never enter saved instance state.
     var password by remember { mutableStateOf("") }
     var visible by remember { mutableStateOf(false) }
-    var stay by remember { mutableStateOf(store.stayConnected) }
     var storageError by remember { mutableStateOf<Int?>(null) }
     var confirmRemove by rememberSaveable { mutableStateOf(false) }
     val savePassword = {
@@ -329,7 +336,7 @@ private fun Settings(store: Store, state: VpnState, user: String, onUser: (Strin
     Group(3) { index ->
         val shapes = ListItemDefaults.segmentedShapes(index, 3)
         when (index) {
-            0 -> SegmentedListItem(colors = segmentColors(), onClick = { stay = !stay; store.stayConnected = stay; onStayChanged() }, shapes = shapes,
+            0 -> SegmentedListItem(colors = segmentColors(), onClick = { onStay(!stay) }, shapes = shapes,
                 // A switch to TalkBack, with the whole row as its touch target.
                 modifier = Modifier.semantics { role = Role.Switch; toggleableState = ToggleableState(stay) },
                 leadingContent = { Icon(painterResource(R.drawable.ic_sync), contentDescription = null) },
@@ -361,13 +368,13 @@ private fun Settings(store: Store, state: VpnState, user: String, onUser: (Strin
     }
 
     SectionTitle(R.string.about)
-    Group(1) {
-        FieldSegment(0, 1, padded = false) {
+    Group(3) { index ->
+        if (index == 0) FieldSegment(0, 3, padded = false) {
             ListItem(headlineContent = { Text(BuildConfig.BUILD_DESCRIPTION) },
                 leadingContent = { Icon(painterResource(R.drawable.ic_info), contentDescription = null) },
                 supportingContent = { Text(stringResource(R.string.affiliation)) },
                 colors = ListItemDefaults.colors(containerColor = Color.Transparent))
-        }
+        } else UpdateSegment(index, 3, store, update, state, restarts, onCheckUpdate, onInstallUpdate)
     }
     Spacer(Modifier.height(24.dp))
 
