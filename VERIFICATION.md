@@ -762,13 +762,13 @@ it is after three council rounds. The rounds are listed at the end.
   `com.muunkk.connectanytime` version 2, signer `b5e81629…080035e`, the same as this
   build's release signer.
 - **`./gradlew :app:testDebugUnitTest`:** 139 tests, 0 failures.
-  - `UpdatesTest` (14 tests):
+  - `UpdatesTest` (13 tests):
     - feed selection, 15 rejection cases, the live feed and malformed feeds;
     - the `Release` round trip;
     - the updated notice on `MY_PACKAGE_REPLACED` only;
     - check-row states, Install in both places, the four VPN notes, Try again, and the
       auto-check switch.
-  - `UpdaterTest` (21 tests):
+  - `UpdaterTest` (20 tests):
     - up to date;
     - download, verify, Ready, each across a restart;
     - corrupt and oversized downloads;
