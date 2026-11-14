@@ -211,8 +211,9 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
             app.log.add(service.getString(if (binding.link == TetherLink.Usb) R.string.tether_stopped else R.string.tether_stopped_hotspot))
         }
     }
-    private fun vpn(): ProxyNetwork? {
-        if (closed.get() || !app.store.sharing || (!connected && !reconnecting)) return null
+    private fun vpn(link: TetherLink): ProxyNetwork? {
+        // This link's own switch: a client accepted as its link was turned off doesn't get through.
+        if (closed.get() || !app.store.shares(link) || (!connected && !reconnecting)) return null
         val cm = service.getSystemService(ConnectivityManager::class.java)
         // Match our actual tun, not another VPN visible during a handover/revocation.
         val iface = service.tetherVpnInterface() ?: return null
@@ -240,7 +241,7 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
                 val http: ProxyProtocol.Http?
                 val target = if (socks) { http = null; ProxyProtocol.socks(input, client.getOutputStream()) }
                     else { input.unread(first); http = ProxyProtocol.http(input); http.target }
-                val remote = connectViaVpn(vpn(), target, ::register)
+                val remote = connectViaVpn(vpn(listener.binding.link), target, ::register)
                 ready = true
                 tunnel = socks || http!!.connect
                 if (socks) ProxyProtocol.socksReply(client.getOutputStream(), 0)

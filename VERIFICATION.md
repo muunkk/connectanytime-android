@@ -866,7 +866,7 @@ the phone's hotspot can use the VPN. Branch `hotspot-proxy`.
 
 ## Checks
 
-- `./gradlew testDebugUnitTest lintDebug`: 115 tests, 0 failures; lint 0 errors.
+- `./gradlew testDebugUnitTest lintDebug` on the branch combined with the updater: 158 tests, 0 failures; lint 0 errors.
 - `scripts/verify-release.py`: all PASS, release signed with b5e81629…080035e.
 - Not run on a device: hotspot detection on a real phone (including after a reboot
   before any tethering), an iPhone through the proxy, and USB regression.
@@ -877,5 +877,6 @@ the phone's hotspot can use the VPN. Branch `hotspot-proxy`.
 | --- | --- | --- | --- |
 | 1 | 6 | 6 | Consent extended silently; AP→STA race; sticky overwrite; `ap_br_softap`; Mac Wi-Fi advice; iPhone Save |
 | 2 | 8 | 9 | None. Opus's remaining items fixed in round 2 commit |
+| 3 (merge check, combined with the updater) | 8.5 | 9 | None. A client accepted as its link's switch goes off no longer reaches the VPN through the other link's switch |
 
 Gemini was not run (unavailable in the previous round).
