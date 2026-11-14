@@ -15,6 +15,41 @@ The connection status fills the top of the screen: **Not connected**, **Connecti
 **Couldn’t connect** with the reason. **VPN session ended** means the server ended
 the session and Connect will log in again. One button connects or disconnects.
 
+Under it, while the VPN is connected or sharing is turned on, the **Sharing** card shows
+whether the VPN is being shared and with whom:
+- whether the phone is **using mobile data**, **Wi‑Fi** or Ethernet;
+- for USB tethering and the hotspot, each with its own switch: off, waiting for
+  tethering, on at its address, or why it can't start;
+- while a link is sharing, the devices on it (by address), their open connections, and
+  the data down and up since it started sharing.
+
+A device counts while it has a connection open or for a minute after its last traffic.
+The card's switches are the same settings as the **Share the VPN** section and the widget.
+
+### Home screen widget
+
+Add **ConnectAnytime** from the launcher's widgets. It shows whether the VPN is
+connected and which network the phone is using. It also has:
+- a power button that connects or disconnects;
+- **USB** and **Hotspot** buttons that turn sharing on or off and show what each link
+  is doing, or how many devices are on it;
+- a hotspot settings button.
+
+Android doesn't let apps turn the hotspot itself on or off, so that button opens
+Android's tethering screen. Use Android's own Hotspot tile in Quick Settings for one tap.
+
+The widget fits 2 × 2 and larger. Below about four cells wide it drops the words and,
+at its narrowest, the settings button.
+
+Connect from the widget is a tap you make, so it may log in and send a Duo push, like
+the app's button. It goes through a small invisible screen, which first unlocks the
+phone if needed. It opens the app instead when VPN permission, a NetID or a password
+is missing. Connect or Disconnect is decided when you tap, so a widget that hasn't
+redrawn yet can't do the opposite.
+
+The widget redraws when the VPN, sharing or the switches change, and every 30 minutes
+in case the app was stopped.
+
 Below it: your NetID and password (show/hide, Save, and Remove saved password,
 which asks first), **Stay Connected**, a shortcut to **Android VPN settings** for
 Always-on VPN, the server (locked while connecting or connected), **Activity** and
@@ -51,8 +86,8 @@ password or another Duo push. The original DNS name and IP are retained, preferr
 that IP when it is usable on the current network, with normal DNS answers as
 fallback. A rejoin returning 401/EPERM clears the session and waits for Connect.
 
-Only the app button, unlocked Quick Settings tile or launcher Connect shortcut
-can authorize a login. Boot, app updates, process restarts and Android Always-on
+Only the app button, unlocked Quick Settings tile, launcher Connect shortcut or the
+widget's power button can authorize a login. Boot, app updates, process restarts and Android Always-on
 VPN starts only rejoin. Repeated automatic starts without a session are counted: log the first,
 notify “VPN session ended”, summarize every 30 minutes, then report the total when
 a start goes ahead. Notification permission is requested on Android 13 and later when you first tap
@@ -331,6 +366,9 @@ verify, then attach `ConnectAnytime-<versionName>-<versionCode>.apk` to a new ta
   (dynamic and fallback colors, motion, reduced-motion handling), the status area and
   settings, and shareable activity grouped by day with confirmed clearing.
 - `Controls.kt`, `ConnectApp.kt`: tile, shortcuts, boot and the process StateFlow.
+- `SharingCard.kt`, `ShareUsage.kt`: the Sharing status card, and per-link device,
+  connection and traffic counts from the proxy.
+- `ConnectWidget.kt`, `res/xml/connect_widget_info.xml`: the Glance home screen widget.
 - `Updates.kt`, `UpdateSection.kt`: GitHub release check, verified download,
   PackageInstaller session and its status receiver, and their UI.
 - `app/src/main/AndroidManifest.xml`, `res/`: permissions, Android components,
@@ -390,7 +428,9 @@ or removal.
 On an iPhone on the hotspot: **Settings → Wi-Fi → ⓘ next to the hotspot → Configure
 Proxy → Manual**, with the Server and Port shown in the hotspot card and
 Authentication off, then tap **Save**. iOS keeps this per Wi-Fi network, so only the
-hotspot is affected; set it back to **Off** (and Save) when you're done.
+hotspot is affected, and you can leave it on to use the VPN whenever you're on this
+hotspot. While it's on, browsing on the hotspot needs sharing on here. To use the
+hotspot without the VPN, set it back to **Off** and tap Save.
 
 On macOS: **System Settings → Network → the phone's USB service (or Wi-Fi, on the
 hotspot) → Details → Proxies**. Turn on **Web proxy (HTTP)**, **Secure web proxy (HTTPS)** and

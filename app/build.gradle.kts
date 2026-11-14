@@ -27,8 +27,8 @@ android {
         applicationId = "com.muunkk.connectanytime"
         minSdk = 29
         targetSdk = 36
-        versionCode = 3
-        versionName = "0.1.2"
+        versionCode = 4
+        versionName = "0.1.3"
         buildConfigField("String", "BUILD_DESCRIPTION", "\"ConnectAnytime $versionName (build $versionCode)\"")
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
         externalNativeBuild { cmake { arguments += "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON" } }
@@ -73,6 +73,10 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.4")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("androidx.core:core-splashscreen:1.0.1")
+    // The home screen widget (ConnectWidget.kt). Glance 1.2.0 is the newest stable release.
+    implementation("androidx.glance:glance-appwidget:1.2.0")
+    implementation("androidx.glance:glance-material3:1.2.0")
+    testImplementation("androidx.glance:glance-appwidget-testing:1.2.0")
     testImplementation("androidx.compose.ui:ui-test-junit4")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
     testImplementation("org.robolectric:robolectric:4.16")

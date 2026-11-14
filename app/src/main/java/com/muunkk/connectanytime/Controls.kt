@@ -14,6 +14,9 @@ import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 
 object Controls {
+    /** The widget's power button: Disconnect while busy, otherwise Connect. */
+    const val TOGGLE = "com.muunkk.connectanytime.TOGGLE"
+    const val OPEN_TETHERING = "com.muunkk.connectanytime.OPEN_TETHERING"
     /** Whether a reboot or app update starts the VPN again by itself (BootReceiver), which only
      *  rejoins the saved session: an automatic start never logs in with the password. */
     fun restartsAutomatically(store: Store) = store.stayConnected && store.hasSession && !store.disconnected
@@ -98,11 +101,20 @@ class ShortcutActivity : Activity() {
         }) else perform()
     }
     private fun perform() {
-        if (intent.action == ConnectVpnService.DISCONNECT) Controls.disconnect(this)
-        else if (intent.action == ConnectVpnService.CONNECT) {
-            if (VpnService.prepare(this) == null) Controls.connect(this)
-            else startActivity(Intent(this, MainActivity::class.java))
+        when (intent.action) {
+            ConnectVpnService.DISCONNECT -> Controls.disconnect(this)
+            ConnectVpnService.CONNECT -> connect()
+            // Decided now, not when the widget was drawn, so a stale widget can't do the opposite.
+            Controls.TOGGLE -> if (ConnectApp.state.value.busy) Controls.disconnect(this) else connect()
+            Controls.OPEN_TETHERING -> openTethering(this)
         }
         finish()
+    }
+    /** Connects, unless the app first needs VPN permission or a NetID and password: then it opens. */
+    private fun connect() {
+        val store = (application as ConnectApp).store
+        val ready = store.user.isNotBlank() && (store.hasPassword || store.hasSession)
+        if (ready && VpnService.prepare(this) == null) Controls.connect(this)
+        else startActivity(Intent(this, MainActivity::class.java))
     }
 }

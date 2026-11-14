@@ -86,7 +86,9 @@ fun HomeScreen(store: Store, state: VpnState, notificationDenied: Boolean, onCon
         BoxWithConstraints(Modifier.fillMaxSize().padding(insets).consumeWindowInsets(insets).imePadding()) {
             val status = @Composable { modifier: Modifier ->
                 StatusPanel(state, store.server, ready, problem, notificationDenied, primary, modifier)
+                // A ready update is a one-off prompt, so it comes before the standing sharing card.
                 UpdateBanner(update, state, restarts, onInstallUpdate)
+                SharingCard(store, state, modifier)
             }
             val settings = @Composable {
                 Settings(store, state, user, { user = it; store.user = it }, server, { server = it; store.server = it },

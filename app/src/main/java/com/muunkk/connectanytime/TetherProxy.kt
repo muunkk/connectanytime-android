@@ -57,6 +57,10 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
     // Atomic, not the controller monitor: reconcile and close hold that while joining this
     // accept thread, which would then wait out the join timeout to log a refusal.
     private val lastRefusal = java.util.concurrent.atomic.AtomicLong(0)
+    /** Who is using each link, for the status card (ConnectApp.tetherUsage). */
+    private val meter = UsageMeter()
+    @Volatile private var sharingLinks = emptySet<TetherLink>()
+    private val usagePending = AtomicBoolean()
     private val prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key in ConnectApp.SHARE_KEYS && !closed.get()) runCatching { timer.execute { reconcile() } }
     }
@@ -169,6 +173,17 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
             !connected -> TetherShare.WaitingForVpn
             else -> TetherShare.Active(port, link(TetherLink.Usb, usbOn), link(TetherLink.Hotspot, hotspotOn))
         }
+        sharingLinks = listeners.keys.map { it.link }.toSet()
+        publishUsage()
+    }
+    /** On the timer thread only, so snapshots (which also reset links that stopped) don't interleave. */
+    private fun publishUsage() {
+        if (!closed.get()) ConnectApp.mutableTetherUsage.value = meter.snapshot(System.nanoTime(), sharingLinks)
+    }
+    /** A device connected or left: show it now rather than at the next rescan, at most one update queued. */
+    private fun usageChanged() {
+        if (closed.get() || !usagePending.compareAndSet(false, true)) return
+        runCatching { timer.execute { usagePending.set(false); publishUsage() } }.onFailure { usagePending.set(false) }
     }
     private fun portInUse(e: Exception) = e is java.net.BindException &&
         (e.message.orEmpty().contains("EADDRINUSE") || e.message.orEmpty().contains("in use", ignoreCase = true))
@@ -199,6 +214,7 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
                     if (closed.get() || server.isClosed || !app.store.shares(binding.link) || (!connected && !reconnecting) || sessions.size >= 256) client.close()
                     else {
                         val session = Session(this, client); sessions.add(session)
+                        usageChanged()
                         try { workers.execute { session.run() } } catch (_: Exception) { session.close() }
                     }
                 }
@@ -227,15 +243,20 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
         private var ended = false
         @Volatile var ready = false
         @Volatile var activity = System.nanoTime()
+        private val link = listener.binding.link
+        private val device = client.inetAddress.hostAddress ?: "?"
+        init { meter.opened(link, device, activity) }
         @Synchronized fun register(socket: Socket) { if (ended) { socket.close(); throw ProxyFailure() }; sockets.add(socket) }
-        private fun input(socket: Socket): InputStream = object : FilterInputStream(socket.getInputStream()) {
-            override fun read(): Int = super.read().also { if (it >= 0) activity = System.nanoTime() }
-            override fun read(b: ByteArray, off: Int, len: Int): Int = `in`.read(b, off, len).also { if (it > 0) activity = System.nanoTime() }
+        /** Counts what's read: from the client is upload, from the remote end download. */
+        private fun input(socket: Socket, up: Boolean): InputStream = object : FilterInputStream(socket.getInputStream()) {
+            private fun count(n: Int) { val now = System.nanoTime(); activity = now; meter.traffic(link, device, up, n, now) }
+            override fun read(): Int = super.read().also { if (it >= 0) count(1) }
+            override fun read(b: ByteArray, off: Int, len: Int): Int = `in`.read(b, off, len).also { if (it > 0) count(it) }
         }
         fun run() {
             var socks = false; var tunnel = false; var replied = false
             try {
-                val input = java.io.PushbackInputStream(input(client), 1)
+                val input = java.io.PushbackInputStream(input(client, up = true), 1)
                 val first = input.read(); if (first < 0) return
                 socks = first == 5
                 val http: ProxyProtocol.Http?
@@ -254,7 +275,7 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
                         uploadProxyRequest(input, remote, if (tunnel) null else http!!.head)
                     } catch (_: Exception) { close() } finally { uploadDone.countDown() }
                 }
-                val incoming = input(remote)
+                val incoming = input(remote, up = false)
                 if (tunnel) incoming.copyTo(client.getOutputStream(), 16384)
                 else {
                     var response: ProxyProtocol.Head
@@ -281,7 +302,11 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
                 }
             } finally { close() }
         }
-        @Synchronized override fun close() { ended = true; sockets.forEach { runCatching { it.close() } }; sessions.remove(this) }
+        @Synchronized override fun close() {
+            val first = !ended
+            ended = true; sockets.forEach { runCatching { it.close() } }; sessions.remove(this)
+            if (first) { meter.closed(link, device, System.nanoTime()); usageChanged() }
+        }
     }
     @Synchronized override fun close() {
         if (!closed.compareAndSet(false, true)) return
@@ -293,6 +318,7 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
         synchronized(sessions) { sessions.toList().forEach { it.close() } }
         workers.shutdownNow(); workers.awaitTermination(3, TimeUnit.SECONDS)
         ConnectApp.mutableTetherShare.value = if (app.store.sharing) TetherShare.VpnNotConnected else TetherShare.Off
+        ConnectApp.mutableTetherUsage.value = TetherUsage()
     }
 }
 

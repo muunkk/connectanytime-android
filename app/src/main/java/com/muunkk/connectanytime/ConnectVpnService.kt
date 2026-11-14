@@ -39,7 +39,9 @@ class ConnectVpnService : VpnService() {
         java.net.NetworkInterface.getByInetAddress(android.net.InetAddresses.parseNumericAddress(address))?.name
     }
     private var watch: NetworkWatch? = null
+    /** The physical network the VPN runs over; its kind is shown on the sharing card and widget. */
     private var underlying: Network? = null
+        set(value) { field = value; ConnectApp.mutableUplink.value = uplinkOf(getSystemService(ConnectivityManager::class.java), value) }
     private var networkBaseline = NetworkBaseline()
     private var online = false
     private var watchdog: ScheduledFuture<*>? = null

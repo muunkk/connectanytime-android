@@ -880,3 +880,62 @@ the phone's hotspot can use the VPN. Branch `hotspot-proxy`.
 | 3 (merge check, combined with the updater) | 8.5 | 9 | None. A client accepted as its link's switch goes off no longer reaches the VPN through the other link's switch |
 
 Gemini was not run (unavailable in the previous round).
+
+# Sharing card, home screen widget and uplink (2026-11-14)
+
+Version 0.1.3 (4). Branch `proxy-status`.
+
+## Design
+
+- **Usage counting (`ShareUsage.kt`, `UsageMeter`).**
+  - Per link: client addresses with a session open or traffic in the last 60 s, the
+    open session count, and bytes from clients (up) and from remote ends (down).
+  - Thread-safe: sessions report from their own threads.
+  - Snapshots run only on the proxy's timer thread: on every rescan (2 s), and on a
+    session opening or closing (at most one queued).
+  - A link without a listener is reported empty and its counts start over.
+  - `TetherProxy.close()` publishes an empty `TetherUsage`.
+- **Uplink.** `ConnectVpnService.underlying` publishes its transport (cellular, Wi-Fi,
+  Ethernet, other) to `ConnectApp.uplink` whenever it changes. It's null when stopped.
+- **Sharing card (`SharingCard.kt`).**
+  - Under the status panel and the update banner, while the VPN is connected or either
+    share switch is on.
+  - A summary, then "Using mobile data/Wi‑Fi", then one row per link with its switch,
+    status, devices, connections and traffic.
+  - The whole row toggles, with the Switch role.
+  - The card, the Share section and the widget all write the same prefs.
+    `rememberShares` follows them with a prefs listener, so each place reflects
+    changes from the others.
+- **Widget (`ConnectWidget.kt`, Glance 1.2.0).**
+  - Responsive layouts at 120 × 110 and 280 × 110 dp.
+  - A pure `widgetModel()` feeds the drawing.
+  - Power goes through `ShortcutActivity` `TOGGLE`, decided at tap time. It opens the
+    app when consent, a NetID or a password is missing. `ShortcutActivity` already
+    handles keyguard dismissal.
+  - The USB and Hotspot buttons run `ToggleShareAction`, which flips the pref.
+  - Hotspot settings goes through `ShortcutActivity` `OPEN_TETHERING`. Android has no
+    public API for apps to switch the hotspot on or off.
+  - `ConnectApp` redraws the widget on a debounced (300 ms) change of the widget model.
+    `updatePeriodMillis` is 30 min, so the widget recovers if the process died.
+  - Android 12+ uses dynamic colors; older versions use the app's brand scheme.
+- **Copy.**
+  - The iPhone card says the proxy can stay on because it only affects that hotspot.
+  - The stopped-sharing help offers "turn sharing back on" as well as turning the
+    proxy off.
+
+## Checks
+
+- `./gradlew assembleDebug assembleRelease testDebugUnitTest lintDebug lintRelease`:
+  173 tests, 0 failures; lint 0 errors.
+  - New: `UsageMeterTest`; `WidgetTest`, covering the model, the toggle action and
+    renders at 150, 200 and 300 dp wide in light and dark.
+  - New `ScreenshotTest` cases: the card in use, ready and waiting, and off; that the
+    quick toggle moves the Share section's switch; and that the card is hidden when
+    idle and off.
+- `scripts/verify-release.py`: all PASS at 0.1.3 (4).
+- The release manifest keeps `ConnectWidgetReceiver` and Glance's trampolines.
+- `ToggleShareAction` keeps its name in the release build (Glance's consumer keep rule).
+- Not run on a device:
+  - the widget on a launcher, including rounded corners, which Robolectric doesn't draw;
+  - the device counts with a real iPhone;
+  - the uplink label switching between Wi‑Fi and mobile data.

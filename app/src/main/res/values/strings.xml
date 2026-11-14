@@ -128,16 +128,66 @@
     <string name="share_server">Server</string>
     <string name="share_port">Port</string>
     <string name="share_iphone_steps">On your iPhone, open Settings → Wi‑Fi and tap the info button (ⓘ) next to this phone\'s hotspot. Tap Configure Proxy → Manual, enter this server and port %1$d, leave Authentication off, then tap Save.</string>
-    <string name="share_iphone_off">When you\'re done, set Configure Proxy back to Off on the iPhone and tap Save. It only applies to this hotspot.</string>
+    <string name="share_iphone_off">It only changes this hotspot on the iPhone, so you can leave it on to use the VPN whenever you\'re on this hotspot. To use the hotspot without the VPN, set Configure Proxy back to Off and tap Save.</string>
     <string name="share_copy_address">Copy address</string>
     <string name="share_copy_mac_command">Copy Mac Terminal command</string>
     <string name="share_copy_off">Copy command to turn off</string>
     <string name="share_stopped_help">Not sharing now. If your Mac still has the proxies on, its browsing won\'t work: paste this into Terminal on the Mac to turn them off.</string>
-    <string name="share_stopped_help_hotspot">Not sharing now. A device with these proxies still on can\'t browse: on an iPhone, set the hotspot\'s Configure Proxy back to Off and tap Save; on a Mac, paste this into Terminal.</string>
+    <string name="share_stopped_help_hotspot">Not sharing now, so a device that still has the proxy on can\'t browse. Turn sharing back on, or turn its proxy off: on an iPhone, set the hotspot\'s Configure Proxy to Off and tap Save; on a Mac, paste this into Terminal.</string>
     <string name="share_copied">Copied</string>
+    <!-- The sharing status card under the connection status (SharingCard.kt). -->
+    <string name="sharing_title">Sharing</string>
+    <string name="sharing_summary_off">Not sharing. Turn on a connection below to share the VPN with another device.</string>
+    <string name="sharing_summary_vpn_off">Starts once the VPN is connected.</string>
+    <string name="sharing_summary_paused">Paused until the VPN reconnects.</string>
+    <string name="sharing_summary_ready">Ready. No devices are using it yet.</string>
+    <string name="sharing_summary_waiting">Not sharing yet.</string>
+    <plurals name="sharing_summary_devices">
+        <item quantity="one">%d device is using the VPN</item>
+        <item quantity="other">%d devices are using the VPN</item>
+    </plurals>
+    <string name="sharing_usb">USB tethering</string>
+    <string name="sharing_hotspot">Hotspot</string>
+    <string name="sharing_link_off">Off</string>
+    <string name="sharing_link_vpn_off">Waiting for the VPN</string>
+    <string name="sharing_link_paused">Paused while the VPN reconnects</string>
+    <string name="sharing_link_on">On at %1$s:%2$d</string>
+    <string name="sharing_link_port">Port %1$d is taken by another app</string>
+    <string name="sharing_link_unknown">Can\'t tell which Wi‑Fi is the hotspot</string>
+    <string name="sharing_link_waiting_usb">Waiting for USB tethering</string>
+    <string name="sharing_link_waiting_hotspot">Waiting for the hotspot</string>
+    <!-- What the phone itself is online over, under the VPN: the card and the widget. -->
+    <string name="uplink_mobile">Using mobile data</string>
+    <string name="uplink_wifi">Using Wi‑Fi</string>
+    <string name="uplink_ethernet">Using Ethernet</string>
+    <string name="uplink_other">Using another network</string>
+    <!-- The home screen widget (ConnectWidget.kt). -->
+    <string name="widget_name">ConnectAnytime</string>
+    <string name="widget_description">Connect the VPN, share it over USB or the hotspot, and see who\'s using it.</string>
+    <string name="widget_vpn_off">VPN off</string>
+    <string name="widget_vpn_on">VPN on</string>
+    <string name="widget_working">One moment…</string>
+    <string name="widget_try_again">Tap Connect to try again</string>
+    <string name="widget_usb">USB</string>
+    <string name="widget_hotspot">Hotspot</string>
+    <string name="widget_link_starts">Starts with the VPN</string>
+    <string name="widget_link_waiting">Waiting</string>
+    <string name="widget_link_ready">On</string>
+    <string name="widget_link_problem">Can\'t share</string>
+    <string name="widget_hotspot_settings">Hotspot settings</string>
+    <string name="sharing_no_devices">No devices yet</string>
+    <plurals name="sharing_devices">
+        <item quantity="one">%d device</item>
+        <item quantity="other">%d devices</item>
+    </plurals>
+    <plurals name="sharing_connections">
+        <item quantity="one">%d connection</item>
+        <item quantity="other">%d connections</item>
+    </plurals>
+    <string name="sharing_traffic">%1$s down · %2$s up</string>
     <string name="share_command_help">Or paste the command into Terminal on your Mac. It finds the phone\'s connection and sets all three proxies, asking for your Mac password. Run it again if this address changes.</string>
     <string name="share_hotspot_command_help">A Mac on the hotspot can paste the Terminal command instead. A Mac keeps it for Wi‑Fi everywhere, so run the turn-off command before you leave the hotspot.</string>
-    <string name="share_footnote">Only apps that use the system proxy go through the VPN, such as Safari and Chrome. Other traffic, and calls or games that use UDP, still go around it. While a device has the proxy on, its browsing needs sharing on here, so turn the proxy off when you\'re done.</string>
+    <string name="share_footnote">Only apps that use the system proxy go through the VPN, such as Safari and Chrome. Other traffic, and calls or games that use UDP, still go around it. A device with the proxy on can only browse while sharing is on here.</string>
     <!-- In-app updates from GitHub releases (Updates.kt, UpdateSection.kt). -->
     <string name="updates_channel">App updates</string>
     <string name="check_updates">Check for updates</string>

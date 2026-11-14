@@ -19,7 +19,7 @@ import androidx.compose.ui.unit.sp
 
 // Fallback brand scheme for Android 10 and 11, built from the launcher icon's slate
 // blue (#284B63). Android 12 and later use the wallpaper's dynamic colors instead.
-private val BrandLight = lightColorScheme(
+internal val BrandLight = lightColorScheme(
     primary = Color(0xFF2B5F7F), onPrimary = Color(0xFFFFFFFF),
     primaryContainer = Color(0xFFC9E6FF), onPrimaryContainer = Color(0xFF0E4A66),
     secondary = Color(0xFF50606E), onSecondary = Color(0xFFFFFFFF),
@@ -39,7 +39,7 @@ private val BrandLight = lightColorScheme(
     surfaceContainer = Color(0xFFEBEEF3), surfaceContainerHigh = Color(0xFFE5E8ED),
     surfaceContainerHighest = Color(0xFFE0E3E7),
 )
-private val BrandDark = darkColorScheme(
+internal val BrandDark = darkColorScheme(
     primary = Color(0xFF98CCF0), onPrimary = Color(0xFF00344D),
     primaryContainer = Color(0xFF0E4A66), onPrimaryContainer = Color(0xFFC9E6FF),
     secondary = Color(0xFFB7C9D9), onSecondary = Color(0xFF22323F),

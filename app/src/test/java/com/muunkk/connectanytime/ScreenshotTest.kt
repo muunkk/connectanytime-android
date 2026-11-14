@@ -9,6 +9,7 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.core.app.ApplicationProvider
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -180,6 +181,54 @@ class ScreenshotTest(private val dark: Boolean) {
             compose.onNodeWithText("using port 1080", substring = true).assertExists()
             save("home-share-port-in-use")
         } finally { ConnectApp.mutableTetherShare.value = TetherShare.Off }
+    }
+    @Test fun sharingCardInUse() {
+        account(); app.store.shareWithTether = true; app.store.shareOverHotspot = true
+        ConnectApp.mutableTetherShare.value = TetherShare.Active(1080, usb = TetherShare.Link.Sharing("192.168.42.129"), hotspot = TetherShare.Link.Sharing("10.84.137.1"))
+        ConnectApp.mutableTetherUsage.value = TetherUsage(
+            usb = LinkUsage(listOf("192.168.42.10"), 3, 1_200_000, 48_000),
+            hotspot = LinkUsage(listOf("10.84.137.9", "10.84.137.24"), 11, 52_400_000, 2_100_000))
+        ConnectApp.mutableUplink.value = Uplink.MobileData
+        try {
+            home(VpnState("Connected", busy = true, connected = true))
+            compose.onNodeWithText("3 devices are using the VPN").assertExists()
+            compose.onNodeWithText("2 devices · 11 connections").assertExists()
+            compose.onNodeWithText("10.84.137.9, 10.84.137.24").assertExists()
+            compose.onNodeWithText("On at 10.84.137.1:1080").assertExists()
+            compose.onNodeWithText("Using mobile data").assertExists()
+            save("home-sharing-card-in-use")
+        } finally {
+            ConnectApp.mutableTetherShare.value = TetherShare.Off; ConnectApp.mutableTetherUsage.value = TetherUsage()
+            ConnectApp.mutableUplink.value = null
+        }
+    }
+    @Test fun sharingCardReadyAndWaiting() {
+        account(); app.store.shareWithTether = true; app.store.shareOverHotspot = true
+        ConnectApp.mutableTetherShare.value = TetherShare.Active(1080, usb = TetherShare.Link.Waiting, hotspot = TetherShare.Link.Sharing("10.84.137.1"))
+        try {
+            home(VpnState("Connected", busy = true, connected = true))
+            compose.onNodeWithText("Ready. No devices are using it yet.").assertExists()
+            compose.onNodeWithText("Waiting for USB tethering").assertExists()
+            compose.onNodeWithText("No devices yet").assertExists()
+            save("home-sharing-card-ready")
+        } finally { ConnectApp.mutableTetherShare.value = TetherShare.Off }
+    }
+    @Test fun sharingCardQuickToggleTurnsOnTheSameSwitchAsBelow() {
+        account()
+        home(VpnState("Connected", busy = true, connected = true))
+        compose.onNodeWithText("Not sharing. Turn on a connection below", substring = true).assertExists()
+        save("home-sharing-card-off")
+        compose.onNodeWithTag("sharing-hotspot").performClick()
+        compose.waitForIdle()
+        assertTrue(app.store.shareOverHotspot)
+        // The Share section's own switch follows.
+        compose.onNodeWithTag("share-hotspot").performScrollTo().assert(SemanticsMatcher.expectValue(
+            androidx.compose.ui.semantics.SemanticsProperties.ToggleableState, androidx.compose.ui.state.ToggleableState.On))
+        app.store.shareOverHotspot = false
+    }
+    @Test fun sharingCardHiddenWhenIdleAndOff() {
+        account(); home(VpnState())
+        compose.onNodeWithTag("sharing-card").assertDoesNotExist()
     }
     @Test fun shareStopped() {
         account(); app.store.sharedBefore = true
