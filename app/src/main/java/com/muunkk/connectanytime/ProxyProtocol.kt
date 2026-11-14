@@ -140,13 +140,17 @@ internal object ProxyProtocol {
         }
         return Head(first, headers).also { it.length(); it.chunked(); it.cleaned() }
     }
-    data class Http(val target: ProxyTarget, val head: Head, val connect: Boolean)
+    data class Http(val target: ProxyTarget, val head: Head, val connect: Boolean, val origin: Boolean = false)
     fun http(input: InputStream): Http {
         val h = head(input)
         val parts = h.first.split(' ')
         if (parts.size != 3 || parts[2] !in listOf("HTTP/1.0", "HTTP/1.1") || !parts[0].matches(Regex("[A-Z]+"))) throw ProxyFailure()
         val connect = parts[0] == "CONNECT"
         val uri = try { URI(if (connect) "http://${parts[1]}" else parts[1]) } catch (_: Exception) { throw ProxyFailure() }
+        // Only this local endpoint is admitted; all other origin-form requests still fail.
+        if (!connect && parts[1].startsWith("/") && uri.rawAuthority == null && uri.rawFragment == null &&
+            uri.rawPath == PAC_PATH && parts[0] in listOf("GET", "HEAD"))
+            return Http(ProxyTarget("", 0), h, false, origin = true)
         if (uri.scheme != "http" || uri.host.isNullOrEmpty() || uri.rawUserInfo != null || uri.rawFragment != null || uri.port == 0 || uri.port > 65535) throw ProxyFailure()
         if (connect && (uri.port < 1 || !uri.rawPath.isNullOrEmpty() || uri.rawQuery != null)) throw ProxyFailure()
         val host = uri.host.removePrefix("[").removeSuffix("]")
@@ -156,6 +160,15 @@ internal object ProxyProtocol {
         val forward = Head("${parts[0]} $path ${parts[2]}", h.cleaned().filterNot { it.first.equals("host", true) } + ("Host" to authority) +
             (if (h.chunked()) listOf("Transfer-Encoding" to "chunked") else emptyList()))
         return Http(ProxyTarget(host, port), if (connect) h else forward, connect)
+    }
+    /** Returns before the caller looks up a VPN network. */
+    fun servePac(output: OutputStream, http: Http, file: String) {
+        require(http.origin)
+        val body = file.toByteArray(Charsets.UTF_8)
+        output.write(("HTTP/1.1 200 OK\r\nContent-Type: application/x-ns-proxy-autoconfig\r\n" +
+            "Content-Length: ${body.size}\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n").toByteArray(Charsets.US_ASCII))
+        if (!http.head.first.startsWith("HEAD ")) output.write(body)
+        output.flush()
     }
     fun writeHead(output: OutputStream, head: Head, chunked: Boolean = head.chunked()) {
         val text = head.first + "\r\n" + head.cleaned().joinToString("") { "${it.first}: ${it.second}\r\n" } +

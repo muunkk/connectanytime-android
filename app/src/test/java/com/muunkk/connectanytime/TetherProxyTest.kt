@@ -94,6 +94,100 @@ class TetherProxyTest {
             app.store.shareWithTether = false; app.store.shareOverHotspot = false
         }
     }
+    @Test fun reconnectRefusesTcpAndResumesTheSameBinding() {
+        val app = ApplicationProvider.getApplicationContext<ConnectApp>()
+        app.store.shareWithTether = true; app.store.shareOverHotspot = false
+        val service = Robolectric.buildService(ConnectVpnService::class.java).get()
+        val address = java.net.InetAddress.getByName("127.0.0.1")
+        val port = java.net.ServerSocket(0, 1, address).use { it.localPort }
+        val binding = TetherProxy.Binding("usb0", TetherLink.Usb, address, 24)
+        var present = true
+        val proxy = TetherProxy(service, app, port) { if (present) setOf(binding) else emptySet() }
+        val reconcile = TetherProxy::class.java.getDeclaredMethod("reconcile").apply { isAccessible = true }
+        fun scan(connected: Boolean, reconnecting: Boolean) {
+            proxy.state(connected, reconnecting)
+            reconcile.invoke(proxy)
+        }
+        fun accepts() { java.net.Socket().use { it.connect(java.net.InetSocketAddress(address, port), 1000) } }
+        fun refuses() {
+            assertThrows(java.net.ConnectException::class.java) { accepts() }
+        }
+        try {
+            scan(false, true); refuses() // Never opens before first Connected.
+            scan(true, false); accepts()
+            val started = service.getString(R.string.tether_started, address.hostAddress, port)
+            val stopped = service.getString(R.string.tether_stopped)
+            val starts = app.log.state.value.count { it.endsWith(started) }
+            val stops = app.log.state.value.count { it.endsWith(stopped) }
+            // A registered session owns its sockets independently of the accepting socket.
+            val pairServer = java.net.ServerSocket(0, 1, address)
+            val peer = java.net.Socket(address, pairServer.localPort)
+            val accepted = pairServer.accept()
+            pairServer.close()
+            val sessionType = TetherProxy::class.java.declaredClasses.single { it.simpleName == "Session" }
+            val session = sessionType.declaredConstructors.single().apply { isAccessible = true }
+                .newInstance(proxy, binding, accepted)
+            @Suppress("UNCHECKED_CAST")
+            val sessions = TetherProxy::class.java.getDeclaredField("sessions").apply { isAccessible = true }
+                .get(proxy) as MutableSet<Any>
+            sessions.add(session)
+            scan(false, true); refuses()
+            assertFalse(accepted.isClosed)
+            scan(true, false); accepts()
+            assertFalse(accepted.isClosed)
+            assertEquals(starts, app.log.state.value.count { it.endsWith(started) })
+            assertEquals(stops, app.log.state.value.count { it.endsWith(stopped) })
+            present = false
+            scan(true, false); refuses()
+            assertTrue(accepted.isClosed)
+            peer.close()
+        } finally { proxy.close(); app.store.shareWithTether = false }
+        refuses()
+    }
+    @Test fun sessionServesPacOverLoopbackWithoutAVpn() {
+        val app = ApplicationProvider.getApplicationContext<ConnectApp>()
+        app.store.shareWithTether = true
+        app.store.directRanges = parseDirectRanges("192.168.68.0/22")!!
+        val service = Robolectric.buildService(ConnectVpnService::class.java).get()
+        val proxy = TetherProxy(service, app, 1080) { emptySet() }
+        val pool = Executors.newSingleThreadExecutor()
+        try {
+            for (method in listOf("GET", "HEAD")) {
+                java.net.ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress()).use { server ->
+                    java.net.Socket(server.inetAddress, server.localPort).use { client ->
+                        val accepted = server.accept()
+                        val binding = TetherProxy.Binding("usb0", TetherLink.Usb, java.net.InetAddress.getByName("10.84.137.1"), 24)
+                        val type = TetherProxy::class.java.declaredClasses.single { it.simpleName == "Session" }
+                        val session = type.declaredConstructors.single().apply { isAccessible = true }.newInstance(proxy, binding, accepted)
+                        val run = type.getDeclaredMethod("run").apply { isAccessible = true }
+                        val done = pool.submit { run.invoke(session) }
+                        client.soTimeout = 3000
+                        client.getOutputStream().write("$method /proxy.pac?v=1 HTTP/1.1\r\nHost: phone\r\n\r\n".toByteArray())
+                        val response = client.getInputStream().bufferedReader().readText()
+                        assertTrue(response.startsWith("HTTP/1.1 200 OK\r\n"))
+                        val body = response.substringAfter("\r\n\r\n")
+                        assertEquals(if (method == "GET") pacFile("10.84.137.1", 1080,
+                            Ipv4Range.from(binding.address, 24)!!, app.store.directRanges) else "", body)
+                        done.get(3, TimeUnit.SECONDS)
+                    }
+                }
+            }
+        } finally { proxy.close(); pool.shutdownNow(); app.store.shareWithTether = false }
+    }
+    @Test fun proxySettingsDefaultPersistAndRejectInvalidStoredRanges() {
+        val store = ApplicationProvider.getApplicationContext<ConnectApp>().store
+        store.prefs.edit().remove("proxySetup").remove("directRanges").commit()
+        assertEquals(ProxySetup.Manual, store.proxySetup)
+        assertEquals("192.168.68.0/22", store.directRanges.single().toString())
+        store.proxySetup = ProxySetup.Automatic
+        store.directRanges = parseDirectRanges("10.1.0.0/16")!!
+        assertEquals(ProxySetup.Automatic, store.proxySetup)
+        assertEquals("10.1.0.0/16", store.directRanges.single().toString())
+        store.prefs.edit().putString("proxySetup", "bad").putString("directRanges", "bad").commit()
+        assertEquals(ProxySetup.Manual, store.proxySetup)
+        assertEquals("192.168.68.0/22", store.directRanges.single().toString())
+        store.prefs.edit().remove("proxySetup").remove("directRanges").commit()
+    }
     @Test fun closeWaitsForAnInFlightRescan() {
         val app = ApplicationProvider.getApplicationContext<ConnectApp>()
         app.store.shareWithTether = false

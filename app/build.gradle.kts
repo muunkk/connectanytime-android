@@ -80,5 +80,6 @@ dependencies {
     testImplementation("androidx.compose.ui:ui-test-junit4")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
     testImplementation("org.robolectric:robolectric:4.16")
+    testImplementation("org.mozilla:rhino:1.7.15")
     testImplementation("junit:junit:4.13.2")
 }

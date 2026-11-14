@@ -206,10 +206,11 @@ private const val FIND = "ip=@IP@; port=@PORT@; s=; n=0; " +
     "done <<< \"§(networksetup -listallnetworkservices | tail -n +2)\"; " +
     "if [ §n -eq 0 ]; then echo \"@NONE@\"; " +
     "elif [ §n -gt 1 ]; then echo \"More than one network service matches. Change the proxies in System Settings instead.\"; " +
-    "else ok=1; for p in webproxy securewebproxy socksfirewallproxy; do sudo networksetup @SET@ || { ok=0; break; }; done; " +
+    "else ok=1; @ACTION@; " +
     "if [ §ok = 1 ]; then echo \"@DONE@ §s\"; else echo \"Couldn't change the proxies on §s.\"; fi; fi"
 
-private fun script(ip: String, port: Int, match: String, set: String, none: String, done: String) = FIND
+private fun script(ip: String, port: Int, match: String, set: String, none: String, done: String, action: String = "for p in webproxy securewebproxy socksfirewallproxy; do sudo networksetup @SET@ || { ok=0; break; }; done") = FIND
+    .replace("@ACTION@", action)
     .replace("@MATCH@", match).replace("@SET@", set).replace("@NONE@", none).replace("@DONE@", done)
     .replace("@IP@", ip).replace("@PORT@", port.toString()).replace('§', '$')
 
@@ -222,16 +223,27 @@ internal fun macCommand(ip: String, port: Int) = script(ip, port,
     none = "Couldn't find the phone's connection. Is USB tethering or the hotspot on?",
     done = "Proxies set on")
 
+/** Sets an Automatic PAC URL on the single service whose router is this phone. */
+internal fun macAutoCommand(ip: String, port: Int) = script(ip, port,
+    match = "-getinfo \"§v\" | grep -qxF \"Router: §ip\"",
+    set = "",
+    none = "Couldn't find the phone's connection. Is USB tethering or the hotspot on?",
+    done = "Automatic proxy set on",
+    action = "sudo networksetup -setautoproxyurl \"§s\" \"${pacUrl(ip, port)}\" || ok=0")
+
 /** Turns those proxies off again. Finds services by their SOCKS proxy being on with this
  *  port, not by the phone's address: that still works once the phone is unplugged, and
  *  after Android has moved the tether to a new address. Unlike setting them, it turns off
  *  every match, since a Mac that used both USB and the hotspot has the proxy on both. */
 internal fun macOffCommand(port: Int) = ("port=$port; n=0; ok=1; d=; " +
     "while IFS= read -r v; do case \"§v\" in '*'*) continue;; esac; " +
-    "if networksetup -getsocksfirewallproxy \"§v\" | grep -qxF \"Enabled: Yes\" && networksetup -getsocksfirewallproxy \"§v\" | grep -qxF \"Port: §port\"; then " +
-    "n=§((n+1)); d=\"§d§{d:+, }§v\"; " +
+    "changed=0; if networksetup -getsocksfirewallproxy \"§v\" | grep -qxF \"Enabled: Yes\" && networksetup -getsocksfirewallproxy \"§v\" | grep -qxF \"Port: §port\"; then " +
+    "changed=1; " +
     "for p in webproxy securewebproxy socksfirewallproxy; do sudo networksetup -set§{p}state \"§v\" off || { ok=0; break; }; done; " +
-    "fi; done <<< \"§(networksetup -listallnetworkservices | tail -n +2)\"; " +
+    "fi; a=§(networksetup -getautoproxyurl \"§v\"); " +
+    "if echo \"§a\" | grep -qxF \"Enabled: Yes\" && echo \"§a\" | grep -qE \"^URL: .*:§port/proxy[.]pac§\"; then " +
+    "changed=1; sudo networksetup -setautoproxystate \"§v\" off || ok=0; fi; " +
+    "if [ §changed = 1 ]; then n=§((n+1)); d=\"§d§{d:+, }§v\"; fi; done <<< \"§(networksetup -listallnetworkservices | tail -n +2)\"; " +
     "if [ §n -eq 0 ]; then echo \"No network service uses this proxy. Nothing to turn off.\"; " +
     "elif [ §ok = 1 ]; then echo \"Proxies turned off on §d\"; else echo \"Couldn't change the proxies on §d.\"; fi").replace('§', '$')
 
