@@ -17,7 +17,15 @@ import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -63,9 +71,27 @@ class MainActivity : ComponentActivity() {
         (application as ConnectApp).updater.activityStopped()
         super.onStop()
     }
+    /** The widget's first hotspot tap: ask here, with the warning, before turning it on. */
+    private var confirmHotspot by mutableStateOf(false)
+    private fun takeConfirmHotspot(intent: Intent?) {
+        if (intent?.getBooleanExtra(Controls.EXTRA_CONFIRM_HOTSPOT, false) == true) {
+            confirmHotspot = true
+            intent.removeExtra(Controls.EXTRA_CONFIRM_HOTSPOT) // asked once, not again on recreation
+        }
+    }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        takeConfirmHotspot(intent)
+    }
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putBoolean(Controls.EXTRA_CONFIRM_HOTSPOT, confirmHotspot)
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
+        confirmHotspot = savedInstanceState?.getBoolean(Controls.EXTRA_CONFIRM_HOTSPOT) ?: false
+        if (savedInstanceState == null) takeConfirmHotspot(intent)
         enableEdgeToEdge()
         setContent {
             ConnectTheme {
@@ -100,7 +126,29 @@ class MainActivity : ComponentActivity() {
                             if (state.busy) startService(Intent(this@MainActivity, ConnectVpnService::class.java).setAction(ConnectVpnService.ARM))
                         }, update = update, onCheckUpdate = app.updater::check, onInstallUpdate = app.updater::install)
                 }
+                if (confirmHotspot) HotspotConfirm(onDismiss = { confirmHotspot = false }, onConfirm = {
+                    app.store.hotspotExplained = true; app.store.shareOverHotspot = true; confirmHotspot = false
+                })
             }
         }
     }
+}
+
+/** Asks before hotspot sharing is turned on from the widget for the first time. */
+@Composable
+private fun HotspotConfirm(onDismiss: () -> Unit, onConfirm: () -> Unit) {
+    AlertDialog(onDismissRequest = onDismiss,
+        icon = { Icon(painterResource(R.drawable.ic_hotspot), contentDescription = null) },
+        title = { Text(stringResource(R.string.hotspot_confirm_title)) },
+        text = { Text(stringResource(R.string.share_hotspot_off_help)) },
+        confirmButton = {
+            TextButton(onClick = onConfirm, modifier = Modifier.heightIn(min = 48.dp)) {
+                Text(stringResource(R.string.hotspot_confirm_turn_on))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) {
+                Text(stringResource(R.string.cancel))
+            }
+        })
 }

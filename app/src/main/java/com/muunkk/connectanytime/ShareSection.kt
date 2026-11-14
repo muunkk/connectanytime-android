@@ -55,7 +55,7 @@ internal fun ShareSection(store: Store) {
     val rows = buildList<@Composable (Int, Int) -> Unit> {
         add { i, n -> ShareSwitch(context, TetherLink.Usb, usbOn, share, i, n) { store.shareWithTether = it } }
         if (usb != null) add { i, n -> FieldSegment(i, n) { MacSetup(context, usb.address, port) } }
-        add { i, n -> ShareSwitch(context, TetherLink.Hotspot, hotspotOn, share, i, n) { store.shareOverHotspot = it } }
+        add { i, n -> ShareSwitch(context, TetherLink.Hotspot, hotspotOn, share, i, n) { store.shareOverHotspot = it; if (it) store.hotspotExplained = true } }
         if (hotspot != null) add { i, n -> FieldSegment(i, n) { HotspotSetup(context, hotspot.address, port, offButton = usb == null) } }
     }
 

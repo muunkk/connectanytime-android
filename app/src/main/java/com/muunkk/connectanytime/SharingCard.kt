@@ -98,7 +98,9 @@ internal fun SharingCard(store: Store, vpn: VpnState, modifier: Modifier = Modif
                 if (vpn.connected) uplink?.let { UplinkLine(it) }
                 Column(verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)) {
                     LinkRow(TetherLink.Usb, usbOn, shown, usage.usb, 0) { store.setShares(TetherLink.Usb, it) }
-                    LinkRow(TetherLink.Hotspot, hotspotOn, shown, usage.hotspot, 1) { store.setShares(TetherLink.Hotspot, it) }
+                    LinkRow(TetherLink.Hotspot, hotspotOn, shown, usage.hotspot, 1) {
+                        store.setShares(TetherLink.Hotspot, it); if (it) store.hotspotExplained = true
+                    }
                 }
             }
         }
@@ -110,6 +112,13 @@ internal fun uplinkIcon(uplink: Uplink) = when (uplink) {
     Uplink.WiFi -> R.drawable.ic_wifi
     Uplink.Ethernet -> R.drawable.ic_ethernet
     Uplink.Other -> R.drawable.ic_vpn
+}
+/** Without "Via", for the compact widget. */
+internal fun uplinkShortName(uplink: Uplink) = when (uplink) {
+    Uplink.MobileData -> R.string.uplink_short_mobile
+    Uplink.WiFi -> R.string.uplink_short_wifi
+    Uplink.Ethernet -> R.string.uplink_short_ethernet
+    Uplink.Other -> R.string.uplink_short_other
 }
 internal fun uplinkName(uplink: Uplink) = when (uplink) {
     Uplink.MobileData -> R.string.uplink_mobile

@@ -160,26 +160,32 @@ private fun Content(model: WidgetModel) {
     val connected = model.phase == Phase.Connected
     val wide = LocalSize.current.width >= ConnectWidget.WIDE.width
     val fontScale = context.resources.configuration.fontScale
-    // Any enlarged font: the buttons lose their words (their text area holds about 9 characters)
-    // and titles shorten. Large fonts also drop the status's second line, and on the compact
-    // widget the power button moves down so the title gets the full width.
+    // What fits, checked for every state, width and font in WidgetTest:
+    // - wide: the buttons' name and status at 100%; just the status (the icon names the link)
+    //   up to 130%; just the icon from there, where titles also shorten and the second line goes;
+    // - compact: short titles and second lines at 100%, no second line above that, and from
+    //   130% the power button moves into the button row so the title gets the full width.
     val enlarged = fontScale > 1.0f
     val large = fontScale >= 1.3f
     val background = if (connected) colors.primaryContainer else colors.widgetBackground
     val powerBelow = !wide && large
+    val words = when {
+        !wide || large -> Words.None
+        enlarged -> Words.Status
+        else -> Words.Both
+    }
     Scaffold(backgroundColor = background, horizontalPadding = 12.dp, modifier = GlanceModifier.padding(vertical = 8.dp)) {
         Column(GlanceModifier.fillMaxSize()) {
             Row(GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Status(model, short = !wide || enlarged, large, context, GlanceModifier.defaultWeight())
+                Status(model, short = !wide || large, detail = if (wide) !large else !enlarged, context, GlanceModifier.defaultWeight())
                 if (!powerBelow) { Spacer(GlanceModifier.width(8.dp)); Power(model, context, GlanceModifier.size(TARGET.dp)) }
             }
             Spacer(GlanceModifier.defaultWeight())
             Row(GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                if (powerBelow) { Power(model, context, GlanceModifier.defaultWeight().height(TARGET.dp)); Spacer(GlanceModifier.width(6.dp)) }
-                val words = wide && !enlarged
-                LinkButton(context, TetherLink.Usb, model.usbOn, model.usb, model.usbDevices, words, background, GlanceModifier.defaultWeight())
+                if (powerBelow) { Power(model, context, GlanceModifier.defaultWeight().height(TARGET.dp), inRow = true); Spacer(GlanceModifier.width(6.dp)) }
+                LinkButton(context, TetherLink.Usb, model.usbOn, model.usb, model.usbDevices, words, !large, background, GlanceModifier.defaultWeight())
                 Spacer(GlanceModifier.width(6.dp))
-                LinkButton(context, TetherLink.Hotspot, model.hotspotOn, model.hotspot, model.hotspotDevices, words, background, GlanceModifier.defaultWeight())
+                LinkButton(context, TetherLink.Hotspot, model.hotspotOn, model.hotspot, model.hotspotDevices, words, !large, background, GlanceModifier.defaultWeight())
                 if (!powerBelow) {
                     Spacer(GlanceModifier.width(6.dp))
                     HotspotSettings(context, connected, if (wide) GlanceModifier.size(TARGET.dp) else GlanceModifier.defaultWeight().height(TARGET.dp))
@@ -190,7 +196,7 @@ private fun Content(model: WidgetModel) {
 }
 
 @Composable
-private fun Status(model: WidgetModel, short: Boolean, large: Boolean, context: Context, modifier: GlanceModifier) {
+private fun Status(model: WidgetModel, short: Boolean, detail: Boolean, context: Context, modifier: GlanceModifier) {
     val colors = GlanceTheme.colors
     val connected = model.phase == Phase.Connected
     val onColor = if (connected) colors.onPrimaryContainer else colors.onSurface
@@ -204,38 +210,42 @@ private fun Status(model: WidgetModel, short: Boolean, large: Boolean, context: 
             else -> if (short) R.string.widget_short_failed else R.string.failed_title
         }
     })
-    val detail = when {
-        connected && model.uplink != null -> context.getString(uplinkName(model.uplink))
+    val second = when {
+        connected && model.uplink != null -> context.getString(if (short) uplinkShortName(model.uplink) else uplinkName(model.uplink))
         connected -> context.getString(R.string.widget_vpn_on)
         model.phase == Phase.Connecting || model.phase == Phase.Reconnecting -> context.getString(R.string.widget_working)
-        model.phase == Phase.Failed -> context.getString(R.string.widget_try_again)
-        else -> context.getString(R.string.widget_vpn_off)
+        model.phase == Phase.Failed -> context.getString(if (short) R.string.widget_short_try_again else R.string.widget_try_again)
+        else -> context.getString(if (short) R.string.widget_short_tap_power else R.string.widget_vpn_off)
     }
     // Tapping the status opens the app, as most widgets do.
     Column(modifier.clickable(shortcut(context, Controls.OPEN_APP)).semantics { contentDescription = "$title. " + context.getString(R.string.widget_open_app) }) {
         Text(title, maxLines = 1, style = TextStyle(color = onColor, fontSize = 16.sp, fontWeight = FontWeight.Bold))
-        if (!large) Row(verticalAlignment = Alignment.CenterVertically) {
+        if (detail) Row(verticalAlignment = Alignment.CenterVertically) {
             if (connected && model.uplink != null) {
                 Image(ImageProvider(uplinkIcon(model.uplink)), contentDescription = null,
                     colorFilter = ColorFilter.tint(onColor), modifier = GlanceModifier.size(14.dp))
                 Spacer(GlanceModifier.width(4.dp))
             }
-            Text(detail, maxLines = 1, style = TextStyle(color = onColor, fontSize = 12.sp))
+            Text(second, maxLines = 1, style = TextStyle(color = onColor, fontSize = 12.sp))
         }
     }
 }
 
 /** Connect or Disconnect: drawn for the state now, decided by ShortcutActivity when tapped. */
 @Composable
-private fun Power(model: WidgetModel, context: Context, modifier: GlanceModifier) {
+private fun Power(model: WidgetModel, context: Context, modifier: GlanceModifier, inRow: Boolean = false) {
     val colors = GlanceTheme.colors
     val busy = model.phase == Phase.Connected || model.phase == Phase.Connecting || model.phase == Phase.Reconnecting
-    Box(modifier.cornerRadius((TARGET / 2).dp).background(if (busy) colors.error else colors.primary)
+    // In the button row (compact, large font), idle power takes tertiary so it isn't mistaken
+    // for a share button that's on.
+    val fill = when { busy -> colors.error; inRow -> colors.tertiary; else -> colors.primary }
+    val ink = when { busy -> colors.onError; inRow -> colors.onTertiary; else -> colors.onPrimary }
+    Box(modifier.cornerRadius((TARGET / 2).dp).background(fill)
         .clickable(shortcut(context, Controls.TOGGLE))
         .semantics { contentDescription = context.getString(if (busy) R.string.disconnect else R.string.connect) },
         contentAlignment = Alignment.Center) {
         Image(ImageProvider(R.drawable.ic_power), contentDescription = null,
-            colorFilter = ColorFilter.tint(if (busy) colors.onError else colors.onPrimary), modifier = GlanceModifier.size(22.dp))
+            colorFilter = ColorFilter.tint(ink), modifier = GlanceModifier.size(22.dp))
     }
 }
 
@@ -248,12 +258,16 @@ private fun linkStatus(context: Context, state: WidgetLink, devices: Int) = when
     WidgetLink.Problem -> context.getString(R.string.widget_link_problem)
 }
 
+/** What a share button says besides its icon. */
+private enum class Words { Both, Status, None }
+
 /**
  * A share button. On: filled. Off: outlined, so on and off differ by shape as well as colour.
- * Wide, it names the link and says what it's doing; compact, the icon and how many are using it.
+ * It says as much as fits (see Content): name and status, the status alone, or the icon with
+ * how many are using it.
  */
 @Composable
-private fun LinkButton(context: Context, link: TetherLink, on: Boolean, state: WidgetLink, devices: Int, words: Boolean,
+private fun LinkButton(context: Context, link: TetherLink, on: Boolean, state: WidgetLink, devices: Int, words: Words, count: Boolean,
                        background: ColorProvider, modifier: GlanceModifier) {
     val colors = GlanceTheme.colors
     val hotspot = link == TetherLink.Hotspot
@@ -268,20 +282,24 @@ private fun LinkButton(context: Context, link: TetherLink, on: Boolean, state: W
         Row(GlanceModifier.fillMaxSize().padding(if (on) 0.dp else 1.5.dp), verticalAlignment = Alignment.CenterVertically) {
             // Off: the widget's own background inside the outline, so it reads as outlined on either background.
             Row(GlanceModifier.fillMaxSize().cornerRadius((TARGET / 2).dp).background(if (on) colors.primary else background)
-                .padding(horizontal = if (words) 10.dp else 0.dp),
-                verticalAlignment = Alignment.CenterVertically, horizontalAlignment = if (words) Alignment.Start else Alignment.CenterHorizontally) {
+                .padding(horizontal = if (words != Words.None) 10.dp else 0.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalAlignment = if (words != Words.None) Alignment.Start else Alignment.CenterHorizontally) {
                 Image(ImageProvider(if (hotspot) R.drawable.ic_hotspot else R.drawable.ic_usb), contentDescription = null,
                     colorFilter = ColorFilter.tint(content), modifier = GlanceModifier.size(20.dp))
-                if (words) {
+                if (words == Words.Both) {
                     Spacer(GlanceModifier.width(6.dp))
                     Column {
                         Text(context.getString(if (hotspot) R.string.widget_hotspot else R.string.widget_usb), maxLines = 1,
                             style = TextStyle(color = content, fontSize = 13.sp, fontWeight = FontWeight.Medium))
                         Text(status, maxLines = 1, style = TextStyle(color = content, fontSize = 11.sp))
                     }
-                } else if (state == WidgetLink.InUse) {
+                } else if (words == Words.Status) {
+                    // The icon names the link; the status (Waiting, Error…) is what's worth reading.
+                    Spacer(GlanceModifier.width(6.dp))
+                    Text(status, maxLines = 1, style = TextStyle(color = content, fontSize = 12.sp, fontWeight = FontWeight.Medium))
+                } else if (count && state == WidgetLink.InUse) {
                     Spacer(GlanceModifier.width(4.dp))
-                    Text(devices.toString(), maxLines = 1, style = TextStyle(color = content, fontSize = 13.sp, fontWeight = FontWeight.Bold))
+                    Text(if (devices > 9) "9+" else devices.toString(), maxLines = 1, style = TextStyle(color = content, fontSize = 13.sp, fontWeight = FontWeight.Bold))
                 }
             }
         }
@@ -294,8 +312,8 @@ private fun LinkButton(context: Context, link: TetherLink, on: Boolean, state: W
 private fun HotspotSettings(context: Context, connected: Boolean, modifier: GlanceModifier) {
     val colors = GlanceTheme.colors
     // secondaryContainer all but vanishes on the connected widget's primaryContainer.
-    val fill = if (connected) colors.surface else colors.secondaryContainer
-    val ink = if (connected) colors.onSurface else colors.onSecondaryContainer
+    val fill = if (connected) colors.surfaceVariant else colors.secondaryContainer
+    val ink = if (connected) colors.onSurfaceVariant else colors.onSecondaryContainer
     Box(modifier.cornerRadius((TARGET / 2).dp).background(fill)
         .clickable(shortcut(context, Controls.OPEN_TETHERING))
         .semantics { contentDescription = context.getString(R.string.widget_hotspot_settings) },

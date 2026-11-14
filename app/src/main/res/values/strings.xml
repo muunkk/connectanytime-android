@@ -176,7 +176,15 @@
     <string name="widget_open_app">Open ConnectAnytime</string>
     <string name="widget_vpn_on">VPN on</string>
     <string name="widget_working">One moment…</string>
-    <string name="widget_try_again">Tap the power button to try again</string>
+    <string name="widget_try_again">Tap power to try again</string>
+    <string name="widget_short_try_again">Try again</string>
+    <string name="widget_short_tap_power">Tap power</string>
+    <string name="uplink_short_mobile">Mobile data</string>
+    <string name="uplink_short_wifi">Wi‑Fi</string>
+    <string name="uplink_short_ethernet">Ethernet</string>
+    <string name="uplink_short_other">Other network</string>
+    <string name="hotspot_confirm_title">Share over hotspot?</string>
+    <string name="hotspot_confirm_turn_on">Turn on</string>
     <string name="widget_usb">USB</string>
     <string name="widget_hotspot">Hotspot</string>
     <string name="widget_link_starts">No VPN</string>
