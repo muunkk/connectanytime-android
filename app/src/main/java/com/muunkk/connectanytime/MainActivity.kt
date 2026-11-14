@@ -74,7 +74,9 @@ class MainActivity : ComponentActivity() {
     /** The widget's first hotspot tap: ask here, with the warning, before turning it on. */
     private var confirmHotspot by mutableStateOf(false)
     private fun takeConfirmHotspot(intent: Intent?) {
-        if (intent?.getBooleanExtra(Controls.EXTRA_CONFIRM_HOTSPOT, false) == true) {
+        // Not from Recents: Android 10 and 11 resend a finished task's first intent, extra and all.
+        if (intent?.getBooleanExtra(Controls.EXTRA_CONFIRM_HOTSPOT, false) == true &&
+            intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY == 0) {
             confirmHotspot = true
             intent.removeExtra(Controls.EXTRA_CONFIRM_HOTSPOT) // asked once, not again on recreation
         }
@@ -126,7 +128,8 @@ class MainActivity : ComponentActivity() {
                             if (state.busy) startService(Intent(this@MainActivity, ConnectVpnService::class.java).setAction(ConnectVpnService.ARM))
                         }, update = update, onCheckUpdate = app.updater::check, onInstallUpdate = app.updater::install)
                 }
-                if (confirmHotspot) HotspotConfirm(onDismiss = { confirmHotspot = false }, onConfirm = {
+                // Only while it's off: it may have been turned on elsewhere meanwhile.
+                if (confirmHotspot && !app.store.shareOverHotspot) HotspotConfirm(onDismiss = { confirmHotspot = false }, onConfirm = {
                     app.store.hotspotExplained = true; app.store.shareOverHotspot = true; confirmHotspot = false
                 })
             }
@@ -140,7 +143,7 @@ private fun HotspotConfirm(onDismiss: () -> Unit, onConfirm: () -> Unit) {
     AlertDialog(onDismissRequest = onDismiss,
         icon = { Icon(painterResource(R.drawable.ic_hotspot), contentDescription = null) },
         title = { Text(stringResource(R.string.hotspot_confirm_title)) },
-        text = { Text(stringResource(R.string.share_hotspot_off_help)) },
+        text = { Text(stringResource(R.string.hotspot_confirm_body)) },
         confirmButton = {
             TextButton(onClick = onConfirm, modifier = Modifier.heightIn(min = 48.dp)) {
                 Text(stringResource(R.string.hotspot_confirm_turn_on))

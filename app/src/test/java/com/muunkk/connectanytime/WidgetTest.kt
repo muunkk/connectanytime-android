@@ -76,7 +76,9 @@ class WidgetTest {
         val opened = org.robolectric.Shadows.shadowOf(first.get()).nextStartedActivity
         assertEquals(MainActivity::class.java.name, opened.component?.className)
         // In its own task (not this activity's hidden one), asking there before turning it on.
-        assertTrue(opened.flags and android.content.Intent.FLAG_ACTIVITY_NEW_TASK != 0)
+        for (flag in listOf(android.content.Intent.FLAG_ACTIVITY_NEW_TASK, android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP,
+                android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP)) // the last two make an open MainActivity get onNewIntent
+            assertTrue(opened.flags and flag != 0)
         assertTrue(opened.getBooleanExtra(Controls.EXTRA_CONFIRM_HOTSPOT, false))
         // Once it's been turned on in the app, the widget flips it directly.
         app.store.hotspotExplained = true
@@ -155,7 +157,7 @@ class WidgetTest {
             Triple("connected", connected, active),
             Triple("problem", connected, TetherShare.Active(1080, usb = TetherShare.Link.PortInUse, hotspot = TetherShare.Link.Unknown)))
         val problems = mutableListOf<String>()
-        for (font in listOf(1.0f, 1.15f, 1.3f, 2.0f)) {
+        for (font in listOf(1.0f, 1.15f, 1.2f, 1.25f, 1.3f, 1.5f, 2.0f)) {
             RuntimeEnvironment.setFontScale(font)
             for ((name, vpn, share) in states) for (uplink in listOf(Uplink.MobileData, Uplink.Other)) {
                 ConnectApp.mutableState.value = vpn

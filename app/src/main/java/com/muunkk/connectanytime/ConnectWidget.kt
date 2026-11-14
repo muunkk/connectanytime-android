@@ -162,7 +162,7 @@ private fun Content(model: WidgetModel) {
     val fontScale = context.resources.configuration.fontScale
     // What fits, checked for every state, width and font in WidgetTest:
     // - wide: the buttons' name and status at 100%; just the status (the icon names the link)
-    //   up to 130%; just the icon from there, where titles also shorten and the second line goes;
+    //   up to 120%; just the icon above that. From 130% titles also shorten and the second line goes;
     // - compact: short titles and second lines at 100%, no second line above that, and from
     //   130% the power button moves into the button row so the title gets the full width.
     val enlarged = fontScale > 1.0f
@@ -170,7 +170,7 @@ private fun Content(model: WidgetModel) {
     val background = if (connected) colors.primaryContainer else colors.widgetBackground
     val powerBelow = !wide && large
     val words = when {
-        !wide || large -> Words.None
+        !wide || fontScale > 1.2f -> Words.None // from 121%, "9+ using" no longer fits the 280 dp layout
         enlarged -> Words.Status
         else -> Words.Both
     }
@@ -254,7 +254,7 @@ private fun linkStatus(context: Context, state: WidgetLink, devices: Int) = when
     WidgetLink.Starts -> context.getString(R.string.widget_link_starts)
     WidgetLink.Waiting -> context.getString(R.string.widget_link_waiting)
     WidgetLink.Ready -> context.getString(R.string.widget_link_ready)
-    WidgetLink.InUse -> context.getString(R.string.widget_link_using, devices)
+    WidgetLink.InUse -> if (devices > 9) context.getString(R.string.widget_link_using_many) else context.getString(R.string.widget_link_using, devices)
     WidgetLink.Problem -> context.getString(R.string.widget_link_problem)
 }
 

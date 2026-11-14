@@ -185,6 +185,7 @@
     <string name="uplink_short_other">Other network</string>
     <string name="hotspot_confirm_title">Share over hotspot?</string>
     <string name="hotspot_confirm_turn_on">Turn on</string>
+    <string name="hotspot_confirm_body">Anyone who joins this phone\'s hotspot can use the VPN. An iPhone or Mac on the hotspot can then browse through a proxy here.</string>
     <string name="widget_usb">USB</string>
     <string name="widget_hotspot">Hotspot</string>
     <string name="widget_link_starts">No VPN</string>
@@ -193,6 +194,7 @@
     <string name="widget_link_problem">Error</string>
     <string name="widget_hotspot_settings">Open Android\'s hotspot settings</string>
     <string name="widget_link_using">%1$d using</string>
+    <string name="widget_link_using_many">9+ using</string>
     <string name="widget_share_on">%1$s, on. %2$s</string>
     <string name="widget_share_off">%1$s, off</string>
     <string name="sharing_no_devices">No devices yet</string>
