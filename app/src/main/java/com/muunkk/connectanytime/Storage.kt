@@ -36,9 +36,20 @@ class Store(private val context: Context) {
     var sharedBefore: Boolean
         get() = prefs.getBoolean("sharedBefore", false)
         set(v) { prefs.edit().putBoolean("sharedBefore", v).apply() }
+    /** Whether the hotspot has shared, so an iPhone may still have the proxy set. */
+    var sharedHotspotBefore: Boolean
+        get() = prefs.getBoolean("sharedHotspotBefore", false)
+        set(v) { prefs.edit().putBoolean("sharedHotspotBefore", v).apply() }
+    /** Share over USB tethering. The key predates hotspot sharing, which has its own. */
     var shareWithTether: Boolean
         get() = prefs.getBoolean("shareWithTether", false)
         set(v) { prefs.edit().putBoolean("shareWithTether", v).apply() }
+    /** Share over the Wi-Fi hotspot, where anyone who joins can use it: separate, and off by default. */
+    var shareOverHotspot: Boolean
+        get() = prefs.getBoolean("shareOverHotspot", false)
+        set(v) { prefs.edit().putBoolean("shareOverHotspot", v).apply() }
+    val sharing: Boolean get() = shareWithTether || shareOverHotspot
+    internal fun shares(link: TetherLink) = if (link == TetherLink.Usb) shareWithTether else shareOverHotspot
     /** Check GitHub for a newer release when the app opens (Updater.checkIfDue). */
     var autoUpdate: Boolean
         get() = prefs.getBoolean("autoUpdate", true)

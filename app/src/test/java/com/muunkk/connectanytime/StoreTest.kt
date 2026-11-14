@@ -20,6 +20,19 @@ class StoreTest {
         assertFalse(Store(app).shareWithTether)
     }
 
+    @Test fun hotspotSharingIsSeparateAndStaysOffForExistingUsbSharers() {
+        val app = ApplicationProvider.getApplicationContext<ConnectApp>()
+        app.store.prefs.edit().clear().putBoolean("shareWithTether", true).commit() // as 0.1.1 left it
+        assertFalse(Store(app).shareOverHotspot)
+        assertTrue(Store(app).shares(TetherLink.Usb))
+        assertFalse(Store(app).shares(TetherLink.Hotspot))
+        app.store.shareOverHotspot = true; app.store.shareWithTether = false
+        assertTrue(Store(app).sharing)
+        assertTrue(Store(app).shares(TetherLink.Hotspot))
+        app.store.shareOverHotspot = false
+        assertFalse(Store(app).sharing)
+    }
+
     @Test fun corruptCredentialsAreRemovedAndDoNotBlockConnect() {
         val app = ApplicationProvider.getApplicationContext<ConnectApp>()
         val store = app.store

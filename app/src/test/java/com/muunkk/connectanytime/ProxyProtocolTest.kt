@@ -113,6 +113,31 @@ class ProxyProtocolTest {
         listOf("usb0", "rndis0", "rndis12", "ncm0").forEach { assertTrue(it, usbTetherName(it)) }
         listOf("wlan0", "rmnet0", "tun0", "lo", "eth0", "bt-pan", "usb", "rndis0.1", "xusb0").forEach { assertFalse(it, usbTetherName(it)) }
     }
+    @Test fun hotspotNeedsAndroidsTetherListAndNeverThePhonesOwnNetworks() {
+        val none = emptySet<String>()
+        // Android lists the hotspot: shared, whatever the Wi-Fi tether name.
+        listOf("wlan1", "wlan0", "swlan0", "ap0", "softap0", "ap_br_wlan1", "ap_br_ap0", "ap_br_softap0", "wigig0").forEach {
+            assertEquals(it, TetherLink.Hotspot, tetherLink(it, setOf(it), none))
+        }
+        // The phone's own networks: never shared, even if Android also lists them.
+        assertNull(tetherLink("wlan0", setOf("wlan0"), setOf("wlan0")))
+        assertNull(tetherLink("rndis0", setOf("rndis0"), setOf("rndis0")))
+        // Hotspot off: Android's list no longer has it.
+        assertNull(tetherLink("swlan0", setOf("rndis0"), none))
+        assertNull(tetherLink("wlan1", emptySet(), none))
+        // No list from Android: the hotspot is never guessed at, not even hotspot-only names
+        // (also used by local-only hotspots such as Quick Share).
+        listOf("wlan0", "wlan1", "swlan0", "ap0", "softap0", "ap_br_softap0").forEach { assertNull(it, tetherLink(it, null, none)) }
+        // Listed, but not a Wi-Fi tether name (Bluetooth, Ethernet, mobile data): not shared.
+        listOf("bt-pan", "eth0", "rmnet0", "tun0", "wlan", "xwlan0", "wlan0.1").forEach {
+            assertNull(it, tetherLink(it, setOf(it), none))
+        }
+        // USB: by name when Android gives no list, as before; when it does, only if listed.
+        assertEquals(TetherLink.Usb, tetherLink("rndis0", null, none))
+        assertEquals(TetherLink.Usb, tetherLink("ncm0", setOf("ncm0", "wlan1"), none))
+        assertNull(tetherLink("usb0", setOf("wlan1"), none))
+        assertNull(tetherLink("usb0", null, setOf("usb0")))
+    }
     @Test fun subnetFilterUsesActualPrefix() {
         fun ip(s: String) = InetAddress.getByName(s)
         assertTrue(sameSubnet(ip("192.168.42.129"), 25, ip("192.168.42.200")))

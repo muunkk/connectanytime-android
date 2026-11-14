@@ -835,3 +835,48 @@ the SDK command-line tools. These need checking on a device:
 
 The first real test is installing 0.1.2 by hand, then updating to the next release from
 inside the app.
+
+# Hotspot sharing (2026-11-14)
+
+The tether proxy now also serves the Wi-Fi hotspot, so an iPhone (or Mac) joined to
+the phone's hotspot can use the VPN. Branch `hotspot-proxy`.
+
+## Design
+
+- **Separate consent.** `shareOverHotspot` is its own pref and switch, off by default.
+  USB sharing from 0.1.1 (`shareWithTether`) never extends to hotspot guests.
+- **What counts as the hotspot.** Only interfaces Android lists in its sticky protected
+  `TETHER_STATE_CHANGED` broadcast (`tetherArray`) with a Wi-Fi tether name.
+  - When Android gives no list, the hotspot is never guessed at. USB keeps its name rule.
+  - When Android does give a list, USB interfaces must be on it too.
+- **Never the phone's own networks.** Any interface of a ConnectivityManager network is
+  excluded. The exclusion is checked before and after reading addresses.
+- **Each client is checked again.** `stillServes()` runs before every accepted client:
+  role, pref, interface up, exact address and prefix.
+- **Newest tether list wins.** A broadcast that arrives during registration isn't
+  overwritten by the older sticky value.
+- **Per-link status.** `TetherShare.Active(port, usb, hotspot)` gives each link one of
+  Off / Waiting / PortInUse / Unknown / Sharing. Unknown shows only when no list exists
+  and a hotspot-like interface is up.
+- **UI.**
+  - One switch per link, each followed by its setup card.
+  - The hotspot card gives Server and Port as iOS asks for them, the iPhone steps
+    (including Save), and a warning that a Mac keeps the proxy on its Wi-Fi everywhere.
+  - The Mac turn-off command now clears every service with the proxy on.
+
+## Checks
+
+- `./gradlew testDebugUnitTest lintDebug` on the branch combined with the updater: 158 tests, 0 failures; lint 0 errors.
+- `scripts/verify-release.py`: all PASS, release signed with b5e81629…080035e.
+- Not run on a device: hotspot detection on a real phone (including after a reboot
+  before any tethering), an iPhone through the proxy, and USB regression.
+
+## Council
+
+| Round | Opus | GPT Sol | Blocking |
+| --- | --- | --- | --- |
+| 1 | 6 | 6 | Consent extended silently; AP→STA race; sticky overwrite; `ap_br_softap`; Mac Wi-Fi advice; iPhone Save |
+| 2 | 8 | 9 | None. Opus's remaining items fixed in round 2 commit |
+| 3 (merge check, combined with the updater) | 8.5 | 9 | None. A client accepted as its link's switch goes off no longer reaches the VPN through the other link's switch |
+
+Gemini was not run (unavailable in the previous round).

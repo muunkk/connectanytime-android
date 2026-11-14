@@ -63,7 +63,7 @@ class MacCommandTest {
     }
     @Test fun dotsInTheAddressAreLiteral() = shells().forEach { sh ->
         val (out, calls) = run(sh, macCommand(ip, 1080), linkedMapOf("Odd" to "192x168x42x129"))
-        assertEquals(sh, "Couldn't find the phone's connection. Is USB tethering on?", out)
+        assertEquals(sh, "Couldn't find the phone's connection. Is USB tethering or the hotspot on?", out)
         assertEquals(sh, emptyList<String>(), calls)
     }
     @Test fun aFailedSudoIsReportedNotCalledSuccess() = shells().forEach { sh ->
@@ -77,6 +77,18 @@ class MacCommandTest {
         assertEquals(sh, "Proxies turned off on Pixel 9", out)
         assertEquals(sh, listOf("-setwebproxystate Pixel 9 off", "-setsecurewebproxystate Pixel 9 off",
             "-setsocksfirewallproxystate Pixel 9 off"), calls)
+    }
+    @Test fun turnsTheProxiesOffOnEveryServiceThatHasThem() = shells().forEach { sh ->
+        // A Mac that used both USB and the hotspot has our proxy on both services.
+        val (out, calls) = run(sh, macOffCommand(1080), linkedMapOf("Wi-Fi" to "10.84.137.1", "Pixel 9" to "none"),
+            socks = mapOf("Wi-Fi" to (true to 1080), "Pixel 9" to (true to 1080)))
+        assertEquals(sh, "Proxies turned off on Wi-Fi, Pixel 9", out)
+        assertEquals(sh, 6, calls.size)
+        assertTrue(sh, calls.containsAll(listOf("-setsocksfirewallproxystate Wi-Fi off", "-setsocksfirewallproxystate Pixel 9 off")))
+    }
+    @Test fun aFailedSudoWhenTurningOffIsReported() = shells().forEach { sh ->
+        val (out, _) = run(sh, macOffCommand(1080), linkedMapOf("Pixel 9" to "none"), socks = mapOf("Pixel 9" to (true to 1080)), sudoFails = true)
+        assertEquals(sh, "Couldn't change the proxies on Pixel 9.", out)
     }
     @Test fun turnOffLeavesOtherProxiesAlone() = shells().forEach { sh ->
         // Another SOCKS proxy on a different port, and ours already switched off: neither is touched.
