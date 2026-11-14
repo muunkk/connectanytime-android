@@ -14,6 +14,9 @@ import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 
 object Controls {
+    /** Whether a reboot or app update starts the VPN again by itself (BootReceiver), which only
+     *  rejoins the saved session: an automatic start never logs in with the password. */
+    fun restartsAutomatically(store: Store) = store.stayConnected && store.hasSession && !store.disconnected
     fun connect(context: Context) {
         context.startForegroundService(Intent(context, ConnectVpnService::class.java).setAction(ConnectVpnService.CONNECT))
     }
@@ -29,12 +32,18 @@ class BootReceiver : BroadcastReceiver() {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED && intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) return
         val app = context.applicationContext as ConnectApp
         val store = app.store
+        if (intent.action == Intent.ACTION_MY_PACKAGE_REPLACED) store.updatingFrom?.let { from ->
+            // An update this app installed (Updater.install) has gone in.
+            store.updatingFrom = null
+            app.log.add(context.getString(R.string.updated_log, from, BuildConfig.BUILD_DESCRIPTION))
+            Notices.updated(context)
+        }
         // A marker left from before the restart or update is explained by the next start
         // (RunStamp), including one Always-on VPN makes before this broadcast arrives.
         // Don't touch it here: that run may already be connected and own it.
         // Credential-encrypted prefs are only available after first unlock. No
         // direct-boot receiver, and no password login from a boot or sticky start.
-        if (store.stayConnected && store.hasSession && !store.disconnected && VpnService.prepare(context) == null) {
+        if (Controls.restartsAutomatically(store) && VpnService.prepare(context) == null) {
             runCatching { context.startForegroundService(Intent(context, ConnectVpnService::class.java).setAction(ConnectVpnService.AUTOMATIC)) }
                 .onFailure { app.log.add(context.getString(R.string.restart_postponed)) }
         }
