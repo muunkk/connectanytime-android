@@ -254,7 +254,12 @@ class Updater internal constructor(
                     store.feedEtag = r.etag
                     text
                 }
-                304 -> cached?.readText() ?: throw IOException("304 without a cached list")
+                304 -> {
+                    val text = cached?.readText() ?: throw IOException("304 without a cached list")
+                    // A damaged cached list would otherwise fail every check until GitHub's changes.
+                    try { ReleaseFeed.newest(text, current) } catch (e: JSONException) { feed.delete(); store.feedEtag = null; throw e }
+                    text
+                }
                 403, 429 -> throw UpdateFailure(R.string.update_busy, "HTTP ${r.code}")
                 else -> throw IOException("HTTP ${r.code}")
             }
@@ -310,6 +315,9 @@ class Updater internal constructor(
             }
             val file = File(dir, release.fileName)
             if (!staging.renameTo(file)) throw IOException("rename")
+            // A different release replaces the kept one: a late answer about the old attempt
+            // must not be taken as this release's (onStatus would otherwise reject it).
+            if (store.pendingUpdate?.let(Release::parse)?.sha256 != release.sha256) endSession()
             store.pendingUpdate = release.json()
             dir.listFiles()?.forEach { if (it.name != file.name) it.delete() }
             app.log.add(app.getString(R.string.update_downloaded, release.versionName, release.versionCode))
@@ -437,9 +445,10 @@ class Updater internal constructor(
         mutable.value = when (status) {
             PackageInstaller.STATUS_FAILURE_ABORTED -> UpdateState.Ready(release, R.string.update_cancelled)
             // This APK can never go in, so don't offer it again. CONFLICT is how a different
-            // signer comes back (INSTALL_FAILED_UPDATE_INCOMPATIBLE); INCOMPATIBLE covers a
-            // downgrade or an unsupported SDK or ABI; INVALID a broken package.
-            PackageInstaller.STATUS_FAILURE_CONFLICT, PackageInstaller.STATUS_FAILURE_INCOMPATIBLE, PackageInstaller.STATUS_FAILURE_INVALID -> {
+            // signer comes back (INSTALL_FAILED_UPDATE_INCOMPATIBLE); INVALID a broken package.
+            // INCOMPATIBLE isn't remembered: besides an unsupported SDK or ABI, Android uses it
+            // when a policy blocks installs, which can pass, so it falls to the case below.
+            PackageInstaller.STATUS_FAILURE_CONFLICT, PackageInstaller.STATUS_FAILURE_INVALID -> {
                 app.log.add(app.getString(R.string.update_refused_log, release.versionName, message ?: status.toString()))
                 store.rejectedUpdate = release.sha256; store.rejectedBy = REJECTED_BY_ANDROID
                 forget()
