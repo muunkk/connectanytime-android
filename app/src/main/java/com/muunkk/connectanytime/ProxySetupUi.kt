@@ -55,7 +55,7 @@ internal fun SetupChoice(setup: ProxySetup, home: List<Ipv4Range>, onSetup: (Pro
         CardLabel(R.drawable.ic_settings, R.string.setup_label)
         // Side by side as a connected group; stacked at large font sizes, where "Automatic"
         // would otherwise break mid-word.
-        val stacked = LocalDensity.current.fontScale >= 1.3f
+        val stacked = LocalDensity.current.fontScale >= 1.15f
         val options = listOf(ProxySetup.Manual to R.string.setup_manual, ProxySetup.Automatic to R.string.setup_automatic)
         val buttons: @Composable (Modifier, Int) -> Unit = { modifier, index ->
             val (option, label) = options[index]
@@ -72,7 +72,7 @@ internal fun SetupChoice(setup: ProxySetup, home: List<Ipv4Range>, onSetup: (Pro
                     Icon(painterResource(R.drawable.ic_check_circle), contentDescription = null, modifier = Modifier.size(ToggleButtonDefaults.IconSize))
                     Spacer(Modifier.size(ToggleButtonDefaults.IconSpacing))
                 }
-                Text(stringResource(label))
+                Text(stringResource(label), maxLines = 1, softWrap = false)
             }
         }
         if (stacked) Column(Modifier.fillMaxWidth().selectableGroup().testTag("setup-choice"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -83,6 +83,8 @@ internal fun SetupChoice(setup: ProxySetup, home: List<Ipv4Range>, onSetup: (Pro
         }
         Text(stringResource(if (setup == ProxySetup.Automatic) R.string.setup_automatic_help else R.string.setup_manual_help),
             style = MaterialTheme.typography.bodyMedium)
+        // The choice also decides what this phone does during a reconnect, so devices should match it.
+        Text(stringResource(R.string.setup_same), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         AnimatedVisibility(setup == ProxySetup.Automatic) {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(if (home.isEmpty()) stringResource(R.string.setup_direct_no_home) else stringResource(R.string.setup_direct, home.joinToString(", ")),
@@ -143,7 +145,7 @@ internal fun AutoSetup(context: Context, link: TetherLink, sharing: TetherShare.
         // Next to the URL: it changes what the device can reach.
         if (overlap != null && own != null) Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.testTag("setup-overlap")) {
             Icon(painterResource(R.drawable.ic_error), contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(20.dp))
-            Text(stringResource(R.string.setup_overlap, own.toString(), overlap.toString()), style = MaterialTheme.typography.bodyMedium,
+            Text(stringResource(if (hotspot) R.string.setup_overlap else R.string.setup_overlap_usb, own.toString(), overlap.toString()), style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.error)
         }
         Text(stringResource(if (hotspot) R.string.setup_iphone_steps else R.string.setup_mac_steps), style = MaterialTheme.typography.bodyMedium)

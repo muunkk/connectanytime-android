@@ -176,6 +176,9 @@ class TetherProxyTest {
             app.store.proxySetup = ProxySetup.Automatic
             scan(false, true)
             assertThrows(java.net.ConnectException::class.java) { accepts() }
+            // And back to Manual: the port opens again, still mid-reconnect.
+            app.store.proxySetup = ProxySetup.Manual
+            scan(false, true); accepts()
         } finally { proxy.close(); app.store.shareWithTether = false; app.store.proxySetup = ProxySetup.Manual }
     }
     @Test fun sessionServesPacOverLoopbackWithoutAVpn() {

@@ -235,7 +235,7 @@ private const val AUTO_OFF = "if [ §ok = 1 ] && networksetup -getautoproxyurl \
 // This app's SOCKS proxy: on, this port, and not a local one such as `ssh -D 1080`.
 private const val MANUAL_OFF = "o=§(networksetup -getsocksfirewallproxy \"§s\"); " +
     "if printf '%s\\n' \"§o\" | grep -qxF \"Enabled: Yes\" && printf '%s\\n' \"§o\" | grep -qxF \"Port: §port\" && " +
-    "! printf '%s\\n' \"§o\" | grep -qxE \"Server: (127\\.0\\.0\\.1|localhost|::1)\"; then " +
+    "! printf '%s\\n' \"§o\" | grep -qxE \"Server: (127\\.[0-9.]+|localhost|::1|0:0:0:0:0:0:0:1)\"; then " +
     "for p in webproxy securewebproxy socksfirewallproxy; do sudo networksetup -set§{p}state \"§s\" off || { ok=0; break; }; done; fi"
 
 private fun script(ip: String, port: Int, match: String, set: String, none: String, done: String,
@@ -259,7 +259,8 @@ internal fun macAutoCommand(ip: String, port: Int) = script(ip, port,
     set = "",
     none = "Couldn't find the phone's connection. Is USB tethering or the hotspot on?",
     done = "Automatic proxy set on",
-    action = "$MANUAL_OFF; [ §ok = 1 ] && { sudo networksetup -setautoproxyurl \"§s\" \"${pacUrl(ip, port)}\" || ok=0; }")
+    // The new setting first; this app's Manual proxies go only once it's in, so a failure never leaves neither.
+    action = "sudo networksetup -setautoproxyurl \"§s\" \"${pacUrl(ip, port)}\" || ok=0; if [ §ok = 1 ]; then $MANUAL_OFF; fi")
 
 /** Turns those proxies off again. Finds services by their SOCKS proxy being on with this
  *  port, not by the phone's address: that still works once the phone is unplugged, and

@@ -973,9 +973,9 @@ Branch `proxy-pac`, stacked on `proxy-status`. Backend by GPT Sol, UI by Opus, b
   - Status reports a link as Sharing only while it's accepting.
 - **Settings.** `Store.proxySetup` (Manual by default) and `Store.directRanges` (192.168.68.0/22 by default; invalid stored text falls back to the default).
 - **Mac.**
-  - `macAutoCommand` sets the PAC URL on the one service whose router is the phone. It first turns off this app's manual proxies there (SOCKS on this port).
+  - `macAutoCommand` sets the PAC URL on the one service whose router is the phone, then (only if that worked) turns off this app's manual proxies there.
   - `macCommand` turns off this app's PAC URL on that service, only once the three proxies are set.
-  - "This app's" means a PAC URL ending exactly in `:1080/proxy.pac`, or SOCKS that is on, on this port, and not on a loopback server such as `ssh -D 1080`. Other proxies and URLs are untouched.
+  - "This app's" means a PAC URL ending exactly in `:1080/proxy.pac`, or SOCKS that is on, on this port, and not on a loopback server (any 127.x, `localhost` or `::1` spelling) such as `ssh -D 1080`. Other proxies and URLs are untouched.
   - `macOffCommand` turns off both kinds.
 - **UI (`ProxySetupUi.kt`).**
   - After the two switches, while either is on: **Set up devices**, a connected button group for Manual and Automatic.
@@ -1009,3 +1009,4 @@ Branch `proxy-pac`, stacked on `proxy-status`. Backend by GPT Sol, UI by Opus, b
 | Round | Opus | GPT Sol | Fixed after it |
 | --- | --- | --- | --- |
 | 1 | 7 | 7 | Manual keeps accepting during a reconnect; trailing dots; full IPv6 parsing; no `isInNet`; Mac lookalike URLs, local SOCKS and failed Manual setups left alone; PAC only while connected; choice stacks at large fonts; overlap warning wording and position; Mac help text for Automatic; hedged copy; custom-domain caveat; checklist |
+| 2 | 8.5, ship | 9, ship | Nothing blocking. Taken: overlap wording for USB; the choice stacks from 115% and its labels never wrap; the Automatic Mac command sets the URL before turning Manual off; any loopback spelling counts as local; "set every device the same way"; clearer wording on when Automatic goes direct; Manual help; a test for switching back to Manual; README on the turn-off command |

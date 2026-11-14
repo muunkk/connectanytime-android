@@ -118,8 +118,11 @@ class MacCommandTest {
         // Manual → Automatic: our SOCKS on 1080 goes off first.
         val (outAuto, toAuto) = run(sh, macAutoCommand(ip, 1080), services, socks = mapOf("Wi-Fi" to (true to 1080)))
         assertEquals(sh, "Automatic proxy set on Wi-Fi", outAuto)
-        assertEquals(sh, listOf("-setwebproxystate Wi-Fi off", "-setsecurewebproxystate Wi-Fi off", "-setsocksfirewallproxystate Wi-Fi off",
-            "-setautoproxyurl Wi-Fi http://$ip:1080/proxy.pac"), toAuto)
+        assertEquals(sh, listOf("-setautoproxyurl Wi-Fi http://$ip:1080/proxy.pac",
+            "-setwebproxystate Wi-Fi off", "-setsecurewebproxystate Wi-Fi off", "-setsocksfirewallproxystate Wi-Fi off"), toAuto)
+        // If the PAC URL can't be set, the working Manual proxies stay.
+        assertFalse(sh, run(sh, macAutoCommand(ip, 1080), services, socks = mapOf("Wi-Fi" to (true to 1080)),
+            sudoFailsOn = "-setautoproxyurl").second.any { it.endsWith("state Wi-Fi off") })
         // Someone else's SOCKS proxy is left alone.
         assertEquals(sh, listOf("-setautoproxyurl Wi-Fi http://$ip:1080/proxy.pac"),
             run(sh, macAutoCommand(ip, 1080), services, socks = mapOf("Wi-Fi" to (true to 9050))).second)
@@ -134,9 +137,10 @@ class MacCommandTest {
         val services = linkedMapOf("Wi-Fi" to ip)
         // A URL that only looks like ours ("proxyXpac") isn't ours.
         assertEquals(sh, 3, run(sh, macCommand(ip, 1080), services, auto = mapOf("Wi-Fi" to (true to "http://corp:1080/proxyXpac"))).second.size)
-        // `ssh -D 1080` is a local SOCKS proxy on the same port: left on.
-        assertEquals(sh, listOf("-setautoproxyurl Wi-Fi http://$ip:1080/proxy.pac"),
-            run(sh, macAutoCommand(ip, 1080), services, socks = mapOf("Wi-Fi" to (true to 1080)), socksServer = "127.0.0.1").second)
+        // `ssh -D 1080` is a local SOCKS proxy on the same port, however it's written: left on.
+        for (local in listOf("127.0.0.1", "127.0.0.2", "localhost", "::1", "0:0:0:0:0:0:0:1"))
+            assertEquals("$sh $local", listOf("-setautoproxyurl Wi-Fi http://$ip:1080/proxy.pac"),
+                run(sh, macAutoCommand(ip, 1080), services, socks = mapOf("Wi-Fi" to (true to 1080)), socksServer = local).second)
         // A disabled SOCKS setting on this port is left as it is.
         assertEquals(sh, listOf("-setautoproxyurl Wi-Fi http://$ip:1080/proxy.pac"),
             run(sh, macAutoCommand(ip, 1080), services, socks = mapOf("Wi-Fi" to (false to 1080))).second)

@@ -256,7 +256,7 @@ class ScreenshotTest(private val dark: Boolean) {
             compose.onNodeWithText("Configure Proxy → Automatic", substring = true).assertExists()
             compose.onNodeWithTag("setup-overlap").assertDoesNotExist()
             save("home-setup-automatic")
-            compose.onNodeWithText("Copy URL").performScrollTo()
+            compose.onNodeWithText("Copy command to turn off").performScrollTo()
             save("home-setup-automatic-copy")
         } finally { ConnectApp.mutableTetherShare.value = TetherShare.Off }
     }

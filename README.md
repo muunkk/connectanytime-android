@@ -494,7 +494,8 @@ Not checked on an iPhone yet, from reports only:
 The Mac commands switch cleanly between the two: setting Automatic turns off this app's
 manual proxies on that service, and setting Manual turns off this app's PAC URL, but only
 once the three proxies are set. Proxies from anything else are left alone, including a
-local SOCKS proxy such as `ssh -D 1080` and other PAC URLs. **Copy command to turn off** turns off both kinds.
+local SOCKS proxy such as `ssh -D 1080` and other PAC URLs. **Copy command to turn off** turns off
+this app's PAC URL and any SOCKS proxy on port 1080, as it always has, including a local one.
 
 On macOS: **System Settings → Network → the phone's USB service (or Wi-Fi, on the
 hotspot) → Details → Proxies**. Turn on **Web proxy (HTTP)**, **Secure web proxy (HTTPS)** and
