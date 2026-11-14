@@ -17,13 +17,14 @@ class MacCommandTest {
 
     /** services: name → router; socks: name → (enabled, port) of its SOCKS proxy. */
     private fun run(shell: String, command: String, services: Map<String, String>, socks: Map<String, Pair<Boolean, Int>> = emptyMap(),
-                    sudoFails: Boolean = false, auto: Map<String, Pair<Boolean, String>> = emptyMap()): Pair<String, List<String>> {
+                    sudoFails: Boolean = false, auto: Map<String, Pair<Boolean, String>> = emptyMap(),
+                    socksServer: String = ip, sudoFailsOn: String? = null): Pair<String, List<String>> {
         val dir = Files.createTempDirectory("maccmd").toFile()
         val calls = File(dir, "calls")
         val list = services.keys.joinToString("\\n")
         val info = services.entries.joinToString(" ") { (n, r) -> "\"$n\") echo 'Router: $r';;" }
         val socksInfo = socks.entries.joinToString(" ") { (n, v) ->
-            "\"$n\") printf 'Enabled: ${if (v.first) "Yes" else "No"}\\nServer: $ip\\nPort: ${v.second}\\nAuthenticated Proxy Enabled: 0\\n';;" }
+            "\"$n\") printf 'Enabled: ${if (v.first) "Yes" else "No"}\\nServer: $socksServer\\nPort: ${v.second}\\nAuthenticated Proxy Enabled: 0\\n';;" }
         val autoInfo = auto.entries.joinToString(" ") { (n, v) ->
             "\"$n\") printf 'Enabled: ${if (v.first) "Yes" else "No"}\\nURL: ${v.second}\\n';;" }
         File(dir, "networksetup").writeText("""
@@ -36,7 +37,11 @@ class MacCommandTest {
               *) echo "${'$'}*" >> "${calls.path}";;
             esac
         """.trimIndent() + "\n")
-        File(dir, "sudo").writeText(if (sudoFails) "#!/bin/sh\nexit 1\n" else "#!/bin/sh\nexec \"\$@\"\n")
+        File(dir, "sudo").writeText(when {
+            sudoFails -> "#!/bin/sh\nexit 1\n"
+            sudoFailsOn != null -> "#!/bin/sh\ncase \"\$*\" in *\"$sudoFailsOn\"*) exit 1;; esac\nexec \"\$@\"\n"
+            else -> "#!/bin/sh\nexec \"\$@\"\n"
+        })
         dir.listFiles()!!.forEach { it.setExecutable(true) }
         val args = if (shell == "zsh") listOf("zsh", "-f", "-c", command) else listOf("bash", "--noprofile", "--norc", "-c", command)
         val p = ProcessBuilder(args).redirectErrorStream(true).also { it.environment()["PATH"] = "${dir.path}:/usr/bin:/bin" }.start()
@@ -124,6 +129,22 @@ class MacCommandTest {
         assertEquals(sh, 4, toManual.size)
         // Another PAC URL is left alone.
         assertEquals(sh, 3, run(sh, macCommand(ip, 1080), services, auto = mapOf("Wi-Fi" to (true to "http://corp/proxy.pac"))).second.size)
+    }
+    @Test fun switchingLeavesLookalikesLocalProxiesAndFailedSetupsAlone() = shells().forEach { sh ->
+        val services = linkedMapOf("Wi-Fi" to ip)
+        // A URL that only looks like ours ("proxyXpac") isn't ours.
+        assertEquals(sh, 3, run(sh, macCommand(ip, 1080), services, auto = mapOf("Wi-Fi" to (true to "http://corp:1080/proxyXpac"))).second.size)
+        // `ssh -D 1080` is a local SOCKS proxy on the same port: left on.
+        assertEquals(sh, listOf("-setautoproxyurl Wi-Fi http://$ip:1080/proxy.pac"),
+            run(sh, macAutoCommand(ip, 1080), services, socks = mapOf("Wi-Fi" to (true to 1080)), socksServer = "127.0.0.1").second)
+        // A disabled SOCKS setting on this port is left as it is.
+        assertEquals(sh, listOf("-setautoproxyurl Wi-Fi http://$ip:1080/proxy.pac"),
+            run(sh, macAutoCommand(ip, 1080), services, socks = mapOf("Wi-Fi" to (false to 1080))).second)
+        // Manual setup that fails partway keeps the working Automatic.
+        val (out, calls) = run(sh, macCommand(ip, 1080), services, auto = mapOf("Wi-Fi" to (true to "http://$ip:1080/proxy.pac")),
+            sudoFailsOn = "-setsecurewebproxy")
+        assertTrue(sh, out.startsWith("Couldn't change"))
+        assertFalse(sh, calls.any { it.startsWith("-setautoproxystate") })
     }
     @Test fun turnsOffManualAndAutomaticButLeavesOtherUrls() = shells().forEach { sh ->
         val (out, calls) = run(sh, macOffCommand(1080), linkedMapOf("USB" to "none", "Wi-Fi" to "none", "Other" to "none", "Disabled PAC" to "none"),

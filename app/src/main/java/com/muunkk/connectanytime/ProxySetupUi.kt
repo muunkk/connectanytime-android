@@ -20,6 +20,10 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 
 /**
@@ -49,28 +53,40 @@ internal fun SetupChoice(setup: ProxySetup, home: List<Ipv4Range>, onSetup: (Pro
     var editing by rememberSaveable { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         CardLabel(R.drawable.ic_settings, R.string.setup_label)
-        Row(Modifier.fillMaxWidth().testTag("setup-choice"), horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)) {
-            val options = listOf(ProxySetup.Manual to R.string.setup_manual, ProxySetup.Automatic to R.string.setup_automatic)
-            options.forEachIndexed { index, (option, label) ->
-                ToggleButton(checked = setup == option, onCheckedChange = { if (it) onSetup(option) },
-                    shapes = if (index == 0) ButtonGroupDefaults.connectedLeadingButtonShapes() else ButtonGroupDefaults.connectedTrailingButtonShapes(),
-                    // The unselected half needs its own fill: the default matches this card's background.
-                    colors = ToggleButtonDefaults.toggleButtonColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHighest),
-                    modifier = Modifier.weight(1f).heightIn(min = 48.dp).semantics { role = Role.RadioButton }
-                        .testTag("setup-${option.name.lowercase()}")) {
-                    if (setup == option) {
-                        Icon(painterResource(R.drawable.ic_check_circle), contentDescription = null, modifier = Modifier.size(ToggleButtonDefaults.IconSize))
-                        Spacer(Modifier.size(ToggleButtonDefaults.IconSpacing))
-                    }
-                    Text(stringResource(label))
+        // Side by side as a connected group; stacked at large font sizes, where "Automatic"
+        // would otherwise break mid-word.
+        val stacked = LocalDensity.current.fontScale >= 1.3f
+        val options = listOf(ProxySetup.Manual to R.string.setup_manual, ProxySetup.Automatic to R.string.setup_automatic)
+        val buttons: @Composable (Modifier, Int) -> Unit = { modifier, index ->
+            val (option, label) = options[index]
+            ToggleButton(checked = setup == option, onCheckedChange = { if (it) onSetup(option) },
+                shapes = when {
+                    stacked -> ToggleButtonDefaults.shapes()
+                    index == 0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
+                    else -> ButtonGroupDefaults.connectedTrailingButtonShapes()
+                },
+                // The unselected one needs its own fill: the default matches this card's background.
+                colors = ToggleButtonDefaults.toggleButtonColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHighest),
+                modifier = modifier.heightIn(min = 48.dp).semantics { role = Role.RadioButton }.testTag("setup-${option.name.lowercase()}")) {
+                if (setup == option) {
+                    Icon(painterResource(R.drawable.ic_check_circle), contentDescription = null, modifier = Modifier.size(ToggleButtonDefaults.IconSize))
+                    Spacer(Modifier.size(ToggleButtonDefaults.IconSpacing))
                 }
+                Text(stringResource(label))
             }
+        }
+        if (stacked) Column(Modifier.fillMaxWidth().selectableGroup().testTag("setup-choice"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            options.indices.forEach { buttons(Modifier.fillMaxWidth(), it) }
+        } else Row(Modifier.fillMaxWidth().selectableGroup().testTag("setup-choice"),
+            horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)) {
+            options.indices.forEach { buttons(Modifier.weight(1f), it) }
         }
         Text(stringResource(if (setup == ProxySetup.Automatic) R.string.setup_automatic_help else R.string.setup_manual_help),
             style = MaterialTheme.typography.bodyMedium)
         AnimatedVisibility(setup == ProxySetup.Automatic) {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(stringResource(R.string.setup_direct, home.joinToString(", ")), style = MaterialTheme.typography.bodySmall,
+                Text(if (home.isEmpty()) stringResource(R.string.setup_direct_no_home) else stringResource(R.string.setup_direct, home.joinToString(", ")),
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("setup-direct"))
                 if (!editing) TextButton(onClick = { editing = true }, shapes = ButtonDefaults.shapes(), contentPadding = PaddingValues(horizontal = 0.dp),
                     modifier = Modifier.heightIn(min = 48.dp)) { Text(stringResource(R.string.setup_edit_home)) }
@@ -91,7 +107,8 @@ private fun HomeRangesEditor(home: List<Ipv4Range>, onDone: () -> Unit, onSave: 
         OutlinedTextField(text, { text = it }, label = { Text(stringResource(R.string.setup_home_title)) },
             isError = parsed == null, singleLine = true,
             supportingText = { Text(stringResource(if (parsed == null) R.string.setup_home_invalid else R.string.setup_home_example)) },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, autoCorrectEnabled = false),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done, autoCorrectEnabled = false),
+            keyboardActions = KeyboardActions(onDone = { parsed?.let(onSave) }),
             modifier = Modifier.fillMaxWidth().testTag("setup-home-field"))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilledTonalButton(onClick = { parsed?.let(onSave) }, enabled = parsed != null, shapes = ButtonDefaults.shapes(),
@@ -117,26 +134,27 @@ internal fun AutoSetup(context: Context, link: TetherLink, sharing: TetherShare.
         CardLabel(if (hotspot) R.drawable.ic_hotspot else R.drawable.ic_usb, if (hotspot) R.string.share_hotspot_label else R.string.share_proxy_label)
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(stringResource(R.string.setup_url), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            // Smaller than the Manual card's address: a URL this long would break mid-word.
+            // Smaller than the Manual card's address: a URL this long would otherwise wrap.
             SelectionContainer {
-                Text(url, style = MaterialTheme.typography.titleMedium, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                Text(url, style = MaterialTheme.typography.titleSmall, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
                     modifier = Modifier.testTag(if (hotspot) "setup-url-hotspot" else "setup-url-usb"))
             }
         }
-        Text(stringResource(if (hotspot) R.string.setup_iphone_steps else R.string.setup_mac_steps), style = MaterialTheme.typography.bodyMedium)
-        if (hotspot) Text(stringResource(R.string.setup_iphone_note), style = MaterialTheme.typography.bodyMedium)
+        // Next to the URL: it changes what the device can reach.
         if (overlap != null && own != null) Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.testTag("setup-overlap")) {
             Icon(painterResource(R.drawable.ic_error), contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(20.dp))
             Text(stringResource(R.string.setup_overlap, own.toString(), overlap.toString()), style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.error)
         }
+        Text(stringResource(if (hotspot) R.string.setup_iphone_steps else R.string.setup_mac_steps), style = MaterialTheme.typography.bodyMedium)
+        if (hotspot) Text(stringResource(R.string.setup_iphone_note), style = MaterialTheme.typography.bodyMedium)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp),
             itemVerticalAlignment = Alignment.CenterVertically) {
             CopyButton(context, R.string.setup_copy_url, url, tonal = true)
             CopyButton(context, R.string.share_copy_mac_command, macAutoCommand(sharing.address, port), tonal = false)
             if (offButton) CopyButton(context, R.string.share_copy_off, macOffCommand(port), tonal = false)
         }
-        Text(stringResource(if (hotspot) R.string.share_hotspot_command_help else R.string.share_command_help),
+        Text(stringResource(if (hotspot) R.string.share_hotspot_command_help else R.string.setup_command_help_mac),
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

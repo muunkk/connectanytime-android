@@ -140,8 +140,9 @@
     <string name="setup_manual">Manual</string>
     <string name="setup_automatic">Automatic</string>
     <string name="setup_manual_help">Enter this phone\'s server and port on the device. Everything that follows the proxy goes through the VPN, including your tailnet and home network, which it can\'t reach that way.</string>
-    <string name="setup_automatic_help">The device loads its rules from this phone. Your tailnet, home network and names like truenas go direct; everything else goes through the VPN, or direct while the VPN is off.</string>
-    <string name="setup_direct">Direct: Tailscale (100.64.0.0/10, .ts.net), .local and plain names, this connection\'s own network, and home %1$s.</string>
+    <string name="setup_automatic_help">The device loads its rules from this phone. Your tailnet, home network and names like truenas go direct; everything else goes through the VPN, and should go direct while the VPN is off.</string>
+    <string name="setup_direct">Direct: Tailscale (100.64.0.0/10, .ts.net), .local and plain names, this connection\'s own network, and home %1$s. Names are matched as written, so a custom domain goes through the VPN even if it points home.</string>
+    <string name="setup_direct_no_home">Direct: Tailscale (100.64.0.0/10, .ts.net), .local and plain names, and this connection\'s own network. Names are matched as written, so a custom domain goes through the VPN even if it points home.</string>
     <string name="setup_edit_home">Edit home network</string>
     <string name="setup_home_title">Home network</string>
     <string name="setup_home_help">Addresses here go direct, so the device reaches them through Tailscale instead of the VPN.</string>
@@ -149,10 +150,11 @@
     <string name="setup_home_invalid">Use ranges like 192.168.68.0/22, up to 16, separated by commas.</string>
     <string name="setup_url">URL</string>
     <string name="setup_copy_url">Copy URL</string>
+    <string name="setup_command_help_mac">Or paste the command into Terminal on your Mac. It finds the phone\'s connection and sets Automatic proxy configuration there, asking for your Mac password. Run it again if this address changes.</string>
     <string name="setup_iphone_steps">On your iPhone, open Settings → Wi‑Fi and tap the info button (ⓘ) next to this phone\'s hotspot. Tap Configure Proxy → Automatic, enter this URL, then tap Save.</string>
-    <string name="setup_iphone_note">It only changes this hotspot on the iPhone. If the iPhone joins the hotspot while sharing is off, it may not be able to load the rules or browse: turn sharing on here, or set Configure Proxy back to Off.</string>
+    <string name="setup_iphone_note">It only changes this hotspot on the iPhone. If the iPhone joins the hotspot while this phone isn\'t sharing (sharing off, the VPN not connected, or the app closed), it may not be able to load the rules or browse. If that happens, set Configure Proxy back to Off.</string>
     <string name="setup_mac_steps">On your Mac, open System Settings → Network → your phone → Details → Proxies. Turn on Automatic proxy configuration with this URL, and turn the other proxies off.</string>
-    <string name="setup_overlap">This network (%1$s) overlaps your home range %2$s. Home devices with addresses in it are looked for on this network, not through Tailscale.</string>
+    <string name="setup_overlap">This hotspot uses %1$s, which overlaps your home network %2$s. Home devices with addresses in it can\'t be reached from the hotspot.</string>
     <string name="share_stopped_help_auto">Not sharing now. A device set to Automatic should go direct. If one can\'t browse, set its proxy to Off; on a Mac, paste this into Terminal.</string>
     <!-- The sharing status card under the connection status (SharingCard.kt). -->
     <string name="sharing_title">Sharing</string>

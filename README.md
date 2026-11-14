@@ -460,8 +460,11 @@ browsing uses the VPN.
   - your home network, `192.168.68.0/22` by default. Edit it under **Edit home network**:
     up to 16 IPv4 ranges, separated by commas.
 - **Everything else:** `PROXY <address>:1080; DIRECT`.
-- **No lookups.** The file only checks literal addresses against these ranges. It never
-  looks up a name, which on iOS is slow and goes through DNS that may itself fail.
+- **No lookups.** The file only compares literal addresses with these ranges, itself, and
+  never calls `isInNet` or `dnsResolve`. On Apple devices `isInNet` looks addresses up even
+  when given a literal. Names are matched as written, with any final dot ignored. So a custom
+  domain that points at a tailnet or home address still goes through the VPN: use its IP
+  address, its `.ts.net` name or a name without dots instead. Check how Immich is set up.
 - **Overlap warning.** If the link's network overlaps a home range, the card warns that
   home addresses inside it are looked for on that network rather than through Tailscale.
 - **iPhone:** **Settings → Wi‑Fi → ⓘ → Configure Proxy → Automatic**, enter the URL and
@@ -471,21 +474,27 @@ browsing uses the VPN.
 The file is served from the proxy's own port, to the same devices the proxy accepts, and
 only while that link is sharing and the VPN is connected.
 
-So that `DIRECT` takes over when the VPN can't be used, the proxy stops listening while
-the VPN reconnects (connections already open keep going) and starts again once it's
-connected. When sharing or the VPN is off, nothing listens. iOS falls back to `DIRECT`
-only when it can't connect to the proxy at all, not when the proxy accepts and then
-fails. On Manual this only means that new pages fail sooner during a reconnect.
+On Automatic, so that `DIRECT` takes over when the VPN can't be used, the proxy stops
+listening while the VPN reconnects and starts again once it's connected. Connections that
+are already open keep going. iOS falls back to `DIRECT` only when it can't connect to the
+proxy at all, not when the proxy accepts and then fails. On Manual nothing changes: during a
+reconnect the proxy keeps taking requests, which often go through once the tunnel is back a
+few seconds later. When sharing or the VPN is off, nothing listens in either mode.
 
 Not checked on an iPhone yet, from reports only:
-- an iPhone that can't load the file when it joins the hotspot (sharing off, or this app
-  not running) may be unable to browse on that network until sharing is on or Configure
-  Proxy is set back to Off;
+- an iPhone that can't load the file when it joins the hotspot may be unable to browse on
+  that network until Configure Proxy is set back to Off. That happens while this phone
+  isn't sharing: sharing off, the VPN not connected, or the app closed. Apple's managed
+  proxy settings have a separate "allow direct if the PAC can't be loaded" option, so the
+  fallback isn't guaranteed;
+- whether the URL survives the hotspot being turned off and on: Android can pick a new
+  hotspot address, and the iPhone then can't load the file from the old one;
 - how long iOS keeps a file it has loaded.
 
 The Mac commands switch cleanly between the two: setting Automatic turns off this app's
-manual proxies on that service, and setting Manual turns off this app's PAC URL. Proxies
-from anything else are left alone. **Copy command to turn off** turns off both kinds.
+manual proxies on that service, and setting Manual turns off this app's PAC URL, but only
+once the three proxies are set. Proxies from anything else are left alone, including a
+local SOCKS proxy such as `ssh -D 1080` and other PAC URLs. **Copy command to turn off** turns off both kinds.
 
 On macOS: **System Settings → Network → the phone's USB service (or Wi-Fi, on the
 hotspot) → Details → Proxies**. Turn on **Web proxy (HTTP)**, **Secure web proxy (HTTPS)** and

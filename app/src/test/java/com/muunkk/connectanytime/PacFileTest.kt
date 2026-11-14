@@ -12,6 +12,8 @@ class PacFileTest {
     private val file = pacFile("10.84.137.1", 1080, link, parseDirectRanges("192.168.68.0/22")!!)
 
     @Test fun evaluatesWithoutAnyDnsResolution() {
+        // A copy for checking in other engines (JavaScriptCore: see VERIFICATION.md).
+        java.io.File(System.getProperty("user.dir"), "build/sample-proxy.pac").apply { parentFile.mkdirs() }.writeText(file)
         val cx = Context.enter()
         try {
             cx.languageVersion = Context.VERSION_1_5
@@ -22,17 +24,21 @@ class PacFileTest {
                 function shExpMatch(h, p) { return h === p; }
                 function dnsResolve(h) { throw 'DNS forbidden'; }
                 function myIpAddress() { throw 'DNS forbidden'; }
-                function isInNet(h, net, mask) {
-                    if (!/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}${'$'}/.test(h)) throw 'name passed to isInNet';
-                    function ip(s) { var a = s.split('.'); return (a[0]<<24)|(a[1]<<16)|(a[2]<<8)|a[3]; }
-                    return (ip(h)&ip(mask)) === (ip(net)&ip(mask));
-                }
+                // Apple's isInNet resolves even literals: the file must never call it.
+                function isInNet(h, net, mask) { throw 'isInNet called'; }
             """.trimIndent() + file, "pac", 1, null)
             val direct = listOf("truenas", "nas.tail1234.ts.net", "ts.net", "printer.local", "100.101.102.103",
-                "192.168.68.78", "192.168.71.255", "10.84.137.78", "fd7a:115c:a1e0::1",
-                "[fd7a:115c:a1e0::1]", "FD7A:115C:A1E0::1", "[FD7A:115C:A1E0::1]")
-            val proxy = listOf("100.128.0.1", "192.168.72.1", "fd7a:115c:a1e1::1", "example.com", "10.0.0.1",
-                "100.64.0.1.evil.com", "999.64.0.1")
+                "100.64.0.0", "100.127.255.255", "192.168.68.78", "192.168.68.0", "192.168.71.255", "10.84.137.78",
+                // The DNS root's final dot.
+                "nas.tail1234.ts.net.", "printer.local.", "truenas.",
+                // Every way of writing an address in fd7a:115c:a1e0::/48.
+                "fd7a:115c:a1e0::1", "[fd7a:115c:a1e0::1]", "FD7A:115C:A1E0::1", "[FD7A:115C:A1E0::1]",
+                "fd7a:115c:a1e0:0:0:0:192.168.68.1", "fd7a:115c:a1e0::192.168.68.1", "fd7a:115c:a1e0::1%en0",
+                "[fd7a:115c:a1e0::1%25en0]", "fd7a:115c:a1e0:ab12:4843:cd96:6258:b240", "fd7a:115c:a1e0::", "local")
+            val proxy = listOf("100.128.0.1", "100.63.255.255", "192.168.72.1", "192.168.67.255", "fd7a:115c:a1e1::1",
+                "fd7a:115c::a1e0:1", "fd7a:115c:a1e0:1:2:3:4:5:6", "fd7a::115c::a1e0", "fd7a:115c:a1e0::1.2.3.999",
+                "example.com", "example.com.", "10.0.0.1", "100.64.0.1.evil.com", "999.64.0.1", "1.2.3.4.5",
+                "ts.net.evil.com", "evil-ts.net", ".")
             for (host in direct + proxy) {
                 val result = cx.evaluateString(scope, "FindProxyForURL('http://unused/', '$host')", "test", 1, null)
                 assertEquals(host, if (host in direct) "DIRECT" else "PROXY 10.84.137.1:1080; DIRECT", Context.toString(result))

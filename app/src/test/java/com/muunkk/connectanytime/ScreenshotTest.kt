@@ -256,8 +256,8 @@ class ScreenshotTest(private val dark: Boolean) {
             compose.onNodeWithText("Configure Proxy → Automatic", substring = true).assertExists()
             compose.onNodeWithTag("setup-overlap").assertDoesNotExist()
             save("home-setup-automatic")
-            compose.onNodeWithTag("setup-direct").performScrollTo()
-            save("home-setup-automatic-direct")
+            compose.onNodeWithText("Copy URL").performScrollTo()
+            save("home-setup-automatic-copy")
         } finally { ConnectApp.mutableTetherShare.value = TetherShare.Off }
     }
     @Test fun automaticWarnsWhenTheHotspotOverlapsHome() {
@@ -266,9 +266,19 @@ class ScreenshotTest(private val dark: Boolean) {
         try {
             home(VpnState("Connected", busy = true, connected = true))
             compose.onNodeWithTag("setup-overlap").performScrollTo()
-            compose.onNodeWithText("(192.168.69.0/24) overlaps your home range 192.168.68.0/22", substring = true).assertExists()
+            compose.onNodeWithText("uses 192.168.69.0/24, which overlaps your home network 192.168.68.0/22", substring = true).assertExists()
             save("home-setup-overlap")
         } finally { ConnectApp.mutableTetherShare.value = TetherShare.Off }
+    }
+    @Test fun theChoiceStacksAtLargeFont() {
+        account(); app.store.shareOverHotspot = true
+        compose.setContent { ConnectTheme(dark = dark, dynamicColor = false) {
+            CompositionLocalProvider(LocalDensity provides Density(LocalDensity.current.density, 2f)) {
+                HomeScreen(app.store, VpnState(), false, {}, {}, {}, {})
+            }
+        } }
+        compose.onNodeWithTag("setup-automatic").performScrollTo()
+        save("home-setup-200pct")
     }
     @Test fun homeRangesAreEditedInPlaceAndValidated() {
         account(); app.store.shareOverHotspot = true; app.store.proxySetup = ProxySetup.Automatic

@@ -229,9 +229,13 @@ private const val FIND = "ip=@IP@; port=@PORT@; s=; n=0; " +
 // Switching between Manual and Automatic on a Mac: each command turns off the other kind on that
 // service, but only when it's this app's (the PAC URL on this port, or SOCKS on this port), so
 // a Mac that never used the other kind sees exactly the calls it always did.
-private const val AUTO_OFF = "if networksetup -getautoproxyurl \"§s\" | grep -qx \"URL: .*:§port/proxy.pac\"; then " +
+// Only after the new setting went in (ok=1), so a failed Manual setup keeps a working Automatic.
+private const val AUTO_OFF = "if [ §ok = 1 ] && networksetup -getautoproxyurl \"§s\" | grep -qx \"URL: .*:§port/proxy\\.pac\"; then " +
     "sudo networksetup -setautoproxystate \"§s\" off || ok=0; fi"
-private const val MANUAL_OFF = "if networksetup -getsocksfirewallproxy \"§s\" | grep -qxF \"Port: §port\"; then " +
+// This app's SOCKS proxy: on, this port, and not a local one such as `ssh -D 1080`.
+private const val MANUAL_OFF = "o=§(networksetup -getsocksfirewallproxy \"§s\"); " +
+    "if printf '%s\\n' \"§o\" | grep -qxF \"Enabled: Yes\" && printf '%s\\n' \"§o\" | grep -qxF \"Port: §port\" && " +
+    "! printf '%s\\n' \"§o\" | grep -qxE \"Server: (127\\.0\\.0\\.1|localhost|::1)\"; then " +
     "for p in webproxy securewebproxy socksfirewallproxy; do sudo networksetup -set§{p}state \"§s\" off || { ok=0; break; }; done; fi"
 
 private fun script(ip: String, port: Int, match: String, set: String, none: String, done: String,

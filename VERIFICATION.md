@@ -953,27 +953,29 @@ Branch `proxy-pac`, stacked on `proxy-status`. Backend by GPT Sol, UI by Opus, b
 
 - **`PacFile.kt`.**
   - `Ipv4Range` (parse, contains, overlaps, mask) and `parseDirectRanges` (at most 16 ranges, each /8 or narrower).
-  - `pacFile()`: ES5 `FindProxyForURL` that sends these DIRECT:
+  - `pacFile()`: ES5 `FindProxyForURL`. It strips a final dot, then sends these DIRECT:
     - plain names, `ts.net` and `*.ts.net`, and `.local`;
-    - `fd7a:115c:a1e0::/48` literals, with or without brackets, in any case;
-    - IPv4 literals in 100.64.0.0/10, the home ranges or the link's subnet. The host must match a dotted quad before `isInNet`.
-  - It never calls `dnsResolve` or `myIpAddress`.
+    - `fd7a:115c:a1e0::/48` literals, parsed in full: brackets, zone IDs, `::`, an embedded IPv4 tail, any case;
+    - IPv4 literals in 100.64.0.0/10, the home ranges or the link's subnet.
+  - Ranges are compared as numbers in the file itself. It never calls `isInNet` (Apple's resolves even literals), `dnsResolve` or `myIpAddress`.
   - Everything else gets `PROXY <link address>:1080; DIRECT`.
 - **Serving.**
   - `ProxyProtocol.http` recognises only origin-form `GET`/`HEAD /proxy.pac`; every other origin-form request still fails.
   - `Session` answers it before any VPN lookup: 200, `application/x-ns-proxy-autoconfig`, `Cache-Control: no-cache`, `Connection: close`.
   - The file is generated per request from that binding's address and prefix and the stored home ranges.
-  - It goes through the same peer, `stillServes`, session-cap and per-link checks as the proxy.
+  - It goes through the same peer, `stillServes`, session-cap and per-link checks as the proxy, and is answered only while the VPN is connected, including for a client accepted before a reconnect.
   - A PAC fetch isn't counted as a device.
-- **Refusal for fallback.**
-  - Listeners pause (ServerSocket closed, sessions kept) whenever the VPN isn't connected, and resume (rebind) when it is.
+- **Refusal for fallback, Automatic only.**
+  - On Automatic, listeners pause (ServerSocket closed, sessions kept) while the VPN reconnects, and resume (rebind) once it's connected.
+  - On Manual they keep accepting during a reconnect, exactly as before (`acceptsNow`). A change of setup triggers a rescan.
   - Sessions are owned by binding, so removing a binding still closes its sessions.
   - Pause and resume don't log start or stop.
   - Status reports a link as Sharing only while it's accepting.
 - **Settings.** `Store.proxySetup` (Manual by default) and `Store.directRanges` (192.168.68.0/22 by default; invalid stored text falls back to the default).
 - **Mac.**
   - `macAutoCommand` sets the PAC URL on the one service whose router is the phone. It first turns off this app's manual proxies there (SOCKS on this port).
-  - `macCommand` turns off this app's PAC URL on that service after setting the three proxies. Other proxies and URLs are untouched.
+  - `macCommand` turns off this app's PAC URL on that service, only once the three proxies are set.
+  - "This app's" means a PAC URL ending exactly in `:1080/proxy.pac`, or SOCKS that is on, on this port, and not on a loopback server such as `ssh -D 1080`. Other proxies and URLs are untouched.
   - `macOffCommand` turns off both kinds.
 - **UI (`ProxySetupUi.kt`).**
   - After the two switches, while either is on: **Set up devices**, a connected button group for Manual and Automatic.
@@ -983,10 +985,13 @@ Branch `proxy-pac`, stacked on `proxy-status`. Backend by GPT Sol, UI by Opus, b
 
 ## Checks
 
-- `./gradlew testDebugUnitTest lintDebug`: 194 tests, 0 failures; lint 0 errors.
+- `./gradlew assembleRelease testDebugUnitTest lintDebug lintRelease`: 199 tests, 0 failures; lint 0 errors. `verify-release.py` passes.
+  - The generated file (`app/build/sample-proxy.pac`, written by `PacFileTest`) also runs in macOS's JavaScriptCore `jsc`. Its helper functions throw on `isInNet` and `dnsResolve`, and it gives the intended answer for 20 sample hosts.
   - `PacFileTest` runs the generated file in Rhino. Its `isInNet` throws on non-IP hosts, and its `dnsResolve` and `myIpAddress` throw.
   - `TetherProxyTest` covers:
-    - real loopback TCP refusal while reconnecting and acceptance after resume;
+    - on Automatic, real loopback TCP refusal while reconnecting and acceptance after resume;
+    - on Manual, the port staying open while reconnecting;
+    - a resume that hits "port in use", and recovery;
     - open sessions kept;
     - closing on binding removal;
     - GET and HEAD PAC serving without a VPN lookup.
@@ -998,3 +1003,9 @@ Branch `proxy-pac`, stacked on `proxy-status`. Backend by GPT Sol, UI by Opus, b
     - editing and validating the home ranges.
 - A Material 3 `AlertDialog` containing an `OutlinedTextField` never goes idle under Robolectric at the screenshot size (411 × 891 dp, xhdpi), even bare. That's why the home ranges are edited in place, not in a dialog.
 - Not run on a device: see the device checklist in the PR.
+
+## Council
+
+| Round | Opus | GPT Sol | Fixed after it |
+| --- | --- | --- | --- |
+| 1 | 7 | 7 | Manual keeps accepting during a reconnect; trailing dots; full IPv6 parsing; no `isInNet`; Mac lookalike URLs, local SOCKS and failed Manual setups left alone; PAC only while connected; choice stacks at large fonts; overlap warning wording and position; Mac help text for Automatic; hedged copy; custom-domain caveat; checklist |

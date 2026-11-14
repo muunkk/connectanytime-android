@@ -94,9 +94,10 @@ class TetherProxyTest {
             app.store.shareWithTether = false; app.store.shareOverHotspot = false
         }
     }
-    @Test fun reconnectRefusesTcpAndResumesTheSameBinding() {
+    @Test fun reconnectRefusesTcpOnAutomaticAndResumesTheSameBinding() {
         val app = ApplicationProvider.getApplicationContext<ConnectApp>()
         app.store.shareWithTether = true; app.store.shareOverHotspot = false
+        app.store.proxySetup = ProxySetup.Automatic
         val service = Robolectric.buildService(ConnectVpnService::class.java).get()
         val address = java.net.InetAddress.getByName("127.0.0.1")
         val port = java.net.ServerSocket(0, 1, address).use { it.localPort }
@@ -137,12 +138,45 @@ class TetherProxyTest {
             assertFalse(accepted.isClosed)
             assertEquals(starts, app.log.state.value.count { it.endsWith(started) })
             assertEquals(stops, app.log.state.value.count { it.endsWith(stopped) })
+            // Something else takes the port while paused: the resume reports it, then recovers.
+            scan(false, true); refuses()
+            java.net.ServerSocket().use { other ->
+                other.bind(java.net.InetSocketAddress(address, port))
+                scan(true, false)
+                assertEquals(TetherShare.Link.PortInUse, (ConnectApp.tetherShare.value as TetherShare.Active).usb)
+            }
+            scan(true, false); accepts()
+            assertTrue(ConnectApp.tetherShare.value.let { it is TetherShare.Active && it.usb is TetherShare.Link.Sharing })
             present = false
             scan(true, false); refuses()
             assertTrue(accepted.isClosed)
             peer.close()
-        } finally { proxy.close(); app.store.shareWithTether = false }
+        } finally { proxy.close(); app.store.shareWithTether = false; app.store.proxySetup = ProxySetup.Manual }
         refuses()
+    }
+    @Test fun manualKeepsTakingClientsWhileTheVpnReconnects() {
+        val app = ApplicationProvider.getApplicationContext<ConnectApp>()
+        app.store.shareWithTether = true; app.store.shareOverHotspot = false
+        app.store.proxySetup = ProxySetup.Manual
+        val service = Robolectric.buildService(ConnectVpnService::class.java).get()
+        val address = java.net.InetAddress.getByName("127.0.0.1")
+        val port = java.net.ServerSocket(0, 1, address).use { it.localPort }
+        val binding = TetherProxy.Binding("usb0", TetherLink.Usb, address, 24)
+        val proxy = TetherProxy(service, app, port) { setOf(binding) }
+        val reconcile = TetherProxy::class.java.getDeclaredMethod("reconcile").apply { isAccessible = true }
+        fun scan(connected: Boolean, reconnecting: Boolean) { proxy.state(connected, reconnecting); reconcile.invoke(proxy) }
+        fun accepts() { java.net.Socket().use { it.connect(java.net.InetSocketAddress(address, port), 1000) } }
+        try {
+            scan(false, true)
+            assertThrows(java.net.ConnectException::class.java) { accepts() } // still never before first Connected
+            scan(true, false); accepts()
+            // As before Automatic existed: a short reconnect keeps the port open.
+            scan(false, true); accepts()
+            // Switching to Automatic mid-reconnect closes it on the next scan.
+            app.store.proxySetup = ProxySetup.Automatic
+            scan(false, true)
+            assertThrows(java.net.ConnectException::class.java) { accepts() }
+        } finally { proxy.close(); app.store.shareWithTether = false; app.store.proxySetup = ProxySetup.Manual }
     }
     @Test fun sessionServesPacOverLoopbackWithoutAVpn() {
         val app = ApplicationProvider.getApplicationContext<ConnectApp>()
@@ -150,6 +184,7 @@ class TetherProxyTest {
         app.store.directRanges = parseDirectRanges("192.168.68.0/22")!!
         val service = Robolectric.buildService(ConnectVpnService::class.java).get()
         val proxy = TetherProxy(service, app, 1080) { emptySet() }
+        proxy.state(connected = true, reconnecting = false)
         val pool = Executors.newSingleThreadExecutor()
         try {
             for (method in listOf("GET", "HEAD")) {
