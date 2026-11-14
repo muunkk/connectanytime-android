@@ -911,13 +911,13 @@ Version 0.1.3 (4). Branch `proxy-status`.
   - **Layouts.** Responsive buckets: COMPACT 180 × 110 and WIDE 280 × 110 dp. minResizeWidth is 180 dp and minWidth 250 dp.
   - **Buttons.** 44 dp targets. On is filled; off is outlined, with the widget's own background inside the outline.
   - **Text that fits.**
-    - Link statuses are at most 7 characters (Off, On, Waiting, No VPN, N using, Error).
-    - Above 100% font the buttons lose their words and titles shorten.
-    - From 130% the status's second line goes. On the compact widget, power moves into the button row and the hotspot settings button drops.
-    - The compact widget always uses short titles.
+    - Wide: buttons show the name and status at 100% font, just the status (the icon names the link) up to 120%, then just the icon. From 130% titles shorten and the second line goes.
+    - Compact: short titles and second lines at 100% ("Tap power", "Try again", "Mobile data"), no second line above that. From 130% power moves into the button row, in tertiary when idle, and device counts go.
+    - Link statuses are at most 7 characters. Counts over 9 show as "9+".
+    - `WidgetTest.noTextIsCutShortInAnyStateWidthOrFont` renders 7 states × 2 networks × widths 180/250/280/330 dp × fonts 100/115/120/125/130/150/200% and fails on any ellipsized text. A widget squeezed to 110 dp is its negative control. Opus's wider harness (3,042 layouts, round 4) found nothing cut off either.
   - **Taps.** Every button goes through `ShortcutActivity` (`taskAffinity=""`), which dismisses the keyguard and decides at the moment of the tap.
     - `TOGGLE` connects or disconnects. It opens the app when consent, a NetID or a password is missing.
-    - `SHARE_USB` and `SHARE_HOTSPOT` flip the switch. The first-ever hotspot share opens the app instead.
+    - `SHARE_USB` and `SHARE_HOTSPOT` flip the switch. Until hotspot sharing has been turned on in the app once (`hotspotExplained`), the hotspot button opens the app with `EXTRA_CONFIRM_HOTSPOT`. The app then asks with the warning before turning it on, including when it's already open (`onNewIntent`). It doesn't ask on a Recents relaunch (`FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY`, since Android 10 and 11 resend the first intent) or once sharing is already on. `HotspotConfirmTest` covers recreation, Cancel, `onNewIntent`, Recents and already-on. Known trade-off: the CLEAR_TOP that makes `onNewIntent` work closes anything above MainActivity in its task (a pending VPN consent, the update confirmation, the share sheet), and only on that first widget hotspot tap.
     - `OPEN_TETHERING`.
     - `OPEN_APP`, from tapping the status.
     - The app opens through its launch intent with `NEW_TASK`, and Settings with `NEW_TASK`, so neither lands in the shortcut's hidden task.
@@ -929,7 +929,7 @@ Version 0.1.3 (4). Branch `proxy-status`.
 
 ## Checks
 
-- `./gradlew assembleDebug assembleRelease testDebugUnitTest lintDebug lintRelease`: 177 tests, 0 failures; lint 0 errors.
+- `./gradlew assembleDebug assembleRelease testDebugUnitTest lintDebug lintRelease`: 180 tests, 0 failures; lint 0 errors.
   - `UsageMeterTest`.
   - `WidgetTest`:
     - the model;
@@ -939,7 +939,7 @@ Version 0.1.3 (4). Branch `proxy-status`.
   - `ScreenshotTest`: the card in use, ready and waiting, and off; the quick toggle moving the Share section's switch; the card hidden when idle and off.
 - `scripts/verify-release.py`: all PASS at 0.1.3 (4).
 - The release manifest keeps `ConnectWidgetReceiver` and Glance's trampolines.
-- Council: round 1 Opus 6, GPT Sol 6; round 2 Opus 7, GPT Sol 9. Round 2's remaining items are fixed: widget text, the app's task, the stray `t/classes.jar`, outline and contrast, segmented rows, the live regions, the hotspot warning on the card, the plain uplink line, the status opening the app, and the picker preview.
+- Council: round 1 Opus 6, GPT Sol 6; round 2 Opus 7, GPT Sol 9; round 3 Opus 8, GPT Sol 9; round 4 Opus 9 (ship), GPT Sol 9 (ship). Round 4's items are taken: status-only buttons up to 120% with "9+ using", no confirm from Recents or when already on, the risk first in the dialog, all launch flags asserted, and the dialog tests. Round 3's items are fixed: compact second lines, the fit test, status on the buttons at 115%, the hotspot confirm, the power colour in the row, the "9+" count, a softer settings button, and launch-flag assertions. Round 2's remaining items are fixed: widget text, the app's task, the stray `t/classes.jar`, outline and contrast, segmented rows, the live regions, the hotspot warning on the card, the plain uplink line, the status opening the app, and the picker preview.
 - Not run on a device:
   - the widget on a launcher, including rounded corners, which Robolectric doesn't draw;
   - the device counts with a real iPhone;

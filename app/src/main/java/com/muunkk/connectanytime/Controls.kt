@@ -17,8 +17,10 @@ object Controls {
     /** The widget's power button: Disconnect while busy, otherwise Connect. */
     const val TOGGLE = "com.muunkk.connectanytime.TOGGLE"
     const val OPEN_TETHERING = "com.muunkk.connectanytime.OPEN_TETHERING"
-    /** The widget's share buttons: flip that switch, after unlocking like everything here. */
     const val OPEN_APP = "com.muunkk.connectanytime.OPEN_APP"
+    /** MainActivity extra: ask before turning hotspot sharing on (the widget's first hotspot tap). */
+    const val EXTRA_CONFIRM_HOTSPOT = "com.muunkk.connectanytime.CONFIRM_HOTSPOT"
+    /** The widget's share buttons: flip that switch, after unlocking like everything here. */
     const val SHARE_USB = "com.muunkk.connectanytime.SHARE_USB"
     const val SHARE_HOTSPOT = "com.muunkk.connectanytime.SHARE_HOTSPOT"
     /** Whether a reboot or app update starts the VPN again by itself (BootReceiver), which only
@@ -114,10 +116,10 @@ class ShortcutActivity : Activity() {
             Controls.OPEN_TETHERING -> openTethering(this)
             Controls.OPEN_APP -> openApp()
             Controls.SHARE_USB -> store.shareWithTether = !store.shareWithTether
-            // Turning hotspot sharing on for the first time opens the app, where the switch says
-            // that anyone who joins the hotspot can use the VPN. After that the widget flips it.
+            // Until hotspot sharing has been turned on in the app once, where it says that anyone
+            // who joins the hotspot can use the VPN, the widget asks in the app first.
             Controls.SHARE_HOTSPOT ->
-                if (!store.shareOverHotspot && !store.sharedHotspotBefore) openApp()
+                if (!store.shareOverHotspot && !store.hotspotExplained && !store.sharedHotspotBefore) openApp(confirmHotspot = true)
                 else store.shareOverHotspot = !store.shareOverHotspot
         }
         finish()
@@ -131,8 +133,12 @@ class ShortcutActivity : Activity() {
     /** The app as the launcher opens it: its own task, brought forward if it's already open.
      *  This activity has its own empty affinity, so a plain start would put the app in this
      *  hidden task instead. */
-    private fun openApp() {
+    private fun openApp(confirmHotspot: Boolean = false) {
         val launch = packageManager.getLaunchIntentForPackage(packageName) ?: Intent(this, MainActivity::class.java)
-        startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        // Delivered to a MainActivity that's already open, too (onNewIntent), so it can ask.
+        if (confirmHotspot) launch.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            .putExtra(Controls.EXTRA_CONFIRM_HOTSPOT, true)
+        startActivity(launch)
     }
 }

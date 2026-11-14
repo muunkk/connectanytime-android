@@ -59,7 +59,7 @@ internal fun ShareSection(store: Store) {
     // Automatic, once either link is on), then each sharing link's card for that setup.
     val rows = buildList<@Composable (Int, Int) -> Unit> {
         add { i, n -> ShareSwitch(context, TetherLink.Usb, usbOn, share, i, n) { store.shareWithTether = it } }
-        add { i, n -> ShareSwitch(context, TetherLink.Hotspot, hotspotOn, share, i, n) { store.shareOverHotspot = it } }
+        add { i, n -> ShareSwitch(context, TetherLink.Hotspot, hotspotOn, share, i, n) { store.shareOverHotspot = it; if (it) store.hotspotExplained = true } }
         if (usbOn || hotspotOn) add { i, n -> FieldSegment(i, n) {
             SetupChoice(setup, home, onSetup = { store.proxySetup = it }, onHome = { home = it; store.directRanges = it })
         } }

@@ -12,6 +12,7 @@ import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -72,9 +73,15 @@ class WidgetTest {
     @Test fun theFirstHotspotShareOpensTheAppToExplainIt() {
         val first = tap(Controls.SHARE_HOTSPOT)
         assertEquals(false, app.store.shareOverHotspot)
-        assertEquals(MainActivity::class.java.name, org.robolectric.Shadows.shadowOf(first.get()).nextStartedActivity.component?.className)
-        // Once the hotspot has been shared, the widget flips it directly.
-        app.store.sharedHotspotBefore = true
+        val opened = org.robolectric.Shadows.shadowOf(first.get()).nextStartedActivity
+        assertEquals(MainActivity::class.java.name, opened.component?.className)
+        // In its own task (not this activity's hidden one), asking there before turning it on.
+        for (flag in listOf(android.content.Intent.FLAG_ACTIVITY_NEW_TASK, android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP,
+                android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP)) // the last two make an open MainActivity get onNewIntent
+            assertTrue(opened.flags and flag != 0)
+        assertTrue(opened.getBooleanExtra(Controls.EXTRA_CONFIRM_HOTSPOT, false))
+        // Once it's been turned on in the app, the widget flips it directly.
+        app.store.hotspotExplained = true
         tap(Controls.SHARE_HOTSPOT)
         assertEquals(true, app.store.shareOverHotspot)
         tap(Controls.SHARE_HOTSPOT)
@@ -87,14 +94,29 @@ class WidgetTest {
         assertEquals(MainActivity::class.java.name, org.robolectric.Shadows.shadowOf(power.get()).nextStartedActivity.component?.className)
     }
 
-    private fun render(name: String, size: DpSize) {
+    private fun laidOut(size: DpSize): View {
         val views = runBlocking { ConnectWidget().compose(app, size = size) }
-        val parent = FrameLayout(app)
-        val view: View = views.apply(app, parent)
+        val view: View = views.apply(app, FrameLayout(app))
         val density = app.resources.displayMetrics.density
         val w = (size.width.value * density).toInt(); val h = (size.height.value * density).toInt()
         view.measure(View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY))
         view.layout(0, 0, w, h)
+        return view
+    }
+    /** Every visible text the layout had to cut short ("Tap power to con…"). */
+    // Walks visibility itself: isShown is always false for a view that isn't in a window.
+    private fun cutShort(view: View): List<String> = when {
+        view.visibility != View.VISIBLE -> emptyList()
+        view is android.widget.TextView -> view.layout?.let { layout ->
+            (0 until layout.lineCount).filter { layout.getEllipsisCount(it) > 0 }.map { view.text.toString() }
+        }.orEmpty()
+        view is android.view.ViewGroup -> (0 until view.childCount).flatMap { cutShort(view.getChildAt(it)) }
+        else -> emptyList()
+    }
+    private fun render(name: String, size: DpSize) {
+        val view = laidOut(size)
+        val density = app.resources.displayMetrics.density
+        val w = (size.width.value * density).toInt(); val h = (size.height.value * density).toInt()
         val bitmap = Bitmap.createBitmap(w + 48, h + 48, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
         canvas.drawColor(Color.rgb(96, 110, 128)) // a wallpaper-ish backdrop
@@ -121,6 +143,38 @@ class WidgetTest {
         RuntimeEnvironment.setFontScale(2f)
         render("widget-wide-200pct", DpSize(280.dp, 110.dp))
         render("widget-compact-200pct", DpSize(180.dp, 110.dp))
+    }
+
+    @Test fun noTextIsCutShortInAnyStateWidthOrFont() {
+        app.store.shareWithTether = true; app.store.shareOverHotspot = true
+        val active = TetherShare.Active(1080, usb = TetherShare.Link.Waiting, hotspot = TetherShare.Link.Sharing("10.84.137.1"))
+        val states = listOf<Triple<String, VpnState, TetherShare>>(
+            Triple("idle", VpnState(), TetherShare.VpnNotConnected),
+            Triple("connecting", VpnState("Connecting…", busy = true), TetherShare.VpnNotConnected),
+            Triple("reconnecting", VpnState("Reconnecting…", busy = true), TetherShare.WaitingForVpn),
+            Triple("failed", VpnState(error = "Couldn't reach the VPN server."), TetherShare.VpnNotConnected),
+            Triple("ended", VpnState(error = StartRule.REFUSAL), TetherShare.VpnNotConnected),
+            Triple("connected", connected, active),
+            Triple("problem", connected, TetherShare.Active(1080, usb = TetherShare.Link.PortInUse, hotspot = TetherShare.Link.Unknown)))
+        val problems = mutableListOf<String>()
+        for (font in listOf(1.0f, 1.15f, 1.2f, 1.25f, 1.3f, 1.5f, 2.0f)) {
+            RuntimeEnvironment.setFontScale(font)
+            for ((name, vpn, share) in states) for (uplink in listOf(Uplink.MobileData, Uplink.Other)) {
+                ConnectApp.mutableState.value = vpn
+                ConnectApp.mutableTetherShare.value = share
+                ConnectApp.mutableUplink.value = uplink
+                ConnectApp.mutableTetherUsage.value = TetherUsage(hotspot = LinkUsage(List(12) { "10.84.137.${it + 2}" }, 20))
+                for (width in listOf(180, 250, 280, 330)) {
+                    val cut = cutShort(laidOut(DpSize(width.dp, 110.dp)))
+                    if (cut.isNotEmpty()) problems += "$name/$uplink at ${width}dp, ${(font * 100).toInt()}%: $cut"
+                }
+            }
+        }
+        assertEquals(problems.joinToString("\n"), 0, problems.size)
+        // The check itself works: squeezed below the widget's minimum, text is cut and caught.
+        RuntimeEnvironment.setFontScale(1.0f)
+        ConnectApp.mutableState.value = VpnState()
+        assertTrue(cutShort(laidOut(DpSize(110.dp, 110.dp))).isNotEmpty())
     }
 
     @Test fun shortWordsFitAtDefaultAndSlightlyLargerFonts() {
