@@ -46,6 +46,7 @@ import androidx.glance.semantics.semantics
 import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
+import androidx.glance.unit.ColorProvider
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -158,40 +159,50 @@ private fun Content(model: WidgetModel) {
     val colors = GlanceTheme.colors
     val connected = model.phase == Phase.Connected
     val wide = LocalSize.current.width >= ConnectWidget.WIDE.width
-    // At large font sizes, drop the second lines rather than push the buttons out of the widget.
-    val large = context.resources.configuration.fontScale >= 1.3f
-    Scaffold(backgroundColor = if (connected) colors.primaryContainer else colors.widgetBackground, horizontalPadding = 12.dp,
-        modifier = GlanceModifier.padding(vertical = 8.dp)) {
+    val fontScale = context.resources.configuration.fontScale
+    // Any enlarged font: the buttons lose their words (their text area holds about 9 characters)
+    // and titles shorten. Large fonts also drop the status's second line, and on the compact
+    // widget the power button moves down so the title gets the full width.
+    val enlarged = fontScale > 1.0f
+    val large = fontScale >= 1.3f
+    val background = if (connected) colors.primaryContainer else colors.widgetBackground
+    val powerBelow = !wide && large
+    Scaffold(backgroundColor = background, horizontalPadding = 12.dp, modifier = GlanceModifier.padding(vertical = 8.dp)) {
         Column(GlanceModifier.fillMaxSize()) {
             Row(GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Status(model, wide, large, GlanceModifier.defaultWeight())
-                Spacer(GlanceModifier.width(8.dp))
-                Power(model, context)
+                Status(model, short = !wide || enlarged, large, context, GlanceModifier.defaultWeight())
+                if (!powerBelow) { Spacer(GlanceModifier.width(8.dp)); Power(model, context, GlanceModifier.size(TARGET.dp)) }
             }
             Spacer(GlanceModifier.defaultWeight())
             Row(GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                LinkButton(context, TetherLink.Usb, model.usbOn, model.usb, model.usbDevices, wide && !large, GlanceModifier.defaultWeight())
+                if (powerBelow) { Power(model, context, GlanceModifier.defaultWeight().height(TARGET.dp)); Spacer(GlanceModifier.width(6.dp)) }
+                val words = wide && !enlarged
+                LinkButton(context, TetherLink.Usb, model.usbOn, model.usb, model.usbDevices, words, background, GlanceModifier.defaultWeight())
                 Spacer(GlanceModifier.width(6.dp))
-                LinkButton(context, TetherLink.Hotspot, model.hotspotOn, model.hotspot, model.hotspotDevices, wide && !large, GlanceModifier.defaultWeight())
-                Spacer(GlanceModifier.width(6.dp))
-                HotspotSettings(context, if (wide) GlanceModifier.size(TARGET.dp) else GlanceModifier.defaultWeight().height(TARGET.dp))
+                LinkButton(context, TetherLink.Hotspot, model.hotspotOn, model.hotspot, model.hotspotDevices, words, background, GlanceModifier.defaultWeight())
+                if (!powerBelow) {
+                    Spacer(GlanceModifier.width(6.dp))
+                    HotspotSettings(context, connected, if (wide) GlanceModifier.size(TARGET.dp) else GlanceModifier.defaultWeight().height(TARGET.dp))
+                }
             }
         }
     }
 }
 
 @Composable
-private fun Status(model: WidgetModel, wide: Boolean, large: Boolean, modifier: GlanceModifier) {
-    val context = LocalContext.current
+private fun Status(model: WidgetModel, short: Boolean, large: Boolean, context: Context, modifier: GlanceModifier) {
     val colors = GlanceTheme.colors
     val connected = model.phase == Phase.Connected
     val onColor = if (connected) colors.onPrimaryContainer else colors.onSurface
     val title = context.getString(when (model.phase) {
-        Phase.Idle -> R.string.not_connected
-        Phase.Connecting -> R.string.connecting
-        Phase.Connected -> R.string.connected
-        Phase.Reconnecting -> R.string.reconnecting
-        Phase.Failed -> if (model.ended) R.string.session_ended else R.string.failed_title
+        Phase.Idle -> if (short) R.string.widget_short_off else R.string.not_connected
+        Phase.Connecting -> if (short) R.string.widget_short_connecting else R.string.connecting
+        Phase.Connected -> if (short) R.string.widget_short_connected else R.string.connected
+        Phase.Reconnecting -> if (short) R.string.widget_short_reconnecting else R.string.reconnecting
+        Phase.Failed -> when {
+            model.ended -> if (short) R.string.widget_short_ended else R.string.session_ended
+            else -> if (short) R.string.widget_short_failed else R.string.failed_title
+        }
     })
     val detail = when {
         connected && model.uplink != null -> context.getString(uplinkName(model.uplink))
@@ -200,8 +211,9 @@ private fun Status(model: WidgetModel, wide: Boolean, large: Boolean, modifier: 
         model.phase == Phase.Failed -> context.getString(R.string.widget_try_again)
         else -> context.getString(R.string.widget_vpn_off)
     }
-    Column(modifier) {
-        Text(title, maxLines = 1, style = TextStyle(color = onColor, fontSize = if (wide) 16.sp else 15.sp, fontWeight = FontWeight.Bold))
+    // Tapping the status opens the app, as most widgets do.
+    Column(modifier.clickable(shortcut(context, Controls.OPEN_APP)).semantics { contentDescription = "$title. " + context.getString(R.string.widget_open_app) }) {
+        Text(title, maxLines = 1, style = TextStyle(color = onColor, fontSize = 16.sp, fontWeight = FontWeight.Bold))
         if (!large) Row(verticalAlignment = Alignment.CenterVertically) {
             if (connected && model.uplink != null) {
                 Image(ImageProvider(uplinkIcon(model.uplink)), contentDescription = null,
@@ -215,10 +227,10 @@ private fun Status(model: WidgetModel, wide: Boolean, large: Boolean, modifier: 
 
 /** Connect or Disconnect: drawn for the state now, decided by ShortcutActivity when tapped. */
 @Composable
-private fun Power(model: WidgetModel, context: Context) {
+private fun Power(model: WidgetModel, context: Context, modifier: GlanceModifier) {
     val colors = GlanceTheme.colors
     val busy = model.phase == Phase.Connected || model.phase == Phase.Connecting || model.phase == Phase.Reconnecting
-    Box(GlanceModifier.size(TARGET.dp).cornerRadius((TARGET / 2).dp).background(if (busy) colors.error else colors.primary)
+    Box(modifier.cornerRadius((TARGET / 2).dp).background(if (busy) colors.error else colors.primary)
         .clickable(shortcut(context, Controls.TOGGLE))
         .semantics { contentDescription = context.getString(if (busy) R.string.disconnect else R.string.connect) },
         contentAlignment = Alignment.Center) {
@@ -241,7 +253,8 @@ private fun linkStatus(context: Context, state: WidgetLink, devices: Int) = when
  * Wide, it names the link and says what it's doing; compact, the icon and how many are using it.
  */
 @Composable
-private fun LinkButton(context: Context, link: TetherLink, on: Boolean, state: WidgetLink, devices: Int, words: Boolean, modifier: GlanceModifier) {
+private fun LinkButton(context: Context, link: TetherLink, on: Boolean, state: WidgetLink, devices: Int, words: Boolean,
+                       background: ColorProvider, modifier: GlanceModifier) {
     val colors = GlanceTheme.colors
     val hotspot = link == TetherLink.Hotspot
     val content = if (on) colors.onPrimary else colors.onSurfaceVariant
@@ -253,13 +266,14 @@ private fun LinkButton(context: Context, link: TetherLink, on: Boolean, state: W
         .clickable(shortcut(context, if (hotspot) Controls.SHARE_HOTSPOT else Controls.SHARE_USB))
         .semantics { contentDescription = description }, contentAlignment = Alignment.Center) {
         Row(GlanceModifier.fillMaxSize().padding(if (on) 0.dp else 1.5.dp), verticalAlignment = Alignment.CenterVertically) {
-            Row(GlanceModifier.fillMaxSize().cornerRadius((TARGET / 2).dp).background(if (on) colors.primary else colors.widgetBackground)
-                .padding(horizontal = if (words) 12.dp else 0.dp),
+            // Off: the widget's own background inside the outline, so it reads as outlined on either background.
+            Row(GlanceModifier.fillMaxSize().cornerRadius((TARGET / 2).dp).background(if (on) colors.primary else background)
+                .padding(horizontal = if (words) 10.dp else 0.dp),
                 verticalAlignment = Alignment.CenterVertically, horizontalAlignment = if (words) Alignment.Start else Alignment.CenterHorizontally) {
                 Image(ImageProvider(if (hotspot) R.drawable.ic_hotspot else R.drawable.ic_usb), contentDescription = null,
                     colorFilter = ColorFilter.tint(content), modifier = GlanceModifier.size(20.dp))
                 if (words) {
-                    Spacer(GlanceModifier.width(8.dp))
+                    Spacer(GlanceModifier.width(6.dp))
                     Column {
                         Text(context.getString(if (hotspot) R.string.widget_hotspot else R.string.widget_usb), maxLines = 1,
                             style = TextStyle(color = content, fontSize = 13.sp, fontWeight = FontWeight.Medium))
@@ -277,18 +291,21 @@ private fun LinkButton(context: Context, link: TetherLink, on: Boolean, state: W
 /** Android's hotspot screen (apps can't switch the hotspot itself): the hotspot sign with an
  *  "opens elsewhere" arrow, so it doesn't read as this app's settings. */
 @Composable
-private fun HotspotSettings(context: Context, modifier: GlanceModifier) {
+private fun HotspotSettings(context: Context, connected: Boolean, modifier: GlanceModifier) {
     val colors = GlanceTheme.colors
-    Box(modifier.cornerRadius((TARGET / 2).dp).background(colors.secondaryContainer)
+    // secondaryContainer all but vanishes on the connected widget's primaryContainer.
+    val fill = if (connected) colors.surface else colors.secondaryContainer
+    val ink = if (connected) colors.onSurface else colors.onSecondaryContainer
+    Box(modifier.cornerRadius((TARGET / 2).dp).background(fill)
         .clickable(shortcut(context, Controls.OPEN_TETHERING))
         .semantics { contentDescription = context.getString(R.string.widget_hotspot_settings) },
         contentAlignment = Alignment.Center) {
         Box(GlanceModifier.size(26.dp)) {
-            Image(ImageProvider(R.drawable.ic_hotspot), contentDescription = null, colorFilter = ColorFilter.tint(colors.onSecondaryContainer),
+            Image(ImageProvider(R.drawable.ic_hotspot), contentDescription = null, colorFilter = ColorFilter.tint(ink),
                 modifier = GlanceModifier.size(20.dp))
             Box(GlanceModifier.fillMaxSize(), contentAlignment = Alignment.BottomEnd) {
                 Image(ImageProvider(R.drawable.ic_open_external), contentDescription = null,
-                    colorFilter = ColorFilter.tint(colors.onSecondaryContainer), modifier = GlanceModifier.size(12.dp))
+                    colorFilter = ColorFilter.tint(ink), modifier = GlanceModifier.size(12.dp))
             }
         }
     }

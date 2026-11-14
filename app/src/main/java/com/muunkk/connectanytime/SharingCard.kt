@@ -8,7 +8,6 @@ import android.text.format.Formatter
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -19,6 +18,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.*
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 
@@ -86,8 +86,9 @@ internal fun SharingCard(store: Store, vpn: VpnState, modifier: Modifier = Modif
                     else -> stringResource(R.string.sharing_summary_waiting)
                 }
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp),
-                    // Read as one heading, and again when the summary changes.
-                    modifier = Modifier.semantics(mergeDescendants = true) { heading(); liveRegion = LiveRegionMode.Polite }) {
+                    // Read as one heading. Not a live region: device counts change by themselves (a
+                    // device drops off a minute after it goes quiet), and that isn't worth an interruption.
+                    modifier = Modifier.semantics(mergeDescendants = true) { heading() }) {
                     Badge(inUse, active != null && (active.usb is TetherShare.Link.Sharing || active.hotspot is TetherShare.Link.Sharing))
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(stringResource(R.string.sharing_title), style = MaterialTheme.typography.titleLargeEmphasized)
@@ -117,17 +118,14 @@ internal fun uplinkName(uplink: Uplink) = when (uplink) {
     Uplink.Other -> R.string.uplink_other
 }
 
-/** What the phone is online over: everything shared leaves through the VPN on that network. */
+/** What the phone is online over: everything shared leaves through the VPN on that network.
+ *  A plain icon and label, not a chip, since it isn't something to tap. */
 @Composable
 private fun UplinkLine(uplink: Uplink) {
-    val colors = MaterialTheme.colorScheme
-    Surface(shape = MaterialTheme.shapes.large, color = colors.surfaceContainerLowest.copy(alpha = 0.6f), contentColor = colors.onSurface,
-        modifier = Modifier.testTag("sharing-uplink")) {
-        Row(Modifier.padding(horizontal = 14.dp, vertical = 10.dp).semantics(mergeDescendants = true) {},
-            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Icon(painterResource(uplinkIcon(uplink)), contentDescription = null, tint = colors.primary, modifier = Modifier.size(20.dp))
-            Text(stringResource(uplinkName(uplink)), style = MaterialTheme.typography.labelLarge)
-        }
+    Row(Modifier.testTag("sharing-uplink").semantics(mergeDescendants = true) {},
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Icon(painterResource(uplinkIcon(uplink)), contentDescription = null, modifier = Modifier.size(18.dp))
+        Text(stringResource(uplinkName(uplink)), style = MaterialTheme.typography.labelLarge)
     }
 }
 
@@ -145,7 +143,8 @@ private fun Badge(inUse: Boolean, sharing: Boolean) {
     }
 }
 
-/** One link: what it's doing, who is on it, and its switch (the whole row toggles). */
+/** One link: what it's doing, who is on it, and its switch. A segmented list item like the
+ *  app's other switches, so the whole row toggles with the same press shape and ripple. */
 @Composable
 private fun LinkRow(link: TetherLink, on: Boolean, share: TetherShare, usage: LinkUsage, index: Int, onChange: (Boolean) -> Unit) {
     val context = LocalContext.current
@@ -154,7 +153,8 @@ private fun LinkRow(link: TetherLink, on: Boolean, share: TetherShare, usage: Li
     val port = (share as? TetherShare.Active)?.port ?: 1080
     val sharing = on && state is TetherShare.Link.Sharing
     val status = when {
-        !on -> stringResource(R.string.sharing_link_off)
+        // The hotspot's consequence, where it can be turned on without reaching the Share section.
+        !on -> stringResource(if (hotspot) R.string.sharing_link_off_hotspot else R.string.sharing_link_off)
         share == TetherShare.VpnNotConnected -> stringResource(R.string.sharing_link_vpn_off)
         share == TetherShare.WaitingForVpn -> stringResource(R.string.sharing_link_paused)
         state is TetherShare.Link.Sharing -> stringResource(R.string.sharing_link_on, state.address, port)
@@ -164,25 +164,23 @@ private fun LinkRow(link: TetherLink, on: Boolean, share: TetherShare, usage: Li
     }
     val title = stringResource(if (hotspot) R.string.sharing_hotspot else R.string.sharing_usb)
     val colors = MaterialTheme.colorScheme
-    Surface(shape = ListItemDefaults.segmentedShapes(index, 2).shape,
-        color = if (sharing && usage.devices.isNotEmpty()) colors.surfaceContainerLowest else colors.surfaceContainer,
-        contentColor = colors.onSurface,
-        modifier = Modifier.fillMaxWidth().testTag(if (hotspot) "sharing-hotspot" else "sharing-usb")
-            .toggleable(value = on, role = Role.Switch, onValueChange = onChange)) {
-        Row(Modifier.padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+    SegmentedListItem(onClick = { onChange(!on) }, shapes = ListItemDefaults.segmentedShapes(index, 2),
+        colors = ListItemDefaults.segmentedColors(
+            containerColor = if (sharing && usage.devices.isNotEmpty()) colors.surfaceContainerLowest else colors.surfaceContainer),
+        modifier = Modifier.testTag(if (hotspot) "sharing-hotspot" else "sharing-usb")
+            .semantics { role = Role.Switch; toggleableState = ToggleableState(on) },
+        leadingContent = {
             Icon(painterResource(if (hotspot) R.drawable.ic_hotspot else R.drawable.ic_usb), contentDescription = null,
                 tint = if (sharing) colors.primary else colors.onSurfaceVariant)
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(title, style = MaterialTheme.typography.titleMedium)
+        },
+        trailingContent = { Switch(checked = on, onCheckedChange = null) },
+        supportingContent = {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 // Announced when it changes; the traffic below changes every few seconds and isn't.
-                Text(status, style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant,
-                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+                Text(status, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
                 AnimatedVisibility(sharing) { Usage(context, usage) }
             }
-            Switch(checked = on, onCheckedChange = null)
-        }
-    }
+        }) { Text(title) }
 }
 
 @Composable

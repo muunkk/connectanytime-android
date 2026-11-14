@@ -907,17 +907,21 @@ Version 0.1.3 (4). Branch `proxy-status`.
     `rememberShares` follows them with a prefs listener, so each place reflects
     changes from the others.
 - **Widget (`ConnectWidget.kt`, Glance 1.2.0).**
-  - Responsive layouts at 120 × 110 and 280 × 110 dp.
-  - A pure `widgetModel()` feeds the drawing.
-  - Power goes through `ShortcutActivity` `TOGGLE`, decided at tap time. It opens the
-    app when consent, a NetID or a password is missing. `ShortcutActivity` already
-    handles keyguard dismissal.
-  - The USB and Hotspot buttons run `ToggleShareAction`, which flips the pref.
-  - Hotspot settings goes through `ShortcutActivity` `OPEN_TETHERING`. Android has no
-    public API for apps to switch the hotspot on or off.
-  - `ConnectApp` redraws the widget on a debounced (300 ms) change of the widget model.
-    `updatePeriodMillis` is 30 min, so the widget recovers if the process died.
-  - Android 12+ uses dynamic colors; older versions use the app's brand scheme.
+  - **Model.** A pure `widgetModel()`. The content collects `changes()` inside `provideContent`, because Glance doesn't rerun `provideGlance` for updates during a session (45 s, plus 5 s per event). `ConnectApp` still calls `updateAll` on a debounced change, to start a session when none is open. `updatePeriodMillis` is 30 min, in case the process died.
+  - **Layouts.** Responsive buckets: COMPACT 180 × 110 and WIDE 280 × 110 dp. minResizeWidth is 180 dp and minWidth 250 dp.
+  - **Buttons.** 44 dp targets. On is filled; off is outlined, with the widget's own background inside the outline.
+  - **Text that fits.**
+    - Link statuses are at most 7 characters (Off, On, Waiting, No VPN, N using, Error).
+    - Above 100% font the buttons lose their words and titles shorten.
+    - From 130% the status's second line goes. On the compact widget, power moves into the button row and the hotspot settings button drops.
+    - The compact widget always uses short titles.
+  - **Taps.** Every button goes through `ShortcutActivity` (`taskAffinity=""`), which dismisses the keyguard and decides at the moment of the tap.
+    - `TOGGLE` connects or disconnects. It opens the app when consent, a NetID or a password is missing.
+    - `SHARE_USB` and `SHARE_HOTSPOT` flip the switch. The first-ever hotspot share opens the app instead.
+    - `OPEN_TETHERING`.
+    - `OPEN_APP`, from tapping the status.
+    - The app opens through its launch intent with `NEW_TASK`, and Settings with `NEW_TASK`, so neither lands in the shortcut's hidden task.
+  - **Colors.** Android 12+ follows the wallpaper; older versions use the brand scheme. Glance's corner radius needs API 31, so Android 10 and 11 get square buttons.
 - **Copy.**
   - The iPhone card says the proxy can stay on because it only affects that hotspot.
   - The stopped-sharing help offers "turn sharing back on" as well as turning the
@@ -925,16 +929,17 @@ Version 0.1.3 (4). Branch `proxy-status`.
 
 ## Checks
 
-- `./gradlew assembleDebug assembleRelease testDebugUnitTest lintDebug lintRelease`:
-  173 tests, 0 failures; lint 0 errors.
-  - New: `UsageMeterTest`; `WidgetTest`, covering the model, the toggle action and
-    renders at 150, 200 and 300 dp wide in light and dark.
-  - New `ScreenshotTest` cases: the card in use, ready and waiting, and off; that the
-    quick toggle moves the Share section's switch; and that the card is hidden when
-    idle and off.
+- `./gradlew assembleDebug assembleRelease testDebugUnitTest lintDebug lintRelease`: 177 tests, 0 failures; lint 0 errors.
+  - `UsageMeterTest`.
+  - `WidgetTest`:
+    - the model;
+    - the share buttons and the first hotspot share going through `ShortcutActivity`;
+    - power opening the app when it can't connect yet;
+    - renders at 180 and 280 dp, in light and dark, at 115% and 200% font, and in the no-VPN and failed states.
+  - `ScreenshotTest`: the card in use, ready and waiting, and off; the quick toggle moving the Share section's switch; the card hidden when idle and off.
 - `scripts/verify-release.py`: all PASS at 0.1.3 (4).
 - The release manifest keeps `ConnectWidgetReceiver` and Glance's trampolines.
-- `ToggleShareAction` keeps its name in the release build (Glance's consumer keep rule).
+- Council: round 1 Opus 6, GPT Sol 6; round 2 Opus 7, GPT Sol 9. Round 2's remaining items are fixed: widget text, the app's task, the stray `t/classes.jar`, outline and contrast, segmented rows, the live regions, the hotspot warning on the card, the plain uplink line, the status opening the app, and the picker preview.
 - Not run on a device:
   - the widget on a launcher, including rounded corners, which Robolectric doesn't draw;
   - the device counts with a real iPhone;

@@ -2,7 +2,8 @@
 <!-- What the widget picker shows (Android 12+): a still of the wide layout, in brand colors. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent" android:layout_height="match_parent"
-    android:orientation="vertical" android:padding="12dp" android:background="@drawable/widget_preview_background">
+    android:orientation="vertical" android:paddingHorizontal="12dp" android:paddingVertical="8dp"
+    android:background="@drawable/widget_preview_background">
     <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
         android:orientation="horizontal" android:gravity="center_vertical" android:baselineAligned="false">
         <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
@@ -17,14 +18,17 @@
             android:contentDescription="@null" />
     </LinearLayout>
     <View android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" />
-    <LinearLayout android:layout_width="match_parent" android:layout_height="40dp" android:orientation="horizontal"
+    <LinearLayout android:layout_width="match_parent" android:layout_height="44dp" android:orientation="horizontal"
         android:baselineAligned="false">
         <TextView android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1"
             android:gravity="center_vertical" android:paddingHorizontal="12dp" android:text="@string/widget_usb"
             android:textColor="#FFFFFF" android:textSize="13sp" android:background="@drawable/widget_preview_row" />
         <TextView android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1"
             android:layout_marginStart="6dp" android:gravity="center_vertical" android:paddingHorizontal="12dp"
-            android:text="@string/widget_hotspot" android:textColor="#FFFFFF" android:textSize="13sp"
-            android:background="@drawable/widget_preview_row" />
+            android:text="@string/widget_hotspot" android:textColor="#2B5F7F" android:textSize="13sp"
+            android:background="@drawable/widget_preview_row_off" />
+        <ImageView android:layout_width="44dp" android:layout_height="44dp" android:layout_marginStart="6dp" android:padding="12dp"
+            android:src="@drawable/ic_hotspot" android:background="@drawable/widget_preview_settings"
+            android:contentDescription="@null" />
     </LinearLayout>
 </LinearLayout>
