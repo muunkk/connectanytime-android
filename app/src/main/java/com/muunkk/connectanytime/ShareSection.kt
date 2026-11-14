@@ -52,18 +52,35 @@ internal fun ShareSection(store: Store) {
     var sharedHotspot by remember { mutableStateOf(store.sharedHotspotBefore) }
     LaunchedEffect(hotspot != null) { if (hotspot != null && !sharedHotspot) { sharedHotspot = true; store.sharedHotspotBefore = true } }
 
+    val setup = rememberProxySetup(store)
+    var home by remember { mutableStateOf(store.directRanges) }
+    val automatic = setup == ProxySetup.Automatic
+    // In the order you go through it: which links, then how devices are set up (Manual or
+    // Automatic, once either link is on), then each sharing link's card for that setup.
     val rows = buildList<@Composable (Int, Int) -> Unit> {
         add { i, n -> ShareSwitch(context, TetherLink.Usb, usbOn, share, i, n) { store.shareWithTether = it } }
-        if (usb != null) add { i, n -> FieldSegment(i, n) { MacSetup(context, usb.address, port) } }
         add { i, n -> ShareSwitch(context, TetherLink.Hotspot, hotspotOn, share, i, n) { store.shareOverHotspot = it; if (it) store.hotspotExplained = true } }
-        if (hotspot != null) add { i, n -> FieldSegment(i, n) { HotspotSetup(context, hotspot.address, port, offButton = usb == null) } }
+        if (usbOn || hotspotOn) add { i, n -> FieldSegment(i, n) {
+            SetupChoice(setup, home, onSetup = { store.proxySetup = it }, onHome = { home = it; store.directRanges = it })
+        } }
+        if (usb != null) add { i, n -> FieldSegment(i, n) {
+            if (automatic) AutoSetup(context, TetherLink.Usb, usb, port, home, offButton = true) else MacSetup(context, usb.address, port)
+        } }
+        if (hotspot != null) add { i, n -> FieldSegment(i, n) {
+            if (automatic) AutoSetup(context, TetherLink.Hotspot, hotspot, port, home, offButton = usb == null)
+            else HotspotSetup(context, hotspot.address, port, offButton = usb == null)
+        } }
     }
 
     SectionTitle(R.string.share_title)
     Group(rows.size) { index -> rows[index](index, rows.size) }
     AnimatedVisibility(shared && !sharingAny) {
         Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(stringResource(if (sharedHotspot) R.string.share_stopped_help_hotspot else R.string.share_stopped_help), style = MaterialTheme.typography.bodySmall,
+            Text(stringResource(when {
+                automatic -> R.string.share_stopped_help_auto
+                sharedHotspot -> R.string.share_stopped_help_hotspot
+                else -> R.string.share_stopped_help
+            }), style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             CopyButton(context, R.string.share_copy_off, macOffCommand(1080), tonal = false)
         }
@@ -152,7 +169,7 @@ private fun HotspotSetup(context: Context, ip: String, port: Int, offButton: Boo
 
 /** Names the connection a card is for, with its icon, so USB and hotspot cards tell apart at a glance. */
 @Composable
-private fun CardLabel(icon: Int, text: Int) {
+internal fun CardLabel(icon: Int, text: Int) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Icon(painterResource(icon), contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
         Text(stringResource(text), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -160,7 +177,7 @@ private fun CardLabel(icon: Int, text: Int) {
 }
 
 @Composable
-private fun Field(label: Int, value: String, modifier: Modifier = Modifier) {
+internal fun Field(label: Int, value: String, modifier: Modifier = Modifier) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(stringResource(label), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Big(value, modifier)
@@ -168,12 +185,12 @@ private fun Field(label: Int, value: String, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun Big(text: String, modifier: Modifier = Modifier) =
+internal fun Big(text: String, modifier: Modifier = Modifier) =
     Text(text, style = MaterialTheme.typography.headlineSmallEmphasized, fontFamily = FontFamily.Monospace, modifier = modifier)
 
 /** Copies `text`, and says so on the button for a moment (Android 13+ also shows its own notice). */
 @Composable
-private fun CopyButton(context: Context, label: Int, text: String, tonal: Boolean) {
+internal fun CopyButton(context: Context, label: Int, text: String, tonal: Boolean) {
     var copied by remember { mutableStateOf(false) }
     LaunchedEffect(copied) { if (copied) { delay(2000); copied = false } }
     val onClick = {
@@ -206,10 +223,24 @@ private const val FIND = "ip=@IP@; port=@PORT@; s=; n=0; " +
     "done <<< \"§(networksetup -listallnetworkservices | tail -n +2)\"; " +
     "if [ §n -eq 0 ]; then echo \"@NONE@\"; " +
     "elif [ §n -gt 1 ]; then echo \"More than one network service matches. Change the proxies in System Settings instead.\"; " +
-    "else ok=1; for p in webproxy securewebproxy socksfirewallproxy; do sudo networksetup @SET@ || { ok=0; break; }; done; " +
+    "else ok=1; @ACTION@; " +
     "if [ §ok = 1 ]; then echo \"@DONE@ §s\"; else echo \"Couldn't change the proxies on §s.\"; fi; fi"
 
-private fun script(ip: String, port: Int, match: String, set: String, none: String, done: String) = FIND
+// Switching between Manual and Automatic on a Mac: each command turns off the other kind on that
+// service, but only when it's this app's (the PAC URL on this port, or SOCKS on this port), so
+// a Mac that never used the other kind sees exactly the calls it always did.
+// Only after the new setting went in (ok=1), so a failed Manual setup keeps a working Automatic.
+private const val AUTO_OFF = "if [ §ok = 1 ] && networksetup -getautoproxyurl \"§s\" | grep -qx \"URL: .*:§port/proxy\\.pac\"; then " +
+    "sudo networksetup -setautoproxystate \"§s\" off || ok=0; fi"
+// This app's SOCKS proxy: on, this port, and not a local one such as `ssh -D 1080`.
+private const val MANUAL_OFF = "o=§(networksetup -getsocksfirewallproxy \"§s\"); " +
+    "if printf '%s\\n' \"§o\" | grep -qxF \"Enabled: Yes\" && printf '%s\\n' \"§o\" | grep -qxF \"Port: §port\" && " +
+    "! printf '%s\\n' \"§o\" | grep -qxE \"Server: (127\\.[0-9.]+|localhost|::1|0:0:0:0:0:0:0:1)\"; then " +
+    "for p in webproxy securewebproxy socksfirewallproxy; do sudo networksetup -set§{p}state \"§s\" off || { ok=0; break; }; done; fi"
+
+private fun script(ip: String, port: Int, match: String, set: String, none: String, done: String,
+    action: String = "for p in webproxy securewebproxy socksfirewallproxy; do sudo networksetup @SET@ || { ok=0; break; }; done; $AUTO_OFF") = FIND
+    .replace("@ACTION@", action)
     .replace("@MATCH@", match).replace("@SET@", set).replace("@NONE@", none).replace("@DONE@", done)
     .replace("@IP@", ip).replace("@PORT@", port.toString()).replace('§', '$')
 
@@ -222,16 +253,28 @@ internal fun macCommand(ip: String, port: Int) = script(ip, port,
     none = "Couldn't find the phone's connection. Is USB tethering or the hotspot on?",
     done = "Proxies set on")
 
+/** Sets an Automatic PAC URL on the single service whose router is this phone. */
+internal fun macAutoCommand(ip: String, port: Int) = script(ip, port,
+    match = "-getinfo \"§v\" | grep -qxF \"Router: §ip\"",
+    set = "",
+    none = "Couldn't find the phone's connection. Is USB tethering or the hotspot on?",
+    done = "Automatic proxy set on",
+    // The new setting first; this app's Manual proxies go only once it's in, so a failure never leaves neither.
+    action = "sudo networksetup -setautoproxyurl \"§s\" \"${pacUrl(ip, port)}\" || ok=0; if [ §ok = 1 ]; then $MANUAL_OFF; fi")
+
 /** Turns those proxies off again. Finds services by their SOCKS proxy being on with this
  *  port, not by the phone's address: that still works once the phone is unplugged, and
  *  after Android has moved the tether to a new address. Unlike setting them, it turns off
  *  every match, since a Mac that used both USB and the hotspot has the proxy on both. */
 internal fun macOffCommand(port: Int) = ("port=$port; n=0; ok=1; d=; " +
     "while IFS= read -r v; do case \"§v\" in '*'*) continue;; esac; " +
-    "if networksetup -getsocksfirewallproxy \"§v\" | grep -qxF \"Enabled: Yes\" && networksetup -getsocksfirewallproxy \"§v\" | grep -qxF \"Port: §port\"; then " +
-    "n=§((n+1)); d=\"§d§{d:+, }§v\"; " +
+    "changed=0; if networksetup -getsocksfirewallproxy \"§v\" | grep -qxF \"Enabled: Yes\" && networksetup -getsocksfirewallproxy \"§v\" | grep -qxF \"Port: §port\"; then " +
+    "changed=1; " +
     "for p in webproxy securewebproxy socksfirewallproxy; do sudo networksetup -set§{p}state \"§v\" off || { ok=0; break; }; done; " +
-    "fi; done <<< \"§(networksetup -listallnetworkservices | tail -n +2)\"; " +
+    "fi; a=§(networksetup -getautoproxyurl \"§v\"); " +
+    "if echo \"§a\" | grep -qxF \"Enabled: Yes\" && echo \"§a\" | grep -qE \"^URL: .*:§port/proxy[.]pac§\"; then " +
+    "changed=1; sudo networksetup -setautoproxystate \"§v\" off || ok=0; fi; " +
+    "if [ §changed = 1 ]; then n=§((n+1)); d=\"§d§{d:+, }§v\"; fi; done <<< \"§(networksetup -listallnetworkservices | tail -n +2)\"; " +
     "if [ §n -eq 0 ]; then echo \"No network service uses this proxy. Nothing to turn off.\"; " +
     "elif [ §ok = 1 ]; then echo \"Proxies turned off on §d\"; else echo \"Couldn't change the proxies on §d.\"; fi").replace('§', '$')
 

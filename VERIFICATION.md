@@ -944,3 +944,70 @@ Version 0.1.3 (4). Branch `proxy-status`.
   - the widget on a launcher, including rounded corners, which Robolectric doesn't draw;
   - the device counts with a real iPhone;
   - the uplink label switching between Wi‑Fi and mobile data.
+
+# Automatic (PAC) setup (2026-11-14)
+
+Branch `proxy-pac`, stacked on `proxy-status`. Backend by GPT Sol, UI by Opus, both in this branch.
+
+## Design
+
+- **`PacFile.kt`.**
+  - `Ipv4Range` (parse, contains, overlaps, mask) and `parseDirectRanges` (at most 16 ranges, each /8 or narrower).
+  - `pacFile()`: ES5 `FindProxyForURL`. It strips a final dot, then sends these DIRECT:
+    - plain names, `ts.net` and `*.ts.net`, and `.local`;
+    - `fd7a:115c:a1e0::/48` literals, parsed in full: brackets, zone IDs, `::`, an embedded IPv4 tail, any case;
+    - IPv4 literals in 100.64.0.0/10, the home ranges or the link's subnet.
+  - Ranges are compared as numbers in the file itself. It never calls `isInNet` (Apple's resolves even literals), `dnsResolve` or `myIpAddress`.
+  - Everything else gets `PROXY <link address>:1080; DIRECT`.
+- **Serving.**
+  - `ProxyProtocol.http` recognises only origin-form `GET`/`HEAD /proxy.pac`; every other origin-form request still fails.
+  - `Session` answers it before any VPN lookup: 200, `application/x-ns-proxy-autoconfig`, `Cache-Control: no-cache`, `Connection: close`.
+  - The file is generated per request from that binding's address and prefix and the stored home ranges.
+  - It goes through the same peer, `stillServes`, session-cap and per-link checks as the proxy, and is answered only while the VPN is connected, including for a client accepted before a reconnect.
+  - A PAC fetch isn't counted as a device.
+- **Refusal for fallback, Automatic only.**
+  - On Automatic, listeners pause (ServerSocket closed, sessions kept) while the VPN reconnects, and resume (rebind) once it's connected.
+  - On Manual they keep accepting during a reconnect, exactly as before (`acceptsNow`). A change of setup triggers a rescan.
+  - Sessions are owned by binding, so removing a binding still closes its sessions.
+  - Pause and resume don't log start or stop.
+  - Status reports a link as Sharing only while it's accepting.
+- **Settings.** `Store.proxySetup` (Manual by default) and `Store.directRanges` (192.168.68.0/22 by default; invalid stored text falls back to the default).
+- **Mac.**
+  - `macAutoCommand` sets the PAC URL on the one service whose router is the phone, then (only if that worked) turns off this app's manual proxies there.
+  - `macCommand` turns off this app's PAC URL on that service, only once the three proxies are set.
+  - "This app's" means a PAC URL ending exactly in `:1080/proxy.pac`, or SOCKS that is on, on this port, and not on a loopback server (any 127.x, `localhost` or `::1` spelling) such as `ssh -D 1080`. Other proxies and URLs are untouched.
+  - `macOffCommand` turns off both kinds.
+- **UI (`ProxySetupUi.kt`).**
+  - After the two switches, while either is on: **Set up devices**, a connected button group for Manual and Automatic.
+  - Each choice shows what it does. Automatic lists what goes direct, with **Edit home network**: an inline field whose Save stays off until the text parses.
+  - Each sharing link's card follows. Manual's card is unchanged. Automatic shows the URL (selectable, Copy URL), the iPhone or Mac steps, the Mac commands, and the overlap warning.
+  - The stopped-sharing help has an Automatic version.
+
+## Checks
+
+- `./gradlew assembleRelease testDebugUnitTest lintDebug lintRelease`: 199 tests, 0 failures; lint 0 errors. `verify-release.py` passes.
+  - The generated file (`app/build/sample-proxy.pac`, written by `PacFileTest`) also runs in macOS's JavaScriptCore `jsc`. Its helper functions throw on `isInNet` and `dnsResolve`, and it gives the intended answer for 20 sample hosts.
+  - `PacFileTest` runs the generated file in Rhino. Its `isInNet` throws on non-IP hosts, and its `dnsResolve` and `myIpAddress` throw.
+  - `TetherProxyTest` covers:
+    - on Automatic, real loopback TCP refusal while reconnecting and acceptance after resume;
+    - on Manual, the port staying open while reconnecting;
+    - a resume that hits "port in use", and recovery;
+    - open sessions kept;
+    - closing on binding removal;
+    - GET and HEAD PAC serving without a VPN lookup.
+  - `MacCommandTest` runs the commands in bash and zsh: setting Automatic, turning off both kinds, switching modes in both directions, and leaving other proxies and URLs alone.
+  - `ScreenshotTest` covers:
+    - Manual stays the default with its card unchanged;
+    - Automatic's URL and what goes direct;
+    - the overlap warning;
+    - editing and validating the home ranges.
+- A Material 3 `AlertDialog` containing an `OutlinedTextField` never goes idle under Robolectric at the screenshot size (411 × 891 dp, xhdpi), even bare. That's why the home ranges are edited in place, not in a dialog.
+- Not run on a device: see the device checklist in the PR.
+
+## Council
+
+| Round | Opus | GPT Sol | Fixed after it |
+| --- | --- | --- | --- |
+| 1 | 7 | 7 | Manual keeps accepting during a reconnect; trailing dots; full IPv6 parsing; no `isInNet`; Mac lookalike URLs, local SOCKS and failed Manual setups left alone; PAC only while connected; choice stacks at large fonts; overlap warning wording and position; Mac help text for Automatic; hedged copy; custom-domain caveat; checklist |
+| 2 | 8.5, ship | 9, ship | Nothing blocking. Taken: overlap wording for USB; the choice stacks from 115% and its labels never wrap; the Automatic Mac command sets the URL before turning Manual off; any loopback spelling counts as local; "set every device the same way"; clearer wording on when Automatic goes direct; Manual help; a test for switching back to Manual; README on the turn-off command |
+| 3 | 9, ship | 9, ship | Nothing blocking. A test comment corrected; two cosmetic notes left for later (the Manual screenshot's scroll, two small grey paragraphs in a row). |

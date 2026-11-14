@@ -24,6 +24,8 @@ data class SavedSession(val server: String, val user: String, val url: String, v
     // Deliberately no credential-bearing toString (including crash diagnostics).
     override fun toString() = "SavedSession([private])"
 }
+enum class ProxySetup { Manual, Automatic }
+
 class Store(private val context: Context) {
     val prefs = context.getSharedPreferences("connectanytime", Context.MODE_PRIVATE)
     var user: String
@@ -52,6 +54,17 @@ class Store(private val context: Context) {
     var shareOverHotspot: Boolean
         get() = prefs.getBoolean("shareOverHotspot", false)
         set(v) { prefs.edit().putBoolean("shareOverHotspot", v).apply() }
+    var proxySetup: ProxySetup
+        get() = runCatching { ProxySetup.valueOf(prefs.getString("proxySetup", null).orEmpty()) }.getOrDefault(ProxySetup.Manual)
+        set(v) { prefs.edit().putString("proxySetup", v.name).apply() }
+    internal var directRanges: List<Ipv4Range>
+        get() = parseDirectRanges(prefs.getString("directRanges", null) ?: "192.168.68.0/22")
+            ?: listOf(Ipv4Range.parse("192.168.68.0/22")!!)
+        set(v) {
+            val text = v.joinToString(",")
+            require(parseDirectRanges(text) != null)
+            prefs.edit().putString("directRanges", text).apply()
+        }
     val sharing: Boolean get() = shareWithTether || shareOverHotspot
     internal fun shares(link: TetherLink) = if (link == TetherLink.Usb) shareWithTether else shareOverHotspot
     /** Check GitHub for a newer release when the app opens (Updater.checkIfDue). */

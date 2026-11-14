@@ -9,6 +9,7 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.core.app.ApplicationProvider
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -229,6 +230,71 @@ class ScreenshotTest(private val dark: Boolean) {
     @Test fun sharingCardHiddenWhenIdleAndOff() {
         account(); home(VpnState())
         compose.onNodeWithTag("sharing-card").assertDoesNotExist()
+    }
+    @Test fun manualStaysTheDefault() {
+        account(); app.store.shareOverHotspot = true
+        ConnectApp.mutableTetherShare.value = TetherShare.Active(1080, hotspot = TetherShare.Link.Sharing("10.84.137.1"))
+        try {
+            home(VpnState("Connected", busy = true, connected = true))
+            compose.onNodeWithTag("setup-manual").performScrollTo().assert(SemanticsMatcher.expectValue(
+                androidx.compose.ui.semantics.SemanticsProperties.ToggleableState, androidx.compose.ui.state.ToggleableState.On))
+            // Manual's card is unchanged: Server and Port, not a URL.
+            compose.onNodeWithTag("share-hotspot-address").assertTextEquals("10.84.137.1")
+            compose.onNodeWithTag("setup-url-hotspot").assertDoesNotExist()
+            save("home-setup-manual")
+        } finally { ConnectApp.mutableTetherShare.value = TetherShare.Off }
+    }
+    @Test fun automaticShowsTheUrlAndWhatGoesDirect() {
+        account(); app.store.shareOverHotspot = true
+        ConnectApp.mutableTetherShare.value = TetherShare.Active(1080, hotspot = TetherShare.Link.Sharing("10.84.137.1", 24))
+        try {
+            home(VpnState("Connected", busy = true, connected = true))
+            compose.onNodeWithTag("setup-automatic").performScrollTo().performClick()
+            compose.waitForIdle()
+            assertTrue(app.store.proxySetup == ProxySetup.Automatic)
+            compose.onNodeWithTag("setup-url-hotspot").performScrollTo().assertTextEquals("http://10.84.137.1:1080/proxy.pac")
+            compose.onNodeWithText("Configure Proxy → Automatic", substring = true).assertExists()
+            compose.onNodeWithTag("setup-overlap").assertDoesNotExist()
+            save("home-setup-automatic")
+            compose.onNodeWithText("Copy command to turn off").performScrollTo()
+            save("home-setup-automatic-copy")
+        } finally { ConnectApp.mutableTetherShare.value = TetherShare.Off }
+    }
+    @Test fun automaticWarnsWhenTheHotspotOverlapsHome() {
+        account(); app.store.shareOverHotspot = true; app.store.proxySetup = ProxySetup.Automatic
+        ConnectApp.mutableTetherShare.value = TetherShare.Active(1080, hotspot = TetherShare.Link.Sharing("192.168.69.1", 24))
+        try {
+            home(VpnState("Connected", busy = true, connected = true))
+            compose.onNodeWithTag("setup-overlap").performScrollTo()
+            compose.onNodeWithText("uses 192.168.69.0/24, which overlaps your home network 192.168.68.0/22", substring = true).assertExists()
+            save("home-setup-overlap")
+        } finally { ConnectApp.mutableTetherShare.value = TetherShare.Off }
+    }
+    @Test fun theChoiceStacksAtLargeFont() {
+        account(); app.store.shareOverHotspot = true
+        compose.setContent { ConnectTheme(dark = dark, dynamicColor = false) {
+            CompositionLocalProvider(LocalDensity provides Density(LocalDensity.current.density, 2f)) {
+                HomeScreen(app.store, VpnState(), false, {}, {}, {}, {})
+            }
+        } }
+        compose.onNodeWithTag("setup-automatic").performScrollTo()
+        save("home-setup-200pct")
+    }
+    @Test fun homeRangesAreEditedInPlaceAndValidated() {
+        account(); app.store.shareOverHotspot = true; app.store.proxySetup = ProxySetup.Automatic
+        home(VpnState())
+        compose.onNodeWithText("Edit home network").performScrollTo().performClick()
+        compose.onNodeWithTag("setup-home-field").performTextReplacement("192.168.68.0/22, nonsense")
+        compose.onNodeWithText("Use ranges like", substring = true).assertExists()
+        compose.onNodeWithTag("setup-home-save").assertIsNotEnabled()
+        compose.onNodeWithTag("setup-home-field").performScrollTo()
+        save("home-setup-home-invalid")
+        compose.onNodeWithTag("setup-home-field").performTextReplacement("192.168.68.0/22, 10.20.0.0/16")
+        compose.onNodeWithTag("setup-home-save").performScrollTo().performClick()
+        compose.waitForIdle()
+        assertEquals(listOf("192.168.68.0/22", "10.20.0.0/16"), app.store.directRanges.map { it.toString() })
+        compose.onNodeWithTag("setup-home-field").assertDoesNotExist()
+        compose.onNodeWithText("and home 192.168.68.0/22, 10.20.0.0/16.", substring = true).assertExists()
     }
     @Test fun shareStopped() {
         account(); app.store.sharedBefore = true

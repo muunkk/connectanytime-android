@@ -40,12 +40,14 @@ sealed interface TetherShare {
         data object PortInUse : Link
         /** Android doesn't say which Wi-Fi is its hotspot, so the hotspot isn't guessed at. */
         data object Unknown : Link
-        data class Sharing(val address: String) : Link
+        /** [prefix]: the link's subnet, for Automatic setup's overlap warning. */
+        data class Sharing(val address: String, val prefix: Int = 24) : Link
     }
 }
 
-/** One controller per service, serialized reconciliation; accepted sockets belong to a listener. */
-internal class TetherProxy(private val service: ConnectVpnService, private val app: ConnectApp, private val port: Int = 1080) : AutoCloseable {
+/** One controller per service, serialized reconciliation; accepted sockets belong to a binding. */
+internal class TetherProxy(private val service: ConnectVpnService, private val app: ConnectApp, private val port: Int = 1080,
+    private val bindingSource: (() -> Set<Binding>)? = null) : AutoCloseable {
     private val timer = Executors.newSingleThreadScheduledExecutor()
     private val workers = ThreadPoolExecutor(0, 512, 30, TimeUnit.SECONDS, SynchronousQueue())
     private val listeners = mutableMapOf<Binding, Listener>()
@@ -62,7 +64,7 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
     @Volatile private var sharingLinks = emptySet<TetherLink>()
     private val usagePending = AtomicBoolean()
     private val prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-        if (key in ConnectApp.SHARE_KEYS && !closed.get()) runCatching { timer.execute { reconcile() } }
+        if ((key in ConnectApp.SHARE_KEYS || key == "proxySetup") && !closed.get()) runCatching { timer.execute { reconcile() } }
     }
     /** Interfaces Android says it is tethering on, from its sticky broadcast; null if unknown. */
     @Volatile private var tethered: Set<String>? = null
@@ -92,7 +94,7 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
         this.connected = connected; this.reconnecting = reconnecting
         if (!closed.get()) runCatching { timer.execute { reconcile() } }
     }
-    private data class Binding(val name: String, val link: TetherLink, val address: InetAddress, val prefix: Int)
+    internal data class Binding(val name: String, val link: TetherLink, val address: InetAddress, val prefix: Int)
     /** Interfaces of the phone's own networks. Throws if unreadable: then nothing is shared. */
     private fun upstream(): Set<String> {
         val cm = service.getSystemService(ConnectivityManager::class.java)
@@ -127,17 +129,40 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
             NetworkInterface.getByName(b.name)?.let { iface -> iface.isUp && iface.interfaceAddresses.any {
                 it.address == b.address && it.networkPrefixLength.toInt() == b.prefix } } == true
     }.getOrDefault(false)
+    /**
+     * Whether new clients are taken now. Connected, always. While the VPN reconnects, only on
+     * Manual, as before Automatic existed: the tunnel is often back within seconds, so a request
+     * that waits then succeeds. On Automatic the port is closed instead, so a device refused at
+     * connect time falls back to DIRECT (iOS fails over only on a failed connect, not on an error
+     * from a proxy that accepted).
+     */
+    private fun acceptsNow(connected: Boolean = this.connected, reconnecting: Boolean = this.reconnecting) =
+        connected || (reconnecting && app.store.proxySetup != ProxySetup.Automatic)
     @Synchronized private fun reconcile() {
         if (closed.get()) return
+        // One reading per scan: these change on other threads.
+        val connected = this.connected
+        val reconnecting = this.reconnecting
         sessions.filter { System.nanoTime() - it.activity > TimeUnit.SECONDS.toNanos(if (it.ready) 300 else 15) }.forEach { it.close() }
         val usbOn = app.store.shareWithTether
         val hotspotOn = app.store.shareOverHotspot
         val enabled = usbOn || hotspotOn
         val wanted = if (enabled && (connected || reconnecting))
-            runCatching { bindings() }.getOrDefault(emptySet()).filter { app.store.shares(it.link) }.toSet() else emptySet()
+            runCatching { bindingSource?.invoke() ?: bindings() }.getOrDefault(emptySet()).filter { app.store.shares(it.link) }.toSet() else emptySet()
         for (key in listeners.keys.toList()) if (key !in wanted) listeners.remove(key)?.close()
         bindFailures.retainAll(wanted)
-        // A reconnect may retain existing listeners but must not start sharing before first Connected.
+        // Retain binding ownership across reconnects. When not taking clients (acceptsNow), close
+        // the accepting socket so they're refused at connect time. Existing sessions keep running.
+        val accepting = acceptsNow(connected, reconnecting)
+        if (!accepting) listeners.values.forEach { it.pause() }
+        if (accepting) for ((binding, listener) in listeners) {
+            try { listener.resume(); bindFailures.remove(binding) }
+            catch (e: Exception) {
+                if (portInUse(e) && bindFailures.add(binding))
+                    app.log.add(service.getString(R.string.tether_port_in_use, binding.address.hostAddress, port))
+            }
+        }
+        // A reconnect must not start sharing before first Connected.
         if (connected) for (binding in wanted) if (binding !in listeners) {
             try {
                 val listener = Listener(binding)
@@ -145,7 +170,7 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
                 bindFailures.remove(binding)
                 app.log.add(service.getString(if (binding.link == TetherLink.Usb) R.string.tether_started else R.string.tether_started_hotspot,
                     binding.address.hostAddress, port))
-                listener.thread.start()
+                listener.start()
             } catch (e: Exception) {
                 // Only "address in use" means another app has the port. Anything else, such as
                 // EADDRNOTAVAIL when the address went away between the scan and the bind (also a
@@ -157,9 +182,9 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
         fun link(kind: TetherLink, on: Boolean): TetherShare.Link {
             if (!on) return TetherShare.Link.Off
             // One address per kind, stable across rescans when a link has several.
-            val shared = listeners.keys.filter { it.link == kind }.minByOrNull { "${it.name} ${it.address.hostAddress}" }
+            val shared = listeners.filter { it.value.accepting }.keys.filter { it.link == kind }.minByOrNull { "${it.name} ${it.address.hostAddress}" }
             return when {
-                shared != null -> TetherShare.Link.Sharing(shared.address.hostAddress!!)
+                shared != null -> TetherShare.Link.Sharing(shared.address.hostAddress!!, shared.prefix)
                 bindFailures.any { it.link == kind } -> TetherShare.Link.PortInUse
                 // Before any tethering since boot Android may not have said anything yet, so
                 // only call the hotspot undetectable when one seems to be on.
@@ -189,11 +214,14 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
     private fun portInUse(e: Exception) = e is java.net.BindException &&
         (e.message.orEmpty().contains("EADDRINUSE") || e.message.orEmpty().contains("in use", ignoreCase = true))
     private inner class Listener(val binding: Binding) : AutoCloseable {
-        val server = ServerSocket().also { socket ->
+        private fun bind() = ServerSocket().also { socket ->
             try { socket.reuseAddress = true; socket.bind(InetSocketAddress(binding.address, port), 32) }
             catch (e: Exception) { socket.close(); throw e }
         }
-        val thread = Thread({
+        private var server = bind()
+        private var thread = acceptThread(server)
+        val accepting: Boolean get() = !server.isClosed
+        private fun acceptThread(server: ServerSocket) = Thread({
             while (!server.isClosed) {
                 val client = try { server.accept() } catch (_: Exception) { break }
                 if (!allowedPeer(binding.address, binding.prefix, client.inetAddress,
@@ -212,18 +240,28 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
                     continue
                 }
                 synchronized(sessions) {
-                    if (closed.get() || server.isClosed || !app.store.shares(binding.link) || (!connected && !reconnecting) || sessions.size >= 256) client.close()
+                    if (closed.get() || server.isClosed || !app.store.shares(binding.link) || !acceptsNow() || sessions.size >= 256) client.close()
                     else {
-                        val session = Session(this, client); sessions.add(session)
+                        val session = Session(binding, client); sessions.add(session)
                         try { workers.execute { session.run() } } catch (_: Exception) { session.close() }
                     }
                 }
             }
         }, "Tether proxy accept")
-        override fun close() {
+        fun start() = thread.start()
+        fun pause() {
             server.close()
-            sessions.filter { it.listener === this }.forEach { it.close() }
             thread.join(1000)
+        }
+        fun resume() {
+            if (accepting) return
+            server = bind()
+            thread = acceptThread(server)
+            thread.start()
+        }
+        override fun close() {
+            pause()
+            sessions.filter { it.binding == binding }.forEach { it.close() }
             app.log.add(service.getString(if (binding.link == TetherLink.Usb) R.string.tether_stopped else R.string.tether_stopped_hotspot))
         }
     }
@@ -238,12 +276,12 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
         } ?: return null
         return AndroidProxyNetwork(network)
     }
-    private inner class Session(val listener: Listener, val client: Socket) : AutoCloseable {
+    private inner class Session(val binding: Binding, val client: Socket) : AutoCloseable {
         private val sockets = mutableSetOf(client)
         private var ended = false
         @Volatile var ready = false
         @Volatile var activity = System.nanoTime()
-        private val link = listener.binding.link
+        private val link = binding.link
         private val device = client.inetAddress.hostAddress ?: "?"
         /** Counted on the card once its connection went through the VPN; a refused attempt never is. */
         private var counted = false
@@ -267,7 +305,14 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
                 val http: ProxyProtocol.Http?
                 val target = if (socks) { http = null; ProxyProtocol.socks(input, client.getOutputStream()) }
                     else { input.unread(first); http = ProxyProtocol.http(input); http.target }
-                val remote = connectViaVpn(vpn(listener.binding.link), target, ::register)
+                if (http?.origin == true) {
+                    // Only while the VPN is connected, also for a client accepted before a reconnect.
+                    if (!connected) return
+                    ProxyProtocol.servePac(client.getOutputStream(), http, pacFile(binding.address.hostAddress!!,
+                        port, Ipv4Range.from(binding.address, binding.prefix)!!, app.store.directRanges))
+                    return
+                }
+                val remote = connectViaVpn(vpn(binding.link), target, ::register)
                 ready = true
                 count()
                 tunnel = socks || http!!.connect

@@ -17,23 +17,31 @@ class MacCommandTest {
 
     /** services: name → router; socks: name → (enabled, port) of its SOCKS proxy. */
     private fun run(shell: String, command: String, services: Map<String, String>, socks: Map<String, Pair<Boolean, Int>> = emptyMap(),
-                    sudoFails: Boolean = false): Pair<String, List<String>> {
+                    sudoFails: Boolean = false, auto: Map<String, Pair<Boolean, String>> = emptyMap(),
+                    socksServer: String = ip, sudoFailsOn: String? = null): Pair<String, List<String>> {
         val dir = Files.createTempDirectory("maccmd").toFile()
         val calls = File(dir, "calls")
         val list = services.keys.joinToString("\\n")
         val info = services.entries.joinToString(" ") { (n, r) -> "\"$n\") echo 'Router: $r';;" }
         val socksInfo = socks.entries.joinToString(" ") { (n, v) ->
-            "\"$n\") printf 'Enabled: ${if (v.first) "Yes" else "No"}\\nServer: $ip\\nPort: ${v.second}\\nAuthenticated Proxy Enabled: 0\\n';;" }
+            "\"$n\") printf 'Enabled: ${if (v.first) "Yes" else "No"}\\nServer: $socksServer\\nPort: ${v.second}\\nAuthenticated Proxy Enabled: 0\\n';;" }
+        val autoInfo = auto.entries.joinToString(" ") { (n, v) ->
+            "\"$n\") printf 'Enabled: ${if (v.first) "Yes" else "No"}\\nURL: ${v.second}\\n';;" }
         File(dir, "networksetup").writeText("""
             #!/bin/sh
             case "${'$'}1" in
               -listallnetworkservices) printf 'An asterisk (*) denotes that a network service is disabled.\n$list\n';;
               -getinfo) case "${'$'}2" in $info *) echo 'Router: none';; esac;;
+              -getautoproxyurl) case "${'$'}2" in $autoInfo *) printf 'Enabled: No\nURL: \n';; esac;;
               -getsocksfirewallproxy) case "${'$'}2" in $socksInfo *) printf 'Enabled: No\nServer: \nPort: 0\n';; esac;;
               *) echo "${'$'}*" >> "${calls.path}";;
             esac
         """.trimIndent() + "\n")
-        File(dir, "sudo").writeText(if (sudoFails) "#!/bin/sh\nexit 1\n" else "#!/bin/sh\nexec \"\$@\"\n")
+        File(dir, "sudo").writeText(when {
+            sudoFails -> "#!/bin/sh\nexit 1\n"
+            sudoFailsOn != null -> "#!/bin/sh\ncase \"\$*\" in *\"$sudoFailsOn\"*) exit 1;; esac\nexec \"\$@\"\n"
+            else -> "#!/bin/sh\nexec \"\$@\"\n"
+        })
         dir.listFiles()!!.forEach { it.setExecutable(true) }
         val args = if (shell == "zsh") listOf("zsh", "-f", "-c", command) else listOf("bash", "--noprofile", "--norc", "-c", command)
         val p = ProcessBuilder(args).redirectErrorStream(true).also { it.environment()["PATH"] = "${dir.path}:/usr/bin:/bin" }.start()
@@ -97,8 +105,65 @@ class MacCommandTest {
         assertEquals(sh, "No network service uses this proxy. Nothing to turn off.", out)
         assertEquals(sh, emptyList<String>(), calls)
     }
+    @Test fun setsAutomaticProxyAndChecksSudo() = shells().forEach { sh ->
+        val services = linkedMapOf("*Disabled" to ip, "Wi-Fi" to ip)
+        val (out, calls) = run(sh, macAutoCommand(ip, 1080), services)
+        assertEquals("Automatic proxy set on Wi-Fi", out)
+        assertEquals(listOf("-setautoproxyurl Wi-Fi http://$ip:1080/proxy.pac"), calls)
+        assertTrue(run(sh, macAutoCommand(ip, 1080), services, sudoFails = true).first.startsWith("Couldn't change"))
+        assertTrue(run(sh, macAutoCommand(ip, 1080), mapOf("A" to ip, "B" to ip)).second.isEmpty())
+    }
+    @Test fun switchingModesTurnsOffOnlyThisAppsOtherKind() = shells().forEach { sh ->
+        val services = linkedMapOf("Wi-Fi" to ip)
+        // Manual → Automatic: the PAC URL is set first, then our SOCKS on 1080 goes off.
+        val (outAuto, toAuto) = run(sh, macAutoCommand(ip, 1080), services, socks = mapOf("Wi-Fi" to (true to 1080)))
+        assertEquals(sh, "Automatic proxy set on Wi-Fi", outAuto)
+        assertEquals(sh, listOf("-setautoproxyurl Wi-Fi http://$ip:1080/proxy.pac",
+            "-setwebproxystate Wi-Fi off", "-setsecurewebproxystate Wi-Fi off", "-setsocksfirewallproxystate Wi-Fi off"), toAuto)
+        // If the PAC URL can't be set, the working Manual proxies stay.
+        assertFalse(sh, run(sh, macAutoCommand(ip, 1080), services, socks = mapOf("Wi-Fi" to (true to 1080)),
+            sudoFailsOn = "-setautoproxyurl").second.any { it.endsWith("state Wi-Fi off") })
+        // Someone else's SOCKS proxy is left alone.
+        assertEquals(sh, listOf("-setautoproxyurl Wi-Fi http://$ip:1080/proxy.pac"),
+            run(sh, macAutoCommand(ip, 1080), services, socks = mapOf("Wi-Fi" to (true to 9050))).second)
+        // Automatic → Manual: our PAC URL goes off after the three proxies are set.
+        val toManual = run(sh, macCommand(ip, 1080), services, auto = mapOf("Wi-Fi" to (true to "http://$ip:1080/proxy.pac"))).second
+        assertEquals(sh, "-setautoproxystate Wi-Fi off", toManual.last())
+        assertEquals(sh, 4, toManual.size)
+        // Another PAC URL is left alone.
+        assertEquals(sh, 3, run(sh, macCommand(ip, 1080), services, auto = mapOf("Wi-Fi" to (true to "http://corp/proxy.pac"))).second.size)
+    }
+    @Test fun switchingLeavesLookalikesLocalProxiesAndFailedSetupsAlone() = shells().forEach { sh ->
+        val services = linkedMapOf("Wi-Fi" to ip)
+        // A URL that only looks like ours ("proxyXpac") isn't ours.
+        assertEquals(sh, 3, run(sh, macCommand(ip, 1080), services, auto = mapOf("Wi-Fi" to (true to "http://corp:1080/proxyXpac"))).second.size)
+        // `ssh -D 1080` is a local SOCKS proxy on the same port, however it's written: left on.
+        for (local in listOf("127.0.0.1", "127.0.0.2", "localhost", "::1", "0:0:0:0:0:0:0:1"))
+            assertEquals("$sh $local", listOf("-setautoproxyurl Wi-Fi http://$ip:1080/proxy.pac"),
+                run(sh, macAutoCommand(ip, 1080), services, socks = mapOf("Wi-Fi" to (true to 1080)), socksServer = local).second)
+        // A disabled SOCKS setting on this port is left as it is.
+        assertEquals(sh, listOf("-setautoproxyurl Wi-Fi http://$ip:1080/proxy.pac"),
+            run(sh, macAutoCommand(ip, 1080), services, socks = mapOf("Wi-Fi" to (false to 1080))).second)
+        // Manual setup that fails partway keeps the working Automatic.
+        val (out, calls) = run(sh, macCommand(ip, 1080), services, auto = mapOf("Wi-Fi" to (true to "http://$ip:1080/proxy.pac")),
+            sudoFailsOn = "-setsecurewebproxy")
+        assertTrue(sh, out.startsWith("Couldn't change"))
+        assertFalse(sh, calls.any { it.startsWith("-setautoproxystate") })
+    }
+    @Test fun turnsOffManualAndAutomaticButLeavesOtherUrls() = shells().forEach { sh ->
+        val (out, calls) = run(sh, macOffCommand(1080), linkedMapOf("USB" to "none", "Wi-Fi" to "none", "Other" to "none", "Disabled PAC" to "none"),
+            socks = mapOf("USB" to (true to 1080)), auto = mapOf("Wi-Fi" to (true to "http://old:1080/proxy.pac"),
+                "Other" to (true to "http://other:1080/proxy.pac?x"), "Disabled PAC" to (false to "http://old:1080/proxy.pac")))
+        assertEquals("Proxies turned off on USB, Wi-Fi", out)
+        assertEquals(4, calls.size)
+        assertTrue(calls.contains("-setautoproxystate Wi-Fi off"))
+        assertFalse(calls.any { "Other" in it || "Disabled PAC" in it })
+        assertTrue(run(sh, macOffCommand(1080), mapOf("Wi-Fi" to "none"), sudoFails = true,
+            auto = mapOf("Wi-Fi" to (true to "http://old:1080/proxy.pac"))).first.startsWith("Couldn't change"))
+    }
     @Test fun oneLineEach() {
         assertFalse(macCommand(ip, 1080).contains('\n'))
+        assertFalse(macAutoCommand(ip, 1080).contains('\n'))
         assertFalse(macOffCommand(1080).contains('\n'))
     }
 }

@@ -378,6 +378,8 @@ verify, then attach `ConnectAnytime-<versionName>-<versionCode>.apk` to a new ta
 - `SharingCard.kt`, `ShareUsage.kt`: the Sharing status card, and per-link device,
   connection and traffic counts from the proxy.
 - `ConnectWidget.kt`, `res/xml/connect_widget_info.xml`: the Glance home screen widget.
+- `PacFile.kt`, `ProxySetupUi.kt`: the Automatic setup's PAC file, its ranges, and the
+  Manual/Automatic choice and cards.
 - `Updates.kt`, `UpdateSection.kt`: GitHub release check, verified download,
   PackageInstaller session and its status receiver, and their UI.
 - `app/src/main/AndroidManifest.xml`, `res/`: permissions, Android components,
@@ -440,6 +442,60 @@ Authentication off, then tap **Save**. iOS keeps this per Wi-Fi network, so only
 hotspot is affected, and you can leave it on to use the VPN whenever you're on this
 hotspot. While it's on, browsing on the hotspot needs sharing on here. To use the
 hotspot without the VPN, set it back to **Off** and tap Save.
+
+### Manual or Automatic setup
+
+Under **Set up devices**, choose how the other device finds the proxy. **Manual** is the
+default and works as before: the device sends everything that follows its proxy setting
+through the VPN, including tailnet and home addresses, which the VPN can't reach.
+
+**Automatic** gives the device a proxy auto-config (PAC) file from this phone, at
+`http://<address>:1080/proxy.pac`, so the tailnet and home network keep working while
+browsing uses the VPN.
+- **Direct, not through the VPN:**
+  - names without dots, such as `truenas`;
+  - `*.ts.net` and `.local` names;
+  - the tailnet's `100.64.0.0/10` and `fd7a:115c:a1e0::/48`;
+  - the link's own network;
+  - your home network, `192.168.68.0/22` by default. Edit it under **Edit home network**:
+    up to 16 IPv4 ranges, separated by commas.
+- **Everything else:** `PROXY <address>:1080; DIRECT`.
+- **No lookups.** The file only compares literal addresses with these ranges, itself, and
+  never calls `isInNet` or `dnsResolve`. On Apple devices `isInNet` looks addresses up even
+  when given a literal. Names are matched as written, with any final dot ignored. So a custom
+  domain that points at a tailnet or home address still goes through the VPN: use its IP
+  address, its `.ts.net` name or a name without dots instead. Check how Immich is set up.
+- **Overlap warning.** If the link's network overlaps a home range, the card warns that
+  home addresses inside it are looked for on that network rather than through Tailscale.
+- **iPhone:** **Settings → Wi‑Fi → ⓘ → Configure Proxy → Automatic**, enter the URL and
+  tap Save.
+- **Mac:** **Copy Mac Terminal command** sets it with `networksetup -setautoproxyurl`.
+
+The file is served from the proxy's own port, to the same devices the proxy accepts, and
+only while that link is sharing and the VPN is connected.
+
+On Automatic, so that `DIRECT` takes over when the VPN can't be used, the proxy stops
+listening while the VPN reconnects and starts again once it's connected. Connections that
+are already open keep going. iOS falls back to `DIRECT` only when it can't connect to the
+proxy at all, not when the proxy accepts and then fails. On Manual nothing changes: during a
+reconnect the proxy keeps taking requests, which often go through once the tunnel is back a
+few seconds later. When sharing or the VPN is off, nothing listens in either mode.
+
+Not checked on an iPhone yet, from reports only:
+- an iPhone that can't load the file when it joins the hotspot may be unable to browse on
+  that network until Configure Proxy is set back to Off. That happens while this phone
+  isn't sharing: sharing off, the VPN not connected, or the app closed. Apple's managed
+  proxy settings have a separate "allow direct if the PAC can't be loaded" option, so the
+  fallback isn't guaranteed;
+- whether the URL survives the hotspot being turned off and on: Android can pick a new
+  hotspot address, and the iPhone then can't load the file from the old one;
+- how long iOS keeps a file it has loaded.
+
+The Mac commands switch cleanly between the two: setting Automatic turns off this app's
+manual proxies on that service, and setting Manual turns off this app's PAC URL, but only
+once the three proxies are set. Proxies from anything else are left alone, including a
+local SOCKS proxy such as `ssh -D 1080` and other PAC URLs. **Copy command to turn off** turns off
+this app's PAC URL and any SOCKS proxy on port 1080, as it always has, including a local one.
 
 On macOS: **System Settings → Network → the phone's USB service (or Wi-Fi, on the
 hotspot) → Details → Proxies**. Turn on **Web proxy (HTTP)**, **Secure web proxy (HTTPS)** and
