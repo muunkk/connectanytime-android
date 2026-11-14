@@ -149,6 +149,7 @@
     <string name="sharing_usb">USB tethering</string>
     <string name="sharing_hotspot">Hotspot</string>
     <string name="sharing_link_off">Off</string>
+    <string name="sharing_link_off_hotspot">Off. When on, anyone who joins the hotspot can use the VPN.</string>
     <string name="sharing_link_vpn_off">Waiting for the VPN</string>
     <string name="sharing_link_paused">Paused while the VPN reconnects</string>
     <string name="sharing_link_on">On at %1$s:%2$d</string>
@@ -164,16 +165,24 @@
     <!-- The home screen widget (ConnectWidget.kt). -->
     <string name="widget_name">ConnectAnytime</string>
     <string name="widget_description">Connect the VPN, share it over USB or the hotspot, and see how many devices are using it.</string>
-    <string name="widget_vpn_off">VPN off</string>
+    <string name="widget_vpn_off">Tap power to connect</string>
+    <!-- Short titles where space is tight: the compact widget, and large fonts. -->
+    <string name="widget_short_off">VPN off</string>
+    <string name="widget_short_connecting">Starting</string>
+    <string name="widget_short_connected">VPN on</string>
+    <string name="widget_short_reconnecting">Rejoining</string>
+    <string name="widget_short_failed">Failed</string>
+    <string name="widget_short_ended">Ended</string>
+    <string name="widget_open_app">Open ConnectAnytime</string>
     <string name="widget_vpn_on">VPN on</string>
     <string name="widget_working">One moment…</string>
     <string name="widget_try_again">Tap the power button to try again</string>
     <string name="widget_usb">USB</string>
     <string name="widget_hotspot">Hotspot</string>
-    <string name="widget_link_starts">Starts with the VPN</string>
+    <string name="widget_link_starts">No VPN</string>
     <string name="widget_link_waiting">Waiting</string>
     <string name="widget_link_ready">On</string>
-    <string name="widget_link_problem">Can\'t share</string>
+    <string name="widget_link_problem">Error</string>
     <string name="widget_hotspot_settings">Open Android\'s hotspot settings</string>
     <string name="widget_link_using">%1$d using</string>
     <string name="widget_share_on">%1$s, on. %2$s</string>

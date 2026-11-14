@@ -123,6 +123,20 @@ class WidgetTest {
         render("widget-compact-200pct", DpSize(180.dp, 110.dp))
     }
 
+    @Test fun shortWordsFitAtDefaultAndSlightlyLargerFonts() {
+        app.store.shareWithTether = true; app.store.shareOverHotspot = true
+        // Sharing on with the VPN off: "Needs VPN" on both buttons.
+        ConnectApp.mutableTetherShare.value = TetherShare.VpnNotConnected
+        render("widget-wide-needs-vpn", DpSize(280.dp, 110.dp))
+        ConnectApp.mutableState.value = VpnState(error = "Couldn't reach the VPN server.")
+        render("widget-wide-failed", DpSize(280.dp, 110.dp))
+        RuntimeEnvironment.setFontScale(1.15f)
+        ConnectApp.mutableState.value = VpnState("Reconnecting…", busy = true)
+        ConnectApp.mutableTetherShare.value = TetherShare.WaitingForVpn
+        render("widget-wide-115pct", DpSize(280.dp, 110.dp))
+        render("widget-compact-115pct", DpSize(180.dp, 110.dp))
+    }
+
     @Test fun rendersNotConnected() {
         render("widget-wide-off-light", DpSize(300.dp, 120.dp))
         RuntimeEnvironment.setQualifiers("+night")

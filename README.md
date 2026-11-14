@@ -40,9 +40,10 @@ connected and which network the phone is on. It also has:
 Android doesn't let apps turn the hotspot itself on or off, so that button opens
 Android's tethering screen. Use Android's own Hotspot tile in Quick Settings for one tap.
 
-It's 4 × 2 by default and resizes down to about 3 × 2 (180 dp), where the buttons
-lose their words. At large font sizes it drops the second lines of text instead of
-pushing the buttons out.
+Tapping the status opens the app. It's 4 × 2 by default and resizes down to about
+3 × 2 (180 dp), where the buttons lose their words. With a larger font, titles shorten
+and the buttons lose their words; at 130% and above the second line of text goes too,
+rather than pushing the buttons out. Android 10 and 11 draw the buttons square.
 
 Every widget button goes through a small invisible screen, which first unlocks the
 phone if needed and decides what to do at the moment you tap, so a widget that hasn't

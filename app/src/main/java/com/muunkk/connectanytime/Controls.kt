@@ -18,6 +18,7 @@ object Controls {
     const val TOGGLE = "com.muunkk.connectanytime.TOGGLE"
     const val OPEN_TETHERING = "com.muunkk.connectanytime.OPEN_TETHERING"
     /** The widget's share buttons: flip that switch, after unlocking like everything here. */
+    const val OPEN_APP = "com.muunkk.connectanytime.OPEN_APP"
     const val SHARE_USB = "com.muunkk.connectanytime.SHARE_USB"
     const val SHARE_HOTSPOT = "com.muunkk.connectanytime.SHARE_HOTSPOT"
     /** Whether a reboot or app update starts the VPN again by itself (BootReceiver), which only
@@ -111,11 +112,12 @@ class ShortcutActivity : Activity() {
             // Decided now, not when the widget was drawn, so a stale widget can't do the opposite.
             Controls.TOGGLE -> if (ConnectApp.state.value.busy) Controls.disconnect(this) else connect()
             Controls.OPEN_TETHERING -> openTethering(this)
+            Controls.OPEN_APP -> openApp()
             Controls.SHARE_USB -> store.shareWithTether = !store.shareWithTether
             // Turning hotspot sharing on for the first time opens the app, where the switch says
             // that anyone who joins the hotspot can use the VPN. After that the widget flips it.
             Controls.SHARE_HOTSPOT ->
-                if (!store.shareOverHotspot && !store.sharedHotspotBefore) startActivity(Intent(this, MainActivity::class.java))
+                if (!store.shareOverHotspot && !store.sharedHotspotBefore) openApp()
                 else store.shareOverHotspot = !store.shareOverHotspot
         }
         finish()
@@ -124,6 +126,13 @@ class ShortcutActivity : Activity() {
     private fun connect() {
         val ready = store.user.isNotBlank() && (store.hasPassword || store.hasSession)
         if (ready && VpnService.prepare(this) == null) Controls.connect(this)
-        else startActivity(Intent(this, MainActivity::class.java))
+        else openApp()
+    }
+    /** The app as the launcher opens it: its own task, brought forward if it's already open.
+     *  This activity has its own empty affinity, so a plain start would put the app in this
+     *  hidden task instead. */
+    private fun openApp() {
+        val launch = packageManager.getLaunchIntentForPackage(packageName) ?: Intent(this, MainActivity::class.java)
+        startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
 }
