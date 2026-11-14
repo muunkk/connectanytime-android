@@ -187,8 +187,9 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
         sharingLinks = listeners.keys.map { it.link }.toSet()
         publishUsage()
     }
-    /** On the timer thread only, so snapshots (which also reset links that stopped) don't interleave. */
-    private fun publishUsage() {
+    /** Under the controller's monitor, like close(): a snapshot can't land after close() has
+     *  published the empty one, and snapshots (which also reset stopped links) don't interleave. */
+    @Synchronized private fun publishUsage() {
         if (!closed.get()) ConnectApp.mutableTetherUsage.value = meter.snapshot(System.nanoTime(), sharingLinks)
     }
     /** A device connected or left: show it now rather than at the next rescan, at most one update queued. */
@@ -228,7 +229,6 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
                     if (closed.get() || server.isClosed || !app.store.shares(binding.link) || !connected || sessions.size >= 256) client.close()
                     else {
                         val session = Session(binding, client); sessions.add(session)
-                        usageChanged()
                         try { workers.execute { session.run() } } catch (_: Exception) { session.close() }
                     }
                 }
@@ -269,7 +269,12 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
         @Volatile var activity = System.nanoTime()
         private val link = binding.link
         private val device = client.inetAddress.hostAddress ?: "?"
-        init { meter.opened(link, device, activity) }
+        /** Counted on the card once its connection went through the VPN; a refused attempt never is. */
+        private var counted = false
+        @Synchronized private fun count() {
+            if (ended || counted) return
+            counted = true; meter.opened(link, device, System.nanoTime()); usageChanged()
+        }
         @Synchronized fun register(socket: Socket) { if (ended) { socket.close(); throw ProxyFailure() }; sockets.add(socket) }
         /** Counts what's read: from the client is upload, from the remote end download. */
         private fun input(socket: Socket, up: Boolean): InputStream = object : FilterInputStream(socket.getInputStream()) {
@@ -293,6 +298,7 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
                 }
                 val remote = connectViaVpn(vpn(binding.link), target, ::register)
                 ready = true
+                count()
                 tunnel = socks || http!!.connect
                 if (socks) ProxyProtocol.socksReply(client.getOutputStream(), 0)
                 else if (tunnel) client.getOutputStream().write("HTTP/1.1 200 Connection Established\r\n\r\n".toByteArray())
@@ -334,7 +340,7 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
         @Synchronized override fun close() {
             val first = !ended
             ended = true; sockets.forEach { runCatching { it.close() } }; sessions.remove(this)
-            if (first) { meter.closed(link, device, System.nanoTime()); usageChanged() }
+            if (first && counted) { meter.closed(link, device, System.nanoTime()); usageChanged() }
         }
     }
     @Synchronized override fun close() {

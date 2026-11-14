@@ -900,7 +900,7 @@ Version 0.1.3 (4). Branch `proxy-status`.
 - **Sharing card (`SharingCard.kt`).**
   - Under the status panel and the update banner, while the VPN is connected or either
     share switch is on.
-  - A summary, then "Using mobile data/Wi‑Fi", then one row per link with its switch,
+  - A summary, then "Via mobile data/Wi‑Fi", then one row per link with its switch,
     status, devices, connections and traffic.
   - The whole row toggles, with the Switch role.
   - The card, the Share section and the widget all write the same prefs.

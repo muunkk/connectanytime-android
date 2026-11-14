@@ -59,13 +59,32 @@ class WidgetTest {
         assertEquals(WidgetLink.Problem, waiting.hotspot)
     }
 
-    @Test fun theWidgetsSwitchFlipsTheSamePrefAsTheApp() {
-        runBlocking {
-            ToggleShareAction().onAction(app, androidx.glance.appwidget.AppWidgetId(1),
-                androidx.glance.action.actionParametersOf(ToggleShareAction.LINK to TetherLink.Hotspot.name))
-        }
-        assertEquals(true, app.store.shareOverHotspot)
+    private fun tap(action: String) =
+        org.robolectric.Robolectric.buildActivity(ShortcutActivity::class.java, android.content.Intent(app, ShortcutActivity::class.java).setAction(action)).setup()
+
+    @Test fun theWidgetsShareButtonsFlipTheSamePrefsAsTheApp() {
+        tap(Controls.SHARE_USB)
+        assertEquals(true, app.store.shareWithTether)
+        tap(Controls.SHARE_USB)
         assertEquals(false, app.store.shareWithTether)
+    }
+
+    @Test fun theFirstHotspotShareOpensTheAppToExplainIt() {
+        val first = tap(Controls.SHARE_HOTSPOT)
+        assertEquals(false, app.store.shareOverHotspot)
+        assertEquals(MainActivity::class.java.name, org.robolectric.Shadows.shadowOf(first.get()).nextStartedActivity.component?.className)
+        // Once the hotspot has been shared, the widget flips it directly.
+        app.store.sharedHotspotBefore = true
+        tap(Controls.SHARE_HOTSPOT)
+        assertEquals(true, app.store.shareOverHotspot)
+        tap(Controls.SHARE_HOTSPOT)
+        assertEquals(false, app.store.shareOverHotspot)
+    }
+
+    @Test fun powerOpensTheAppWhenItCantConnectYet() {
+        // No NetID or password: the app opens instead of starting the VPN.
+        val power = tap(Controls.TOGGLE)
+        assertEquals(MainActivity::class.java.name, org.robolectric.Shadows.shadowOf(power.get()).nextStartedActivity.component?.className)
     }
 
     private fun render(name: String, size: DpSize) {
@@ -92,8 +111,16 @@ class WidgetTest {
         ConnectApp.mutableTetherUsage.value = TetherUsage(hotspot = LinkUsage(listOf("10.84.137.9", "10.84.137.24"), 4))
         ConnectApp.mutableUplink.value = Uplink.MobileData
         render("widget-wide-sharing-light", DpSize(300.dp, 120.dp))
-        render("widget-small-sharing-light", DpSize(150.dp, 110.dp))
-        render("widget-medium-sharing-light", DpSize(200.dp, 110.dp))
+        render("widget-compact-sharing-light", DpSize(180.dp, 110.dp))
+    }
+
+    @Test fun fitsAt200PercentFont() {
+        app.store.shareWithTether = true
+        ConnectApp.mutableState.value = connected
+        ConnectApp.mutableUplink.value = Uplink.WiFi
+        RuntimeEnvironment.setFontScale(2f)
+        render("widget-wide-200pct", DpSize(280.dp, 110.dp))
+        render("widget-compact-200pct", DpSize(180.dp, 110.dp))
     }
 
     @Test fun rendersNotConnected() {
@@ -103,6 +130,6 @@ class WidgetTest {
         ConnectApp.mutableState.value = connected
         ConnectApp.mutableUplink.value = Uplink.WiFi
         render("widget-wide-connected-dark", DpSize(300.dp, 120.dp))
-        render("widget-small-connected-dark", DpSize(150.dp, 110.dp))
+        render("widget-compact-connected-dark", DpSize(180.dp, 110.dp))
     }
 }

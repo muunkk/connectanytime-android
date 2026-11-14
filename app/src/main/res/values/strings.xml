@@ -157,24 +157,27 @@
     <string name="sharing_link_waiting_usb">Waiting for USB tethering</string>
     <string name="sharing_link_waiting_hotspot">Waiting for the hotspot</string>
     <!-- What the phone itself is online over, under the VPN: the card and the widget. -->
-    <string name="uplink_mobile">Using mobile data</string>
-    <string name="uplink_wifi">Using Wi‑Fi</string>
-    <string name="uplink_ethernet">Using Ethernet</string>
-    <string name="uplink_other">Using another network</string>
+    <string name="uplink_mobile">Via mobile data</string>
+    <string name="uplink_wifi">Via Wi‑Fi</string>
+    <string name="uplink_ethernet">Via Ethernet</string>
+    <string name="uplink_other">Via another network</string>
     <!-- The home screen widget (ConnectWidget.kt). -->
     <string name="widget_name">ConnectAnytime</string>
-    <string name="widget_description">Connect the VPN, share it over USB or the hotspot, and see who\'s using it.</string>
+    <string name="widget_description">Connect the VPN, share it over USB or the hotspot, and see how many devices are using it.</string>
     <string name="widget_vpn_off">VPN off</string>
     <string name="widget_vpn_on">VPN on</string>
     <string name="widget_working">One moment…</string>
-    <string name="widget_try_again">Tap Connect to try again</string>
+    <string name="widget_try_again">Tap the power button to try again</string>
     <string name="widget_usb">USB</string>
     <string name="widget_hotspot">Hotspot</string>
     <string name="widget_link_starts">Starts with the VPN</string>
     <string name="widget_link_waiting">Waiting</string>
     <string name="widget_link_ready">On</string>
     <string name="widget_link_problem">Can\'t share</string>
-    <string name="widget_hotspot_settings">Hotspot settings</string>
+    <string name="widget_hotspot_settings">Open Android\'s hotspot settings</string>
+    <string name="widget_link_using">%1$d using</string>
+    <string name="widget_share_on">%1$s, on. %2$s</string>
+    <string name="widget_share_off">%1$s, off</string>
     <string name="sharing_no_devices">No devices yet</string>
     <plurals name="sharing_devices">
         <item quantity="one">%d device</item>

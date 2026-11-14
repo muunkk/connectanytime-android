@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The home screen widget (ConnectWidget.kt): 4 x 2 by default, down to 2 x 2. -->
+<!-- The home screen widget (ConnectWidget.kt): 4 x 2 by default, down to about 3 x 2 (180 dp). -->
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
-    android:minWidth="120dp" android:minHeight="110dp"
-    android:minResizeWidth="120dp" android:minResizeHeight="110dp"
+    android:minWidth="250dp" android:minHeight="110dp"
+    android:minResizeWidth="180dp" android:minResizeHeight="110dp"
     android:targetCellWidth="4" android:targetCellHeight="2"
     android:resizeMode="horizontal|vertical"
     android:widgetCategory="home_screen"

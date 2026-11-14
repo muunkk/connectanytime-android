@@ -17,6 +17,9 @@ object Controls {
     /** The widget's power button: Disconnect while busy, otherwise Connect. */
     const val TOGGLE = "com.muunkk.connectanytime.TOGGLE"
     const val OPEN_TETHERING = "com.muunkk.connectanytime.OPEN_TETHERING"
+    /** The widget's share buttons: flip that switch, after unlocking like everything here. */
+    const val SHARE_USB = "com.muunkk.connectanytime.SHARE_USB"
+    const val SHARE_HOTSPOT = "com.muunkk.connectanytime.SHARE_HOTSPOT"
     /** Whether a reboot or app update starts the VPN again by itself (BootReceiver), which only
      *  rejoins the saved session: an automatic start never logs in with the password. */
     fun restartsAutomatically(store: Store) = store.stayConnected && store.hasSession && !store.disconnected
@@ -100,6 +103,7 @@ class ShortcutActivity : Activity() {
             override fun onDismissError() { finish() }
         }) else perform()
     }
+    private val store get() = (application as ConnectApp).store
     private fun perform() {
         when (intent.action) {
             ConnectVpnService.DISCONNECT -> Controls.disconnect(this)
@@ -107,12 +111,17 @@ class ShortcutActivity : Activity() {
             // Decided now, not when the widget was drawn, so a stale widget can't do the opposite.
             Controls.TOGGLE -> if (ConnectApp.state.value.busy) Controls.disconnect(this) else connect()
             Controls.OPEN_TETHERING -> openTethering(this)
+            Controls.SHARE_USB -> store.shareWithTether = !store.shareWithTether
+            // Turning hotspot sharing on for the first time opens the app, where the switch says
+            // that anyone who joins the hotspot can use the VPN. After that the widget flips it.
+            Controls.SHARE_HOTSPOT ->
+                if (!store.shareOverHotspot && !store.sharedHotspotBefore) startActivity(Intent(this, MainActivity::class.java))
+                else store.shareOverHotspot = !store.shareOverHotspot
         }
         finish()
     }
     /** Connects, unless the app first needs VPN permission or a NetID and password: then it opens. */
     private fun connect() {
-        val store = (application as ConnectApp).store
         val ready = store.user.isNotBlank() && (store.hasPassword || store.hasSession)
         if (ready && VpnService.prepare(this) == null) Controls.connect(this)
         else startActivity(Intent(this, MainActivity::class.java))

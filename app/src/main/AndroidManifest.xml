@@ -24,7 +24,9 @@
             </intent-filter>
             <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
         </activity>
-        <activity android:name=".ShortcutActivity" android:exported="false" android:excludeFromRecents="true"
+        <!-- Its own empty task affinity: started from the widget or a shortcut, it must not bring
+             the app's task (if it's in Recents) to the front when it finishes. -->
+        <activity android:name=".ShortcutActivity" android:exported="false" android:excludeFromRecents="true" android:taskAffinity=""
             android:theme="@style/Theme.ConnectAnytime.Trampoline" android:noHistory="true" />
         <!-- Lint only models the exact-alarm exemption. Configured VPN apps
              also qualify, per developer.android.com/develop/background-work/services/fgs/service-types.
