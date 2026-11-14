@@ -195,7 +195,7 @@ class ScreenshotTest(private val dark: Boolean) {
             compose.onNodeWithText("2 devices · 11 connections").assertExists()
             compose.onNodeWithText("10.84.137.9, 10.84.137.24").assertExists()
             compose.onNodeWithText("On at 10.84.137.1:1080").assertExists()
-            compose.onNodeWithText("Using mobile data").assertExists()
+            compose.onNodeWithText("Via mobile data").assertExists()
             save("home-sharing-card-in-use")
         } finally {
             ConnectApp.mutableTetherShare.value = TetherShare.Off; ConnectApp.mutableTetherUsage.value = TetherUsage()

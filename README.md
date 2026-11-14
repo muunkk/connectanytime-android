@@ -17,38 +17,46 @@ the session and Connect will log in again. One button connects or disconnects.
 
 Under it, while the VPN is connected or sharing is turned on, the **Sharing** card shows
 whether the VPN is being shared and with whom:
-- whether the phone is **using mobile data**, **Wi‑Fi** or Ethernet;
+- whether the phone is online **via mobile data**, **Wi‑Fi** or Ethernet (the VPN, and so
+  everything shared, goes out over it);
 - for USB tethering and the hotspot, each with its own switch: off, waiting for
   tethering, on at its address, or why it can't start;
 - while a link is sharing, the devices on it (by address), their open connections, and
   the data down and up since it started sharing.
 
-A device counts while it has a connection open or for a minute after its last traffic.
+A device counts once a connection of its has gone through the VPN, while that is open, and
+for a minute after its last traffic. Refused attempts don't count.
 The card's switches are the same settings as the **Share the VPN** section and the widget.
 
 ### Home screen widget
 
 Add **ConnectAnytime** from the launcher's widgets. It shows whether the VPN is
-connected and which network the phone is using. It also has:
+connected and which network the phone is on. It also has:
 - a power button that connects or disconnects;
-- **USB** and **Hotspot** buttons that turn sharing on or off and show what each link
-  is doing, or how many devices are on it;
-- a hotspot settings button.
+- **USB** and **Hotspot** buttons that turn sharing on or off (filled when on, outlined
+  when off) and show what each link is doing, or how many devices are using it;
+- a button for Android's hotspot settings.
 
 Android doesn't let apps turn the hotspot itself on or off, so that button opens
 Android's tethering screen. Use Android's own Hotspot tile in Quick Settings for one tap.
 
-The widget fits 2 × 2 and larger. Below about four cells wide it drops the words and,
-at its narrowest, the settings button.
+It's 4 × 2 by default and resizes down to about 3 × 2 (180 dp), where the buttons
+lose their words. At large font sizes it drops the second lines of text instead of
+pushing the buttons out.
 
-Connect from the widget is a tap you make, so it may log in and send a Duo push, like
-the app's button. It goes through a small invisible screen, which first unlocks the
-phone if needed. It opens the app instead when VPN permission, a NetID or a password
-is missing. Connect or Disconnect is decided when you tap, so a widget that hasn't
+Every widget button goes through a small invisible screen, which first unlocks the
+phone if needed and decides what to do at the moment you tap, so a widget that hasn't
 redrawn yet can't do the opposite.
+- Connect is a tap you make, so it may log in and send a Duo push, like the app's
+  button. It opens the app instead when VPN permission, a NetID or a password is
+  missing.
+- The first time you turn on hotspot sharing, it opens the app instead, where the
+  switch explains that anyone who joins the hotspot can use the VPN. After that, the
+  widget turns it on and off directly.
 
-The widget redraws when the VPN, sharing or the switches change, and every 30 minutes
-in case the app was stopped.
+The widget redraws when the VPN, sharing or the switches change. If Android stops the
+app, the widget can show the old state until its 30-minute refresh or the next time
+the app starts.
 
 Below it: your NetID and password (show/hide, Save, and Remove saved password,
 which asks first), **Stay Connected**, a shortcut to **Android VPN settings** for

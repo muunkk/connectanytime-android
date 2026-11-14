@@ -16,9 +16,14 @@ data class TetherUsage(val usb: LinkUsage = LinkUsage(), val hotspot: LinkUsage 
  * Counts the proxy's use per link, for the status card. Thread-safe: sessions report from
  * their own threads, and the proxy's timer takes snapshots.
  *
- * A device is a client address. It counts as using the link while it has a connection open,
- * or had traffic within [recent]: browsers close idle connections, and the card shouldn't
- * flicker between pages. Counts start over whenever a link stops sharing.
+ * A device is a client address. It counts as using the link while a connection of its is
+ * open through the VPN, or for [recent] after its last traffic: browsers close idle
+ * connections, and the card shouldn't flicker between pages. Attempts the proxy refused
+ * never count (the proxy reports only connections that went through). Counts start over
+ * whenever a link stops sharing.
+ *
+ * Opening, closing and expiry go through the map's atomic compute calls, so a device that
+ * reconnects as its old record expires is never counted on a record that was just removed.
  */
 internal class UsageMeter(private val recent: Long = TimeUnit.SECONDS.toNanos(60)) {
     private class Device { val open = AtomicInteger(); @Volatile var last = 0L }
@@ -26,10 +31,10 @@ internal class UsageMeter(private val recent: Long = TimeUnit.SECONDS.toNanos(60
     private val links = mapOf(TetherLink.Usb to Counts(), TetherLink.Hotspot to Counts())
 
     fun opened(link: TetherLink, address: String, now: Long) {
-        links.getValue(link).devices.computeIfAbsent(address) { Device() }.apply { open.incrementAndGet(); last = now }
+        links.getValue(link).devices.compute(address) { _, device -> (device ?: Device()).apply { open.incrementAndGet(); last = now } }
     }
     fun closed(link: TetherLink, address: String, now: Long) {
-        links.getValue(link).devices[address]?.apply { open.decrementAndGet(); last = now }
+        links.getValue(link).devices.computeIfPresent(address) { _, device -> device.apply { open.decrementAndGet(); last = now } }
     }
     fun traffic(link: TetherLink, address: String, up: Boolean, bytes: Int, now: Long) {
         val counts = links.getValue(link)
@@ -44,7 +49,9 @@ internal class UsageMeter(private val recent: Long = TimeUnit.SECONDS.toNanos(60
                 counts.devices.clear(); counts.down.set(0); counts.up.set(0)
                 return LinkUsage()
             }
-            counts.devices.entries.removeIf { it.value.open.get() <= 0 && now - it.value.last > recent }
+            for (address in counts.devices.keys.toList()) counts.devices.computeIfPresent(address) { _, device ->
+                device.takeUnless { it.open.get() <= 0 && now - it.last > recent }
+            }
             val devices = counts.devices.keys.sortedBy(::addressOrder)
             return LinkUsage(devices, counts.devices.values.sumOf { maxOf(0, it.open.get()) }, counts.down.get(), counts.up.get())
         }

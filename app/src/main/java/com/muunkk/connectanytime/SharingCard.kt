@@ -173,9 +173,11 @@ private fun LinkRow(link: TetherLink, on: Boolean, share: TetherShare, usage: Li
             horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             Icon(painterResource(if (hotspot) R.drawable.ic_hotspot else R.drawable.ic_usb), contentDescription = null,
                 tint = if (sharing) colors.primary else colors.onSurfaceVariant)
-            Column(Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Polite }, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(title, style = MaterialTheme.typography.titleMedium)
-                Text(status, style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
+                // Announced when it changes; the traffic below changes every few seconds and isn't.
+                Text(status, style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant,
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
                 AnimatedVisibility(sharing) { Usage(context, usage) }
             }
             Switch(checked = on, onCheckedChange = null)
