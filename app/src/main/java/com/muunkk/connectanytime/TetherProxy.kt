@@ -1,5 +1,9 @@
 package com.muunkk.connectanytime
 
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.net.ConnectivityManager
 import android.net.DnsResolver
@@ -23,10 +27,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 sealed interface TetherShare {
     data object Off : TetherShare
-    data object WaitingForUsbTether : TetherShare
+    data object WaitingForTether : TetherShare
     data object WaitingForVpn : TetherShare
     data object PortInUse : TetherShare
-    data class Sharing(val address: String, val port: Int) : TetherShare
+    /** The proxy's address on USB tethering and on the hotspot; at least one is set. */
+    data class Sharing(val port: Int, val usb: String? = null, val hotspot: String? = null) : TetherShare
     data object VpnNotConnected : TetherShare
 }
 
@@ -46,19 +51,42 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
     private val prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == "shareWithTether" && !closed.get()) runCatching { timer.execute { reconcile() } }
     }
+    /** Interfaces Android says it is tethering on, from its sticky broadcast; null if unknown. */
+    @Volatile private var tethered: Set<String>? = null
+    private val tetherReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            tethered = activeTethers(intent)
+            if (!closed.get()) runCatching { timer.execute { reconcile() } }
+        }
+    }
     init {
         app.store.prefs.registerOnSharedPreferenceChangeListener(prefsListener)
+        // Only the system can send this protected broadcast, so exporting the receiver is safe;
+        // the sender is the Tethering module, which isn't the system UID that NOT_EXPORTED admits.
+        val filter = IntentFilter(TETHER_STATE_CHANGED)
+        tethered = activeTethers(runCatching {
+            if (android.os.Build.VERSION.SDK_INT >= 33) service.registerReceiver(tetherReceiver, filter, Context.RECEIVER_EXPORTED)
+            else service.registerReceiver(tetherReceiver, filter)
+        }.getOrNull())
         timer.scheduleWithFixedDelay({ reconcile() }, 0, 2, TimeUnit.SECONDS)
     }
     fun state(connected: Boolean, reconnecting: Boolean) {
         this.connected = connected; this.reconnecting = reconnecting
         if (!closed.get()) runCatching { timer.execute { reconcile() } }
     }
-    private data class Binding(val name: String, val address: InetAddress, val prefix: Int)
-    private fun bindings(): Set<Binding> = NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()
-        .filter { usbTetherName(it.name) && it.isUp && !it.isLoopback && !it.isPointToPoint }
-        .flatMap { iface -> iface.interfaceAddresses.filter { it.address is Inet4Address && !it.address.isLoopbackAddress && !it.address.isLinkLocalAddress && it.networkPrefixLength in 1..32 }
-            .map { Binding(iface.name, it.address, it.networkPrefixLength.toInt()) } }.toSet()
+    private data class Binding(val name: String, val link: TetherLink, val address: InetAddress, val prefix: Int)
+    private fun bindings(): Set<Binding> {
+        val cm = service.getSystemService(ConnectivityManager::class.java)
+        // The phone's own networks. If this can't be read, share nothing rather than guess.
+        @Suppress("DEPRECATION")
+        val upstream = cm.allNetworks.mapNotNull { cm.getLinkProperties(it)?.interfaceName }.toSet()
+        val tethered = tethered
+        return NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()
+            .filter { it.isUp && !it.isLoopback && !it.isPointToPoint }
+            .mapNotNull { iface -> tetherLink(iface.name, tethered, upstream)?.let { iface to it } }
+            .flatMap { (iface, link) -> iface.interfaceAddresses.filter { it.address is Inet4Address && !it.address.isLoopbackAddress && !it.address.isLinkLocalAddress && it.networkPrefixLength in 1..32 }
+                .map { Binding(iface.name, link, it.address, it.networkPrefixLength.toInt()) } }.toSet()
+    }
     @Synchronized private fun reconcile() {
         if (closed.get()) return
         sessions.filter { System.nanoTime() - it.activity > TimeUnit.SECONDS.toNanos(if (it.ready) 300 else 15) }.forEach { it.close() }
@@ -72,7 +100,8 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
                 val listener = Listener(binding)
                 listeners[binding] = listener
                 bindFailures.remove(binding.address)
-                app.log.add(service.getString(R.string.tether_started, binding.address.hostAddress, port))
+                app.log.add(service.getString(if (binding.link == TetherLink.Usb) R.string.tether_started else R.string.tether_started_hotspot,
+                    binding.address.hostAddress, port))
                 listener.thread.start()
             } catch (e: Exception) {
                 // Only "address in use" means another app has the port. Anything else, such as
@@ -85,11 +114,16 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
         ConnectApp.mutableTetherShare.value = when {
             !enabled -> TetherShare.Off
             !connected && !reconnecting -> TetherShare.VpnNotConnected
-            wanted.isEmpty() -> TetherShare.WaitingForUsbTether
+            wanted.isEmpty() -> TetherShare.WaitingForTether
             !connected -> TetherShare.WaitingForVpn
             listeners.isEmpty() && bindFailures.isNotEmpty() -> TetherShare.PortInUse
-            listeners.isEmpty() -> TetherShare.WaitingForUsbTether
-            else -> TetherShare.Sharing(listeners.keys.first().address.hostAddress!!, port)
+            listeners.isEmpty() -> TetherShare.WaitingForTether
+            else -> {
+                // One address per kind, stable across rescans when a link has several.
+                fun first(link: TetherLink) = listeners.keys.filter { it.link == link }
+                    .minByOrNull { "${it.name} ${it.address.hostAddress}" }?.address?.hostAddress
+                TetherShare.Sharing(port, usb = first(TetherLink.Usb), hotspot = first(TetherLink.Hotspot))
+            }
         }
     }
     private fun portInUse(e: Exception) = e is java.net.BindException &&
@@ -119,12 +153,12 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
                     }
                 }
             }
-        }, "USB proxy accept")
+        }, "Tether proxy accept")
         override fun close() {
             server.close()
             sessions.filter { it.listener === this }.forEach { it.close() }
             thread.join(1000)
-            app.log.add(service.getString(R.string.tether_stopped))
+            app.log.add(service.getString(if (binding.link == TetherLink.Usb) R.string.tether_stopped else R.string.tether_stopped_hotspot))
         }
     }
     private fun vpn(): ProxyNetwork? {
@@ -201,6 +235,7 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
     @Synchronized override fun close() {
         if (!closed.compareAndSet(false, true)) return
         app.store.prefs.unregisterOnSharedPreferenceChangeListener(prefsListener)
+        runCatching { service.unregisterReceiver(tetherReceiver) }
         timer.shutdown()
         // reconcile uses this same monitor; a timed executor wait alone cannot protect the map.
         listeners.values.toList().forEach { runCatching { it.close() } }; listeners.clear()

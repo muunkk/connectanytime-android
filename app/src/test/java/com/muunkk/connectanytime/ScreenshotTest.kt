@@ -106,16 +106,39 @@ class ScreenshotTest(private val dark: Boolean) {
     }
     @Test fun sharing() {
         account(); app.store.shareWithTether = true
-        ConnectApp.mutableTetherShare.value = TetherShare.Sharing("192.168.42.129", 1080)
+        ConnectApp.mutableTetherShare.value = TetherShare.Sharing(1080, usb = "192.168.42.129")
         try {
             home(VpnState("Connected", busy = true, connected = true))
-            compose.onNodeWithText("Only Mac apps", substring = true).performScrollTo()
+            compose.onNodeWithText("Only apps that use", substring = true).performScrollTo()
             save("home-share-sharing")
+        } finally { ConnectApp.mutableTetherShare.value = TetherShare.Off }
+    }
+    @Test fun sharingHotspot() {
+        account(); app.store.shareWithTether = true
+        ConnectApp.mutableTetherShare.value = TetherShare.Sharing(1080, hotspot = "10.84.137.1")
+        try {
+            home(VpnState("Connected", busy = true, connected = true))
+            compose.onNodeWithText("Only apps that use", substring = true).performScrollTo()
+            compose.onNodeWithTag("share-address").assertDoesNotExist()
+            compose.onNodeWithText("Configure Proxy → Manual", substring = true).assertExists()
+            save("home-share-hotspot")
+        } finally { ConnectApp.mutableTetherShare.value = TetherShare.Off }
+    }
+    @Test fun sharingBoth() {
+        account(); app.store.shareWithTether = true
+        ConnectApp.mutableTetherShare.value = TetherShare.Sharing(1080, usb = "192.168.42.129", hotspot = "10.84.137.1")
+        try {
+            home(VpnState("Connected", busy = true, connected = true))
+            compose.onNodeWithTag("share-hotspot-address").performScrollTo()
+            compose.onNodeWithTag("share-address").assertTextEquals("192.168.42.129:1080")
+            compose.onNodeWithTag("share-hotspot-address").assertTextEquals("10.84.137.1")
+            compose.onNodeWithText("Sharing over USB and the hotspot, port 1080.").assertExists()
+            save("home-share-both")
         } finally { ConnectApp.mutableTetherShare.value = TetherShare.Off }
     }
     @Test fun shareWaiting() {
         account(); app.store.shareWithTether = true
-        ConnectApp.mutableTetherShare.value = TetherShare.WaitingForUsbTether
+        ConnectApp.mutableTetherShare.value = TetherShare.WaitingForTether
         try {
             home(VpnState("Connected", busy = true, connected = true))
             compose.onNodeWithTag("share").performScrollTo()

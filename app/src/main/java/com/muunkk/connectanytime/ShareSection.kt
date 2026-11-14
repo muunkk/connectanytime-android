@@ -25,9 +25,10 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 
 /**
- * Sharing the VPN with a USB-tethered Mac. Android never routes tethered traffic through
- * a VPN app, so the app runs a proxy on the USB connection (see TetherProxy) and the Mac
- * points its proxy settings at it. This section turns that on and tells you what to set.
+ * Sharing the VPN with a Mac on USB tethering, or an iPhone or Mac on the phone's hotspot.
+ * Android never routes tethered traffic through a VPN app, so the app runs a proxy on those
+ * connections (see TetherProxy) and the other device points its proxy settings at it. This
+ * section turns that on and tells you what to set, with one card per connection in use.
  */
 @Composable
 internal fun ShareSection(store: Store) {
@@ -39,7 +40,9 @@ internal fun ShareSection(store: Store) {
     // stops, the Mac's proxies point at nothing and its browsing fails until they're off.
     var shared by remember { mutableStateOf(store.sharedBefore) }
     LaunchedEffect(sharing) { if (sharing != null && !shared) { shared = true; store.sharedBefore = true } }
-    val count = if (on && sharing != null) 2 else 1
+    val links = if (on && sharing != null)
+        listOfNotNull(sharing.usb?.let { TetherLink.Usb to it }, sharing.hotspot?.let { TetherLink.Hotspot to it }) else emptyList()
+    val count = 1 + links.size
 
     SectionTitle(R.string.share_title)
     Group(count) { index ->
@@ -47,19 +50,23 @@ internal fun ShareSection(store: Store) {
         if (index == 0) {
             SegmentedListItem(colors = segmentColors(), onClick = { on = !on; store.shareWithTether = on }, shapes = shapes,
                 modifier = Modifier.testTag("share").semantics { role = Role.Switch; toggleableState = ToggleableState(on) },
-                leadingContent = { Icon(painterResource(R.drawable.ic_usb), contentDescription = null) },
+                leadingContent = { Icon(painterResource(R.drawable.ic_hotspot), contentDescription = null) },
                 trailingContent = { Switch(checked = on, onCheckedChange = null) },
                 supportingContent = {
                     Column(Modifier.semantics { liveRegion = LiveRegionMode.Polite }) {
                         Text(when {
                             !on -> stringResource(R.string.share_off_help)
-                            sharing != null -> stringResource(R.string.share_sharing, sharing.address, sharing.port)
-                            share == TetherShare.WaitingForUsbTether -> stringResource(R.string.share_waiting)
+                            sharing != null -> stringResource(when {
+                                sharing.usb != null && sharing.hotspot != null -> R.string.share_sharing_both
+                                sharing.usb != null -> R.string.share_sharing_usb
+                                else -> R.string.share_sharing_hotspot
+                            }, sharing.port)
+                            share == TetherShare.WaitingForTether -> stringResource(R.string.share_waiting)
                             share == TetherShare.WaitingForVpn -> stringResource(R.string.share_waiting_vpn)
                             share == TetherShare.PortInUse -> stringResource(R.string.share_port_in_use)
                             else -> stringResource(R.string.share_vpn_off)
                         })
-                        if (on && share == TetherShare.WaitingForUsbTether) {
+                        if (on && share == TetherShare.WaitingForTether) {
                             TextButton(onClick = { openTethering(context) }, shapes = ButtonDefaults.shapes(),
                                 contentPadding = PaddingValues(horizontal = 0.dp), modifier = Modifier.heightIn(min = 48.dp)) {
                                 Text(stringResource(R.string.open_tethering))
@@ -68,7 +75,10 @@ internal fun ShareSection(store: Store) {
                     }
                 }) { Text(stringResource(R.string.share_switch)) }
         } else if (sharing != null) {
-            FieldSegment(1, 2) { MacSetup(context, sharing) }
+            val (link, address) = links[index - 1]
+            FieldSegment(index, count) {
+                if (link == TetherLink.Usb) MacSetup(context, address, sharing.port) else HotspotSetup(context, address, sharing.port)
+            }
         }
     }
     AnimatedVisibility(shared && sharing == null) {
@@ -82,29 +92,70 @@ internal fun ShareSection(store: Store) {
 }
 
 @Composable
-private fun MacSetup(context: Context, sharing: TetherShare.Sharing) {
-    val address = "${sharing.address}:${sharing.port}"
+private fun MacSetup(context: Context, ip: String, port: Int) {
+    val address = "$ip:$port"
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(stringResource(R.string.share_proxy_label), style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            CardLabel(R.drawable.ic_usb, R.string.share_proxy_label)
             // The one thing to type on the Mac: large, monospace and selectable.
-            SelectionContainer {
-                Text(address, style = MaterialTheme.typography.headlineSmallEmphasized, fontFamily = FontFamily.Monospace,
-                    modifier = Modifier.testTag("share-address"))
-            }
+            SelectionContainer { Big(address, Modifier.testTag("share-address")) }
         }
-        Text(stringResource(R.string.share_mac_steps, sharing.port), style = MaterialTheme.typography.bodyMedium)
+        Text(stringResource(R.string.share_mac_steps, port), style = MaterialTheme.typography.bodyMedium)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp),
             itemVerticalAlignment = Alignment.CenterVertically) {
             CopyButton(context, R.string.share_copy_address, address, tonal = true)
-            CopyButton(context, R.string.share_copy_command, macCommand(sharing.address, sharing.port), tonal = false)
-            CopyButton(context, R.string.share_copy_off, macOffCommand(sharing.port), tonal = false)
+            CopyButton(context, R.string.share_copy_command, macCommand(ip, port), tonal = false)
+            CopyButton(context, R.string.share_copy_off, macOffCommand(port), tonal = false)
         }
         Text(stringResource(R.string.share_command_help), style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
+
+/** For an iPhone on the hotspot, which you set up by typing, not pasting: its Server and Port
+ *  fields side by side, as iOS asks for them. A Mac on the hotspot can still paste the command. */
+@Composable
+private fun HotspotSetup(context: Context, ip: String, port: Int) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        CardLabel(R.drawable.ic_hotspot, R.string.share_hotspot_label)
+        SelectionContainer {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Field(R.string.share_server, ip, Modifier.testTag("share-hotspot-address"))
+                Field(R.string.share_port, port.toString())
+            }
+        }
+        Text(stringResource(R.string.share_iphone_steps, port), style = MaterialTheme.typography.bodyMedium)
+        Text(stringResource(R.string.share_iphone_off), style = MaterialTheme.typography.bodyMedium)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp),
+            itemVerticalAlignment = Alignment.CenterVertically) {
+            CopyButton(context, R.string.share_copy_mac_command, macCommand(ip, port), tonal = false)
+            CopyButton(context, R.string.share_copy_off, macOffCommand(port), tonal = false)
+        }
+        Text(stringResource(R.string.share_hotspot_command_help), style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+/** Names the connection a card is for, with its icon, so USB and hotspot cards tell apart at a glance. */
+@Composable
+private fun CardLabel(icon: Int, text: Int) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Icon(painterResource(icon), contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+        Text(stringResource(text), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun Field(label: Int, value: String, modifier: Modifier = Modifier) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(stringResource(label), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Big(value, modifier)
+    }
+}
+
+@Composable
+private fun Big(text: String, modifier: Modifier = Modifier) =
+    Text(text, style = MaterialTheme.typography.headlineSmallEmphasized, fontFamily = FontFamily.Monospace, modifier = modifier)
 
 /** Copies `text`, and says so on the button for a moment (Android 13+ also shows its own notice). */
 @Composable
@@ -149,11 +200,12 @@ private fun script(ip: String, port: Int, match: String, set: String, none: Stri
     .replace("@IP@", ip).replace("@PORT@", port.toString()).replace('§', '$')
 
 /** Sets the web, secure web and SOCKS proxies on the service whose router is this phone
- *  (the tether address is the Mac's gateway), so you needn't know what macOS named it. */
+ *  (the tether or hotspot address is the Mac's gateway), so you needn't know what macOS
+ *  named it: the phone's USB service, or Wi-Fi when the Mac is on the hotspot. */
 internal fun macCommand(ip: String, port: Int) = script(ip, port,
     match = "-getinfo \"§v\" | grep -qxF \"Router: §ip\"",
     set = "-set§p \"§s\" \"§ip\" \"§port\"",
-    none = "Couldn't find the phone's connection. Is USB tethering on?",
+    none = "Couldn't find the phone's connection. Is USB tethering or the hotspot on?",
     done = "Proxies set on")
 
 /** Turns those proxies off again. Finds the service by its SOCKS proxy being on with this

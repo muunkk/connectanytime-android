@@ -63,7 +63,7 @@ class MacCommandTest {
     }
     @Test fun dotsInTheAddressAreLiteral() = shells().forEach { sh ->
         val (out, calls) = run(sh, macCommand(ip, 1080), linkedMapOf("Odd" to "192x168x42x129"))
-        assertEquals(sh, "Couldn't find the phone's connection. Is USB tethering on?", out)
+        assertEquals(sh, "Couldn't find the phone's connection. Is USB tethering or the hotspot on?", out)
         assertEquals(sh, emptyList<String>(), calls)
     }
     @Test fun aFailedSudoIsReportedNotCalledSuccess() = shells().forEach { sh ->

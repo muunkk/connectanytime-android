@@ -113,6 +113,31 @@ class ProxyProtocolTest {
         listOf("usb0", "rndis0", "rndis12", "ncm0").forEach { assertTrue(it, usbTetherName(it)) }
         listOf("wlan0", "rmnet0", "tun0", "lo", "eth0", "bt-pan", "usb", "rndis0.1", "xusb0").forEach { assertFalse(it, usbTetherName(it)) }
     }
+    @Test fun hotspotNeedsAndroidsTetherListAndNeverThePhonesOwnNetworks() {
+        val none = emptySet<String>()
+        // Android lists the hotspot: shared, whatever the Wi-Fi name.
+        listOf("wlan1", "wlan0", "swlan0", "ap0", "softap0", "ap_br_wlan1").forEach {
+            assertEquals(it, TetherLink.Hotspot, tetherLink(it, setOf(it), none))
+        }
+        // Wi-Fi the phone joined is upstream: never shared, even if also listed.
+        assertNull(tetherLink("wlan0", setOf("wlan0"), setOf("wlan0")))
+        assertNull(tetherLink("rndis0", setOf("rndis0"), setOf("rndis0")))
+        // Hotspot off: Android's list no longer has it.
+        assertNull(tetherLink("swlan0", setOf("rndis0"), none))
+        assertNull(tetherLink("wlan1", emptySet(), none))
+        // No list from Android: only hotspot-only names, never wlan.
+        assertEquals(TetherLink.Hotspot, tetherLink("swlan0", null, none))
+        assertEquals(TetherLink.Hotspot, tetherLink("ap0", null, none))
+        assertNull(tetherLink("wlan0", null, none))
+        assertNull(tetherLink("wlan1", null, none))
+        // Listed, but not a Wi-Fi tether name (Bluetooth, Ethernet, mobile data): not shared.
+        listOf("bt-pan", "eth0", "rmnet0", "tun0", "wlan", "xwlan0", "wlan0.1").forEach {
+            assertNull(it, tetherLink(it, setOf(it), none))
+        }
+        // USB keeps working by name, with or without the list.
+        assertEquals(TetherLink.Usb, tetherLink("rndis0", null, none))
+        assertEquals(TetherLink.Usb, tetherLink("ncm0", emptySet(), none))
+    }
     @Test fun subnetFilterUsesActualPrefix() {
         fun ip(s: String) = InetAddress.getByName(s)
         assertTrue(sameSubnet(ip("192.168.42.129"), 25, ip("192.168.42.200")))

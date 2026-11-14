@@ -22,6 +22,36 @@ class TetherProxyTest {
         }
     }
 
+    @Test fun readsAndroidsActiveTethers() {
+        assertNull(activeTethers(null))
+        assertNull(activeTethers(android.content.Intent(TETHER_STATE_CHANGED)))
+        assertEquals(setOf("wlan1", "rndis0"), activeTethers(android.content.Intent(TETHER_STATE_CHANGED)
+            .putStringArrayListExtra("tetherArray", arrayListOf("wlan1", "rndis0"))
+            .putStringArrayListExtra("availableArray", arrayListOf("wlan2"))))
+    }
+    @Test fun followsAndroidsTetherBroadcastAndStopsListening() {
+        val app = ApplicationProvider.getApplicationContext<ConnectApp>()
+        app.store.shareWithTether = false
+        val service = Robolectric.buildService(ConnectVpnService::class.java).get()
+        fun tethered(proxy: TetherProxy) = TetherProxy::class.java.getDeclaredField("tethered")
+            .apply { isAccessible = true }.get(proxy)
+        // Already hotspotting when sharing starts: the sticky broadcast is read at once.
+        @Suppress("DEPRECATION")
+        app.sendStickyBroadcast(android.content.Intent(TETHER_STATE_CHANGED).putStringArrayListExtra("tetherArray", arrayListOf("wlan1")))
+        val proxy = TetherProxy(service, app, 0)
+        try {
+            assertEquals(setOf("wlan1"), tethered(proxy))
+            // Hotspot turned off, USB on.
+            app.sendBroadcast(android.content.Intent(TETHER_STATE_CHANGED).putStringArrayListExtra("tetherArray", arrayListOf("rndis0")))
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            assertEquals(setOf("rndis0"), tethered(proxy))
+        } finally { proxy.close() }
+        // Closed: unregistered, so later broadcasts can't reach it.
+        app.sendBroadcast(android.content.Intent(TETHER_STATE_CHANGED).putStringArrayListExtra("tetherArray", arrayListOf("wlan2")))
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        assertEquals(setOf("rndis0"), tethered(proxy))
+        @Suppress("DEPRECATION") app.removeStickyBroadcast(android.content.Intent(TETHER_STATE_CHANGED))
+    }
     @Test fun closeWaitsForAnInFlightRescan() {
         val app = ApplicationProvider.getApplicationContext<ConnectApp>()
         app.store.shareWithTether = false

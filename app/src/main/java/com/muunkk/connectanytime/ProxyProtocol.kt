@@ -196,6 +196,37 @@ internal object ProxyProtocol {
 // Include numbered NCM gadget interfaces, but no generic Ethernet/Wi-Fi patterns.
 // https://android.googlesource.com/platform/packages/modules/Connectivity/+/refs/heads/main/Tethering/res/values/config.xml
 internal fun usbTetherName(name: String) = name.matches(Regex("(?:rndis|ncm|usb)[0-9]+"))
+
+/** The two kinds of downstream link the proxy serves. */
+internal enum class TetherLink { Usb, Hotspot }
+
+// The same file's config_tether_wifi_regexs (wlan, softap, and the bridged dual-band ap_br_*),
+// plus Samsung's swlan, plain ap and wigig (60 GHz). `wlan` is also the name of the Wi-Fi the
+// phone itself joins, so it only counts when Android lists it as tethering.
+private val WIFI_TETHER = Regex("(?:wlan|swlan|softap|ap|ap_br_wlan|ap_br_ap|wigig)[0-9]+")
+private val HOTSPOT_ONLY = Regex("(?:swlan|softap|ap|ap_br_wlan|ap_br_ap)[0-9]+")
+
+/**
+ * Which downstream link interface `name` serves, or null to never listen on it.
+ *
+ * `upstream` holds the interfaces of the phone's own networks (Wi-Fi it joined, mobile data).
+ * They are never shared, whatever their name: listening there would offer the VPN to everyone
+ * on that café or campus Wi-Fi. `tethered` is Android's list of interfaces it is tethering on,
+ * or null when that list isn't available; then only names used for nothing but a hotspot count.
+ */
+internal fun tetherLink(name: String, tethered: Set<String>?, upstream: Set<String>): TetherLink? = when {
+    name in upstream -> null
+    usbTetherName(name) -> TetherLink.Usb
+    !WIFI_TETHER.matches(name) -> null
+    tethered != null -> if (name in tethered) TetherLink.Hotspot else null
+    else -> if (HOTSPOT_ONLY.matches(name)) TetherLink.Hotspot else null
+}
+
+/** Android's sticky tether-state broadcast (ConnectivityManager.ACTION_TETHER_STATE_CHANGED and
+ *  EXTRA_ACTIVE_TETHER, both hidden), sent by the system's Tethering module. */
+internal const val TETHER_STATE_CHANGED = "android.net.conn.TETHER_STATE_CHANGED"
+internal fun activeTethers(intent: android.content.Intent?): Set<String>? =
+    intent?.getStringArrayListExtra("tetherArray")?.toSet()
 internal fun sameSubnet(local: InetAddress, prefix: Int, peer: InetAddress): Boolean {
     val a = local.address; val b = peer.address
     if (a.size != 4 || b.size != 4 || prefix !in 1..32 || peer.isAnyLocalAddress || peer.isMulticastAddress || peer.isLoopbackAddress) return false
