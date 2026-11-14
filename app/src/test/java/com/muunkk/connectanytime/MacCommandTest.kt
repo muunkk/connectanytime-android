@@ -115,7 +115,7 @@ class MacCommandTest {
     }
     @Test fun switchingModesTurnsOffOnlyThisAppsOtherKind() = shells().forEach { sh ->
         val services = linkedMapOf("Wi-Fi" to ip)
-        // Manual → Automatic: our SOCKS on 1080 goes off first.
+        // Manual → Automatic: the PAC URL is set first, then our SOCKS on 1080 goes off.
         val (outAuto, toAuto) = run(sh, macAutoCommand(ip, 1080), services, socks = mapOf("Wi-Fi" to (true to 1080)))
         assertEquals(sh, "Automatic proxy set on Wi-Fi", outAuto)
         assertEquals(sh, listOf("-setautoproxyurl Wi-Fi http://$ip:1080/proxy.pac",
