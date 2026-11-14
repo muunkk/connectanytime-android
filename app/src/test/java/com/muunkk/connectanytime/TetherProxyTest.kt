@@ -66,12 +66,13 @@ class TetherProxyTest {
         app.store.shareWithTether = true; app.store.shareOverHotspot = true
         @Suppress("DEPRECATION") app.removeStickyBroadcast(android.content.Intent(TETHER_STATE_CHANGED))
         val service = Robolectric.buildService(ConnectVpnService::class.java).get()
-        // No list from Android: USB waits for tethering, the hotspot says it can't be told apart.
+        // No list from Android yet (as before any tethering since boot) and no hotspot-like
+        // interface up: both wait, rather than calling the hotspot undetectable.
         var proxy = TetherProxy(service, app, 0)
         try {
             proxy.state(connected = true, reconnecting = false)
-            assertEquals(TetherShare.Active(0, TetherShare.Link.Waiting, TetherShare.Link.Unknown),
-                awaitShare { it is TetherShare.Active && it.hotspot == TetherShare.Link.Unknown })
+            assertEquals(TetherShare.Active(0, TetherShare.Link.Waiting, TetherShare.Link.Waiting),
+                awaitShare { it is TetherShare.Active })
         } finally { proxy.close() }
         // Android lists a hotspot that this machine doesn't have: waiting, not sharing anything else.
         @Suppress("DEPRECATION")

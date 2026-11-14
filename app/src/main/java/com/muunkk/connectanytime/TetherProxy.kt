@@ -96,9 +96,10 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
         return cm.allNetworks.mapNotNull { cm.getLinkProperties(it)?.interfaceName }.toSet()
     }
     private fun bindings(): Set<Binding> {
+        val before = upstream()
         val found = NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()
             .filter { it.isUp && !it.isLoopback && !it.isPointToPoint }
-            .mapNotNull { iface -> tetherLink(iface.name, tethered, upstream())?.let { iface to it } }
+            .mapNotNull { iface -> tetherLink(iface.name, tethered, before)?.let { iface to it } }
             .flatMap { (iface, link) -> iface.interfaceAddresses.filter { it.address is Inet4Address && !it.address.isLoopbackAddress && !it.address.isLinkLocalAddress && it.networkPrefixLength in 1..32 }
                 .map { Binding(iface.name, link, it.address, it.networkPrefixLength.toInt()) } }
         // Check again after reading the addresses: if the hotspot's interface became the phone's
@@ -106,6 +107,16 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
         val upstream = upstream(); val tethered = tethered
         return found.filter { tetherLink(it.name, tethered, upstream) == it.link }.toSet()
     }
+    /** With no list from Android: whether a Wi-Fi tether interface that isn't the phone's own
+     *  network is up with an address, so the hotspot is probably on but can't be confirmed.
+     *  Only chooses the message; nothing is shared on it. */
+    private fun hotspotSuspected(): Boolean = runCatching {
+        val upstream = upstream()
+        NetworkInterface.getNetworkInterfaces()?.toList().orEmpty().any { iface ->
+            iface.isUp && wifiTetherName(iface.name) && iface.name !in upstream &&
+                iface.interfaceAddresses.any { it.address is Inet4Address && !it.address.isLinkLocalAddress }
+        }
+    }.getOrDefault(false)
     /** Whether a listener's link is still what it was bound as, checked for every new client. */
     private fun stillServes(b: Binding): Boolean = runCatching {
         !closed.get() && app.store.shares(b.link) && tetherLink(b.name, tethered, upstream()) == b.link &&
@@ -146,7 +157,9 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
             return when {
                 shared != null -> TetherShare.Link.Sharing(shared.address.hostAddress!!)
                 bindFailures.any { it.link == kind } -> TetherShare.Link.PortInUse
-                kind == TetherLink.Hotspot && tethered == null -> TetherShare.Link.Unknown
+                // Before any tethering since boot Android may not have said anything yet, so
+                // only call the hotspot undetectable when one seems to be on.
+                kind == TetherLink.Hotspot && tethered == null && hotspotSuspected() -> TetherShare.Link.Unknown
                 else -> TetherShare.Link.Waiting
             }
         }

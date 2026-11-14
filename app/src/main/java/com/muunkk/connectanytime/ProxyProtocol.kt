@@ -216,6 +216,7 @@ private val WIFI_TETHER = Regex("(?:wlan|swlan|softap|ap|ap_br_wlan|ap_br_ap|ap_
  * for local-only hotspots (Quick Share, Android Auto) that aren't yours to share. USB keeps
  * its name rule then, as before hotspot sharing.
  */
+internal fun wifiTetherName(name: String) = WIFI_TETHER.matches(name)
 internal fun tetherLink(name: String, tethered: Set<String>?, upstream: Set<String>): TetherLink? = when {
     name in upstream -> null
     tethered != null && name !in tethered -> null

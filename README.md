@@ -336,7 +336,7 @@ hotspot is affected; set it back to **Off** (and Save) when you're done.
 On macOS: **System Settings → Network → the phone's USB service (or Wi-Fi, on the
 hotspot) → Details → Proxies**. Turn on **Web proxy (HTTP)**, **Secure web proxy (HTTPS)** and
 **SOCKS proxy**, each with the displayed address and port `1080`. No
-authentication. Or tap **Copy Terminal command** in the app and paste it into
+authentication. Or tap **Copy Mac Terminal command** in the app and paste it into
 Terminal. It finds the network service whose router is the phone, so you don't
 need its name, and sets all three proxies with `sudo networksetup`. Run it again
 after the address changes. macOS keeps proxies per network service, not per Wi-Fi

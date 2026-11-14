@@ -123,7 +123,7 @@
     <string name="share_hotspot_switch">Share over hotspot</string>
     <string name="share_hotspot_off_help">An iPhone or Mac on this phone\'s hotspot can use the VPN through a proxy here. Anyone who joins the hotspot can use it.</string>
     <string name="share_waiting_hotspot">Turn on the hotspot to start sharing.</string>
-    <string name="share_hotspot_unknown">This phone doesn\'t tell apps which Wi‑Fi is its hotspot, so hotspot sharing can\'t start. USB tethering still works.</string>
+    <string name="share_hotspot_unknown">This phone doesn\'t tell apps which Wi‑Fi is its hotspot, so hotspot sharing can\'t start. Sharing over USB still works.</string>
     <string name="share_hotspot_label">Proxy for devices on the hotspot</string>
     <string name="share_server">Server</string>
     <string name="share_port">Port</string>
@@ -132,7 +132,8 @@
     <string name="share_copy_address">Copy address</string>
     <string name="share_copy_mac_command">Copy Mac Terminal command</string>
     <string name="share_copy_off">Copy command to turn off</string>
-    <string name="share_stopped_help">Not sharing now. A device with these proxies still on can\'t browse: on an iPhone, set the hotspot\'s Configure Proxy back to Off and tap Save; on a Mac, paste this into Terminal.</string>
+    <string name="share_stopped_help">Not sharing now. If your Mac still has the proxies on, its browsing won\'t work: paste this into Terminal on the Mac to turn them off.</string>
+    <string name="share_stopped_help_hotspot">Not sharing now. A device with these proxies still on can\'t browse: on an iPhone, set the hotspot\'s Configure Proxy back to Off and tap Save; on a Mac, paste this into Terminal.</string>
     <string name="share_copied">Copied</string>
     <string name="share_command_help">Or paste the command into Terminal on your Mac. It finds the phone\'s connection and sets all three proxies, asking for your Mac password. Run it again if this address changes.</string>
     <string name="share_hotspot_command_help">A Mac on the hotspot can paste the Terminal command instead. A Mac keeps it for Wi‑Fi everywhere, so run the turn-off command before you leave the hotspot.</string>

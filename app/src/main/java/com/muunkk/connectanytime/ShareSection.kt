@@ -48,6 +48,8 @@ internal fun ShareSection(store: Store) {
     var shared by remember { mutableStateOf(store.sharedBefore) }
     val sharingAny = usb != null || hotspot != null
     LaunchedEffect(sharingAny) { if (sharingAny && !shared) { shared = true; store.sharedBefore = true } }
+    var sharedHotspot by remember { mutableStateOf(store.sharedHotspotBefore) }
+    LaunchedEffect(hotspot != null) { if (hotspot != null && !sharedHotspot) { sharedHotspot = true; store.sharedHotspotBefore = true } }
 
     val rows = buildList<@Composable (Int, Int) -> Unit> {
         add { i, n -> ShareSwitch(context, TetherLink.Usb, usbOn, share, i, n) { usbOn = it; store.shareWithTether = it } }
@@ -60,7 +62,7 @@ internal fun ShareSection(store: Store) {
     Group(rows.size) { index -> rows[index](index, rows.size) }
     AnimatedVisibility(shared && !sharingAny) {
         Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(stringResource(R.string.share_stopped_help), style = MaterialTheme.typography.bodySmall,
+            Text(stringResource(if (sharedHotspot) R.string.share_stopped_help_hotspot else R.string.share_stopped_help), style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             CopyButton(context, R.string.share_copy_off, macOffCommand(1080), tonal = false)
         }
@@ -219,14 +221,18 @@ internal fun macCommand(ip: String, port: Int) = script(ip, port,
     none = "Couldn't find the phone's connection. Is USB tethering or the hotspot on?",
     done = "Proxies set on")
 
-/** Turns those proxies off again. Finds the service by its SOCKS proxy being on with this
+/** Turns those proxies off again. Finds services by their SOCKS proxy being on with this
  *  port, not by the phone's address: that still works once the phone is unplugged, and
- *  after Android has moved the tether to a new address. */
-internal fun macOffCommand(port: Int) = script("", port,
-    match = "-getsocksfirewallproxy \"§v\" | grep -qxF \"Enabled: Yes\" && networksetup -getsocksfirewallproxy \"§v\" | grep -qxF \"Port: §port\"",
-    set = "-set§{p}state \"§s\" off",
-    none = "No network service uses this proxy. Nothing to turn off.",
-    done = "Proxies turned off on")
+ *  after Android has moved the tether to a new address. Unlike setting them, it turns off
+ *  every match, since a Mac that used both USB and the hotspot has the proxy on both. */
+internal fun macOffCommand(port: Int) = ("port=$port; n=0; ok=1; d=; " +
+    "while IFS= read -r v; do case \"§v\" in '*'*) continue;; esac; " +
+    "if networksetup -getsocksfirewallproxy \"§v\" | grep -qxF \"Enabled: Yes\" && networksetup -getsocksfirewallproxy \"§v\" | grep -qxF \"Port: §port\"; then " +
+    "n=§((n+1)); d=\"§d§{d:+, }§v\"; " +
+    "for p in webproxy securewebproxy socksfirewallproxy; do sudo networksetup -set§{p}state \"§v\" off || { ok=0; break; }; done; " +
+    "fi; done <<< \"§(networksetup -listallnetworkservices | tail -n +2)\"; " +
+    "if [ §n -eq 0 ]; then echo \"No network service uses this proxy. Nothing to turn off.\"; " +
+    "elif [ §ok = 1 ]; then echo \"Proxies turned off on §d\"; else echo \"Couldn't change the proxies on §d.\"; fi").replace('§', '$')
 
 /** Android's tethering screen; not a public action everywhere, so fall back to network settings. */
 private fun openTethering(context: Context) {

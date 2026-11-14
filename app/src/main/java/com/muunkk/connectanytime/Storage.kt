@@ -37,6 +37,10 @@ class Store(private val context: Context) {
         get() = prefs.getBoolean("sharedBefore", false)
         set(v) { prefs.edit().putBoolean("sharedBefore", v).apply() }
     /** Share over USB tethering. The key predates hotspot sharing, which has its own. */
+    /** Whether the hotspot has shared, so an iPhone may still have the proxy set. */
+    var sharedHotspotBefore: Boolean
+        get() = prefs.getBoolean("sharedHotspotBefore", false)
+        set(v) { prefs.edit().putBoolean("sharedHotspotBefore", v).apply() }
     var shareWithTether: Boolean
         get() = prefs.getBoolean("shareWithTether", false)
         set(v) { prefs.edit().putBoolean("shareWithTether", v).apply() }
