@@ -36,6 +36,10 @@ class Store(private val context: Context) {
     var sharedBefore: Boolean
         get() = prefs.getBoolean("sharedBefore", false)
         set(v) { prefs.edit().putBoolean("sharedBefore", v).apply() }
+    /** Hotspot sharing was turned on in the app, where its warning is shown: the widget may then flip it directly. */
+    var hotspotExplained: Boolean
+        get() = prefs.getBoolean("hotspotExplained", false)
+        set(v) { prefs.edit().putBoolean("hotspotExplained", v).apply() }
     /** Whether the hotspot has shared, so an iPhone may still have the proxy set. */
     var sharedHotspotBefore: Boolean
         get() = prefs.getBoolean("sharedHotspotBefore", false)

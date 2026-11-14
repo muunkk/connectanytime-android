@@ -37,8 +37,9 @@ import kotlinx.coroutines.delay
 internal fun ShareSection(store: Store) {
     val context = LocalContext.current
     val share by ConnectApp.tetherShare.collectAsState()
-    var usbOn by remember { mutableStateOf(store.shareWithTether) }
-    var hotspotOn by remember { mutableStateOf(store.shareOverHotspot) }
+    // The status card and the widget change these too.
+    val usbOn = rememberShares(store, TetherLink.Usb)
+    val hotspotOn = rememberShares(store, TetherLink.Hotspot)
     val active = share as? TetherShare.Active
     val usb = (active?.usb as? TetherShare.Link.Sharing)?.takeIf { usbOn }
     val hotspot = (active?.hotspot as? TetherShare.Link.Sharing)?.takeIf { hotspotOn }
@@ -52,9 +53,9 @@ internal fun ShareSection(store: Store) {
     LaunchedEffect(hotspot != null) { if (hotspot != null && !sharedHotspot) { sharedHotspot = true; store.sharedHotspotBefore = true } }
 
     val rows = buildList<@Composable (Int, Int) -> Unit> {
-        add { i, n -> ShareSwitch(context, TetherLink.Usb, usbOn, share, i, n) { usbOn = it; store.shareWithTether = it } }
+        add { i, n -> ShareSwitch(context, TetherLink.Usb, usbOn, share, i, n) { store.shareWithTether = it } }
         if (usb != null) add { i, n -> FieldSegment(i, n) { MacSetup(context, usb.address, port) } }
-        add { i, n -> ShareSwitch(context, TetherLink.Hotspot, hotspotOn, share, i, n) { hotspotOn = it; store.shareOverHotspot = it } }
+        add { i, n -> ShareSwitch(context, TetherLink.Hotspot, hotspotOn, share, i, n) { store.shareOverHotspot = it; if (it) store.hotspotExplained = true } }
         if (hotspot != null) add { i, n -> FieldSegment(i, n) { HotspotSetup(context, hotspot.address, port, offButton = usb == null) } }
     }
 
@@ -235,7 +236,8 @@ internal fun macOffCommand(port: Int) = ("port=$port; n=0; ok=1; d=; " +
     "elif [ §ok = 1 ]; then echo \"Proxies turned off on §d\"; else echo \"Couldn't change the proxies on §d.\"; fi").replace('§', '$')
 
 /** Android's tethering screen; not a public action everywhere, so fall back to network settings. */
-private fun openTethering(context: Context) {
-    runCatching { context.startActivity(Intent("android.settings.TETHER_SETTINGS")) }
-        .onFailure { context.startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS)) }
+internal fun openTethering(context: Context) {
+    // Its own task: from the widget's ShortcutActivity, Settings mustn't land in that hidden task.
+    runCatching { context.startActivity(Intent("android.settings.TETHER_SETTINGS").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+        .onFailure { context.startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
 }

@@ -14,6 +14,15 @@ import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 
 object Controls {
+    /** The widget's power button: Disconnect while busy, otherwise Connect. */
+    const val TOGGLE = "com.muunkk.connectanytime.TOGGLE"
+    const val OPEN_TETHERING = "com.muunkk.connectanytime.OPEN_TETHERING"
+    const val OPEN_APP = "com.muunkk.connectanytime.OPEN_APP"
+    /** MainActivity extra: ask before turning hotspot sharing on (the widget's first hotspot tap). */
+    const val EXTRA_CONFIRM_HOTSPOT = "com.muunkk.connectanytime.CONFIRM_HOTSPOT"
+    /** The widget's share buttons: flip that switch, after unlocking like everything here. */
+    const val SHARE_USB = "com.muunkk.connectanytime.SHARE_USB"
+    const val SHARE_HOTSPOT = "com.muunkk.connectanytime.SHARE_HOTSPOT"
     /** Whether a reboot or app update starts the VPN again by itself (BootReceiver), which only
      *  rejoins the saved session: an automatic start never logs in with the password. */
     fun restartsAutomatically(store: Store) = store.stayConnected && store.hasSession && !store.disconnected
@@ -97,12 +106,39 @@ class ShortcutActivity : Activity() {
             override fun onDismissError() { finish() }
         }) else perform()
     }
+    private val store get() = (application as ConnectApp).store
     private fun perform() {
-        if (intent.action == ConnectVpnService.DISCONNECT) Controls.disconnect(this)
-        else if (intent.action == ConnectVpnService.CONNECT) {
-            if (VpnService.prepare(this) == null) Controls.connect(this)
-            else startActivity(Intent(this, MainActivity::class.java))
+        when (intent.action) {
+            ConnectVpnService.DISCONNECT -> Controls.disconnect(this)
+            ConnectVpnService.CONNECT -> connect()
+            // Decided now, not when the widget was drawn, so a stale widget can't do the opposite.
+            Controls.TOGGLE -> if (ConnectApp.state.value.busy) Controls.disconnect(this) else connect()
+            Controls.OPEN_TETHERING -> openTethering(this)
+            Controls.OPEN_APP -> openApp()
+            Controls.SHARE_USB -> store.shareWithTether = !store.shareWithTether
+            // Until hotspot sharing has been turned on in the app once, where it says that anyone
+            // who joins the hotspot can use the VPN, the widget asks in the app first.
+            Controls.SHARE_HOTSPOT ->
+                if (!store.shareOverHotspot && !store.hotspotExplained && !store.sharedHotspotBefore) openApp(confirmHotspot = true)
+                else store.shareOverHotspot = !store.shareOverHotspot
         }
         finish()
+    }
+    /** Connects, unless the app first needs VPN permission or a NetID and password: then it opens. */
+    private fun connect() {
+        val ready = store.user.isNotBlank() && (store.hasPassword || store.hasSession)
+        if (ready && VpnService.prepare(this) == null) Controls.connect(this)
+        else openApp()
+    }
+    /** The app as the launcher opens it: its own task, brought forward if it's already open.
+     *  This activity has its own empty affinity, so a plain start would put the app in this
+     *  hidden task instead. */
+    private fun openApp(confirmHotspot: Boolean = false) {
+        val launch = packageManager.getLaunchIntentForPackage(packageName) ?: Intent(this, MainActivity::class.java)
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        // Delivered to a MainActivity that's already open, too (onNewIntent), so it can ask.
+        if (confirmHotspot) launch.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            .putExtra(Controls.EXTRA_CONFIRM_HOTSPOT, true)
+        startActivity(launch)
     }
 }

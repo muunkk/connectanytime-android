@@ -880,3 +880,67 @@ the phone's hotspot can use the VPN. Branch `hotspot-proxy`.
 | 3 (merge check, combined with the updater) | 8.5 | 9 | None. A client accepted as its link's switch goes off no longer reaches the VPN through the other link's switch |
 
 Gemini was not run (unavailable in the previous round).
+
+# Sharing card, home screen widget and uplink (2026-11-14)
+
+Version 0.1.3 (4). Branch `proxy-status`.
+
+## Design
+
+- **Usage counting (`ShareUsage.kt`, `UsageMeter`).**
+  - Per link: client addresses with a session open or traffic in the last 60 s, the
+    open session count, and bytes from clients (up) and from remote ends (down).
+  - Thread-safe: sessions report from their own threads.
+  - Snapshots run only on the proxy's timer thread: on every rescan (2 s), and on a
+    session opening or closing (at most one queued).
+  - A link without a listener is reported empty and its counts start over.
+  - `TetherProxy.close()` publishes an empty `TetherUsage`.
+- **Uplink.** `ConnectVpnService.underlying` publishes its transport (cellular, Wi-Fi,
+  Ethernet, other) to `ConnectApp.uplink` whenever it changes. It's null when stopped.
+- **Sharing card (`SharingCard.kt`).**
+  - Under the status panel and the update banner, while the VPN is connected or either
+    share switch is on.
+  - A summary, then "Via mobile data/Wi‑Fi", then one row per link with its switch,
+    status, devices, connections and traffic.
+  - The whole row toggles, with the Switch role.
+  - The card, the Share section and the widget all write the same prefs.
+    `rememberShares` follows them with a prefs listener, so each place reflects
+    changes from the others.
+- **Widget (`ConnectWidget.kt`, Glance 1.2.0).**
+  - **Model.** A pure `widgetModel()`. The content collects `changes()` inside `provideContent`, because Glance doesn't rerun `provideGlance` for updates during a session (45 s, plus 5 s per event). `ConnectApp` still calls `updateAll` on a debounced change, to start a session when none is open. `updatePeriodMillis` is 30 min, in case the process died.
+  - **Layouts.** Responsive buckets: COMPACT 180 × 110 and WIDE 280 × 110 dp. minResizeWidth is 180 dp and minWidth 250 dp.
+  - **Buttons.** 44 dp targets. On is filled; off is outlined, with the widget's own background inside the outline.
+  - **Text that fits.**
+    - Wide: buttons show the name and status at 100% font, just the status (the icon names the link) up to 120%, then just the icon. From 130% titles shorten and the second line goes.
+    - Compact: short titles and second lines at 100% ("Tap power", "Try again", "Mobile data"), no second line above that. From 130% power moves into the button row, in tertiary when idle, and device counts go.
+    - Link statuses are at most 7 characters. Counts over 9 show as "9+".
+    - `WidgetTest.noTextIsCutShortInAnyStateWidthOrFont` renders 7 states × 2 networks × widths 180/250/280/330 dp × fonts 100/115/120/125/130/150/200% and fails on any ellipsized text. A widget squeezed to 110 dp is its negative control. Opus's wider harness (3,042 layouts, round 4) found nothing cut off either.
+  - **Taps.** Every button goes through `ShortcutActivity` (`taskAffinity=""`), which dismisses the keyguard and decides at the moment of the tap.
+    - `TOGGLE` connects or disconnects. It opens the app when consent, a NetID or a password is missing.
+    - `SHARE_USB` and `SHARE_HOTSPOT` flip the switch. Until hotspot sharing has been turned on in the app once (`hotspotExplained`), the hotspot button opens the app with `EXTRA_CONFIRM_HOTSPOT`. The app then asks with the warning before turning it on, including when it's already open (`onNewIntent`). It doesn't ask on a Recents relaunch (`FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY`, since Android 10 and 11 resend the first intent) or once sharing is already on. `HotspotConfirmTest` covers recreation, Cancel, `onNewIntent`, Recents and already-on. Known trade-off: the CLEAR_TOP that makes `onNewIntent` work closes anything above MainActivity in its task (a pending VPN consent, the update confirmation, the share sheet), and only on that first widget hotspot tap.
+    - `OPEN_TETHERING`.
+    - `OPEN_APP`, from tapping the status.
+    - The app opens through its launch intent with `NEW_TASK`, and Settings with `NEW_TASK`, so neither lands in the shortcut's hidden task.
+  - **Colors.** Android 12+ follows the wallpaper; older versions use the brand scheme. Glance's corner radius needs API 31, so Android 10 and 11 get square buttons.
+- **Copy.**
+  - The iPhone card says the proxy can stay on because it only affects that hotspot.
+  - The stopped-sharing help offers "turn sharing back on" as well as turning the
+    proxy off.
+
+## Checks
+
+- `./gradlew assembleDebug assembleRelease testDebugUnitTest lintDebug lintRelease`: 180 tests, 0 failures; lint 0 errors.
+  - `UsageMeterTest`.
+  - `WidgetTest`:
+    - the model;
+    - the share buttons and the first hotspot share going through `ShortcutActivity`;
+    - power opening the app when it can't connect yet;
+    - renders at 180 and 280 dp, in light and dark, at 115% and 200% font, and in the no-VPN and failed states.
+  - `ScreenshotTest`: the card in use, ready and waiting, and off; the quick toggle moving the Share section's switch; the card hidden when idle and off.
+- `scripts/verify-release.py`: all PASS at 0.1.3 (4).
+- The release manifest keeps `ConnectWidgetReceiver` and Glance's trampolines.
+- Council: round 1 Opus 6, GPT Sol 6; round 2 Opus 7, GPT Sol 9; round 3 Opus 8, GPT Sol 9; round 4 Opus 9 (ship), GPT Sol 9 (ship). Round 4's items are taken: status-only buttons up to 120% with "9+ using", no confirm from Recents or when already on, the risk first in the dialog, all launch flags asserted, and the dialog tests. Round 3's items are fixed: compact second lines, the fit test, status on the buttons at 115%, the hotspot confirm, the power colour in the row, the "9+" count, a softer settings button, and launch-flag assertions. Round 2's remaining items are fixed: widget text, the app's task, the stray `t/classes.jar`, outline and contrast, segmented rows, the live regions, the hotspot warning on the card, the plain uplink line, the status opening the app, and the picker preview.
+- Not run on a device:
+  - the widget on a launcher, including rounded corners, which Robolectric doesn't draw;
+  - the device counts with a real iPhone;
+  - the uplink label switching between Wi‑Fi and mobile data.
