@@ -137,6 +137,29 @@ class ScreenshotTest(private val dark: Boolean) {
         compose.onNodeWithText("Copy command to turn off").performScrollTo()
         save("home-share-stopped")
     }
+    private val release = Release("0.1.2", 3, "https://github.com/x", 16_400_000, "a".repeat(64), "https://github.com/x")
+    private fun homeWith(state: VpnState, update: UpdateState) {
+        compose.setContent { ConnectTheme(dark = dark, dynamicColor = false) {
+            HomeScreen(app.store, state, false, {}, {}, {}, {}, update)
+        } }
+        compose.waitForIdle()
+    }
+    @Test fun updateReady() {
+        account(); homeWith(VpnState("Connected", busy = true, connected = true), UpdateState.Ready(release))
+        save("home-update-ready")
+        compose.onNodeWithTag("update-auto").performScrollTo()
+        save("home-update-ready-about")
+    }
+    @Test fun updateDownloading() {
+        account(); homeWith(VpnState(), UpdateState.Downloading(release, 0.62f))
+        compose.onNodeWithTag("update-auto").performScrollTo()
+        save("home-update-downloading")
+    }
+    @Test fun updateUpToDate() {
+        account(); homeWith(VpnState(), UpdateState.UpToDate(System.currentTimeMillis() - 3 * 60_000))
+        compose.onNodeWithTag("update-auto").performScrollTo()
+        save("home-update-up-to-date")
+    }
     @Test fun activityEmpty() {
         compose.setContent { ConnectTheme(dark = dark, dynamicColor = false) { ActivityScreen(app.log, {}, {}) } }
         save("activity-empty")

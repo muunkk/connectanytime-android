@@ -53,6 +53,16 @@ class MainActivity : ComponentActivity() {
             requestVpn()
         }
     }
+    override fun onStart() {
+        super.onStart()
+        val updater = (application as ConnectApp).updater
+        updater.activityStarted()
+        updater.checkIfDue()
+    }
+    override fun onStop() {
+        (application as ConnectApp).updater.activityStopped()
+        super.onStop()
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
@@ -61,6 +71,13 @@ class MainActivity : ComponentActivity() {
             ConnectTheme {
                 val app = application as ConnectApp
                 val state by ConnectApp.state.collectAsStateWithLifecycle()
+                val update by app.updater.state.collectAsStateWithLifecycle()
+                // Android's install confirmation, shown from here: a broadcast receiver may not
+                // open a screen, and this only runs while the app is in front.
+                val confirm by app.updater.confirmation.collectAsStateWithLifecycle()
+                LaunchedEffect(confirm) {
+                    app.updater.takeConfirmation()?.let { runCatching { startActivity(it) } }
+                }
                 var activity by rememberSaveable { mutableStateOf(false) }
                 BackHandler(enabled = activity) { activity = false }
                 val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
@@ -81,7 +98,7 @@ class MainActivity : ComponentActivity() {
                         onDisconnect = { Controls.disconnect(this@MainActivity) }, onActivity = { activity = true },
                         onStayChanged = {
                             if (state.busy) startService(Intent(this@MainActivity, ConnectVpnService::class.java).setAction(ConnectVpnService.ARM))
-                        })
+                        }, update = update, onCheckUpdate = app.updater::check, onInstallUpdate = app.updater::install)
                 }
             }
         }
