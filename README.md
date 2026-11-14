@@ -377,6 +377,8 @@ verify, then attach `ConnectAnytime-<versionName>-<versionCode>.apk` to a new ta
 - `SharingCard.kt`, `ShareUsage.kt`: the Sharing status card, and per-link device,
   connection and traffic counts from the proxy.
 - `ConnectWidget.kt`, `res/xml/connect_widget_info.xml`: the Glance home screen widget.
+- `PacFile.kt`, `ProxySetupUi.kt`: the Automatic setup's PAC file, its ranges, and the
+  Manual/Automatic choice and cards.
 - `Updates.kt`, `UpdateSection.kt`: GitHub release check, verified download,
   PackageInstaller session and its status receiver, and their UI.
 - `app/src/main/AndroidManifest.xml`, `res/`: permissions, Android components,
@@ -439,6 +441,50 @@ Authentication off, then tap **Save**. iOS keeps this per Wi-Fi network, so only
 hotspot is affected, and you can leave it on to use the VPN whenever you're on this
 hotspot. While it's on, browsing on the hotspot needs sharing on here. To use the
 hotspot without the VPN, set it back to **Off** and tap Save.
+
+### Manual or Automatic setup
+
+Under **Set up devices**, choose how the other device finds the proxy. **Manual** is the
+default and works as before: the device sends everything that follows its proxy setting
+through the VPN, including tailnet and home addresses, which the VPN can't reach.
+
+**Automatic** gives the device a proxy auto-config (PAC) file from this phone, at
+`http://<address>:1080/proxy.pac`, so the tailnet and home network keep working while
+browsing uses the VPN.
+- **Direct, not through the VPN:**
+  - names without dots, such as `truenas`;
+  - `*.ts.net` and `.local` names;
+  - the tailnet's `100.64.0.0/10` and `fd7a:115c:a1e0::/48`;
+  - the link's own network;
+  - your home network, `192.168.68.0/22` by default. Edit it under **Edit home network**:
+    up to 16 IPv4 ranges, separated by commas.
+- **Everything else:** `PROXY <address>:1080; DIRECT`.
+- **No lookups.** The file only checks literal addresses against these ranges. It never
+  looks up a name, which on iOS is slow and goes through DNS that may itself fail.
+- **Overlap warning.** If the link's network overlaps a home range, the card warns that
+  home addresses inside it are looked for on that network rather than through Tailscale.
+- **iPhone:** **Settings → Wi‑Fi → ⓘ → Configure Proxy → Automatic**, enter the URL and
+  tap Save.
+- **Mac:** **Copy Mac Terminal command** sets it with `networksetup -setautoproxyurl`.
+
+The file is served from the proxy's own port, to the same devices the proxy accepts, and
+only while that link is sharing and the VPN is connected.
+
+So that `DIRECT` takes over when the VPN can't be used, the proxy stops listening while
+the VPN reconnects (connections already open keep going) and starts again once it's
+connected. When sharing or the VPN is off, nothing listens. iOS falls back to `DIRECT`
+only when it can't connect to the proxy at all, not when the proxy accepts and then
+fails. On Manual this only means that new pages fail sooner during a reconnect.
+
+Not checked on an iPhone yet, from reports only:
+- an iPhone that can't load the file when it joins the hotspot (sharing off, or this app
+  not running) may be unable to browse on that network until sharing is on or Configure
+  Proxy is set back to Off;
+- how long iOS keeps a file it has loaded.
+
+The Mac commands switch cleanly between the two: setting Automatic turns off this app's
+manual proxies on that service, and setting Manual turns off this app's PAC URL. Proxies
+from anything else are left alone. **Copy command to turn off** turns off both kinds.
 
 On macOS: **System Settings → Network → the phone's USB service (or Wi-Fi, on the
 hotspot) → Details → Proxies**. Turn on **Web proxy (HTTP)**, **Secure web proxy (HTTPS)** and

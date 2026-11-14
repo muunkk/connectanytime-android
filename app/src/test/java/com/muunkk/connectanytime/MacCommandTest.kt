@@ -108,6 +108,23 @@ class MacCommandTest {
         assertTrue(run(sh, macAutoCommand(ip, 1080), services, sudoFails = true).first.startsWith("Couldn't change"))
         assertTrue(run(sh, macAutoCommand(ip, 1080), mapOf("A" to ip, "B" to ip)).second.isEmpty())
     }
+    @Test fun switchingModesTurnsOffOnlyThisAppsOtherKind() = shells().forEach { sh ->
+        val services = linkedMapOf("Wi-Fi" to ip)
+        // Manual → Automatic: our SOCKS on 1080 goes off first.
+        val (outAuto, toAuto) = run(sh, macAutoCommand(ip, 1080), services, socks = mapOf("Wi-Fi" to (true to 1080)))
+        assertEquals(sh, "Automatic proxy set on Wi-Fi", outAuto)
+        assertEquals(sh, listOf("-setwebproxystate Wi-Fi off", "-setsecurewebproxystate Wi-Fi off", "-setsocksfirewallproxystate Wi-Fi off",
+            "-setautoproxyurl Wi-Fi http://$ip:1080/proxy.pac"), toAuto)
+        // Someone else's SOCKS proxy is left alone.
+        assertEquals(sh, listOf("-setautoproxyurl Wi-Fi http://$ip:1080/proxy.pac"),
+            run(sh, macAutoCommand(ip, 1080), services, socks = mapOf("Wi-Fi" to (true to 9050))).second)
+        // Automatic → Manual: our PAC URL goes off after the three proxies are set.
+        val toManual = run(sh, macCommand(ip, 1080), services, auto = mapOf("Wi-Fi" to (true to "http://$ip:1080/proxy.pac"))).second
+        assertEquals(sh, "-setautoproxystate Wi-Fi off", toManual.last())
+        assertEquals(sh, 4, toManual.size)
+        // Another PAC URL is left alone.
+        assertEquals(sh, 3, run(sh, macCommand(ip, 1080), services, auto = mapOf("Wi-Fi" to (true to "http://corp/proxy.pac"))).second.size)
+    }
     @Test fun turnsOffManualAndAutomaticButLeavesOtherUrls() = shells().forEach { sh ->
         val (out, calls) = run(sh, macOffCommand(1080), linkedMapOf("USB" to "none", "Wi-Fi" to "none", "Other" to "none", "Disabled PAC" to "none"),
             socks = mapOf("USB" to (true to 1080)), auto = mapOf("Wi-Fi" to (true to "http://old:1080/proxy.pac"),

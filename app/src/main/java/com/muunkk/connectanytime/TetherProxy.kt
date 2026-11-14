@@ -40,7 +40,8 @@ sealed interface TetherShare {
         data object PortInUse : Link
         /** Android doesn't say which Wi-Fi is its hotspot, so the hotspot isn't guessed at. */
         data object Unknown : Link
-        data class Sharing(val address: String) : Link
+        /** [prefix]: the link's subnet, for Automatic setup's overlap warning. */
+        data class Sharing(val address: String, val prefix: Int = 24) : Link
     }
 }
 
@@ -170,7 +171,7 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
             // One address per kind, stable across rescans when a link has several.
             val shared = listeners.filter { it.value.accepting }.keys.filter { it.link == kind }.minByOrNull { "${it.name} ${it.address.hostAddress}" }
             return when {
-                shared != null -> TetherShare.Link.Sharing(shared.address.hostAddress!!)
+                shared != null -> TetherShare.Link.Sharing(shared.address.hostAddress!!, shared.prefix)
                 bindFailures.any { it.link == kind } -> TetherShare.Link.PortInUse
                 // Before any tethering since boot Android may not have said anything yet, so
                 // only call the hotspot undetectable when one seems to be on.
