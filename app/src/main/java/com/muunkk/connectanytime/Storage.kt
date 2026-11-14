@@ -83,6 +83,8 @@ class Store(private val context: Context) {
         get() = prefs.getInt("installSession", Updater.NO_SESSION)
         set(v) { prefs.edit().putInt("installSession", v).commit() }
     /** The build that started an install, so the updated app can say it worked. */
+    /** Clears [updatingFrom] without waiting for the disk: BootReceiver runs on the main thread. */
+    fun clearUpdatingFrom() { prefs.edit().remove("updatingFrom").apply() }
     var updatingFrom: String?
         get() = prefs.getString("updatingFrom", null)
         set(v) { prefs.edit().apply { if (v == null) remove("updatingFrom") else putString("updatingFrom", v) }.commit() }

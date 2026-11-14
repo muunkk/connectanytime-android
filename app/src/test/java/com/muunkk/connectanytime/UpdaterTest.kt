@@ -267,14 +267,20 @@ class UpdaterTest {
         assertEquals(Updater.NO_SESSION, app.store.installSession)
         assertNull(app.store.updatingFrom)
 
-        // A transient failure keeps the file; an incompatible APK is dropped for good.
+        // A transient failure keeps the file, and so does INCOMPATIBLE (also a policy block,
+        // which can pass); a different signer (CONFLICT) is dropped for good.
         now += 60_000
         u.install(); session = app.store.installSession
         u.onStatus(session, PackageInstaller.STATUS_FAILURE_STORAGE, "full", null)
         assertEquals(UpdateState.Ready(release, R.string.update_refused), u.state.value)
         now += 60_000
         u.install(); session = app.store.installSession
-        u.onStatus(session, PackageInstaller.STATUS_FAILURE_INCOMPATIBLE, "signatures", null)
+        u.onStatus(session, PackageInstaller.STATUS_FAILURE_INCOMPATIBLE, "user restricted", null)
+        assertEquals(UpdateState.Ready(release, R.string.update_refused), u.state.value)
+        assertNull(app.store.rejectedUpdate)
+        now += 60_000
+        u.install(); session = app.store.installSession
+        u.onStatus(session, PackageInstaller.STATUS_FAILURE_CONFLICT, "signatures", null)
         assertEquals(UpdateState.Failed(R.string.update_refused), u.state.value)
         assertTrue(dir.list().isNullOrEmpty())
         assertEquals(release.sha256, app.store.rejectedUpdate)
@@ -289,6 +295,40 @@ class UpdaterTest {
         app.packageManager.packageInstaller.abandonSession(app.store.installSession)
         assertEquals(UpdateState.Ready(release), updater().state.value)
         assertNull(app.store.updatingFrom)
+    }
+
+    @Test fun aLateAnswerAboutAReplacedReleaseLeavesTheNewOneAlone() {
+        val (u, old) = readyUpdater()
+        u.install()
+        val session = app.store.installSession
+        // The process dies; Android drops the session before its answer is delivered.
+        app.packageManager.packageInstaller.abandonSession(session)
+        val fresh = updater()
+        assertEquals(UpdateState.Ready(old), fresh.state.value)
+        // A newer release is downloaded before that answer arrives.
+        publish(current + 2 to apk(current + 2))
+        fresh.check()
+        val newer = (fresh.state.value as UpdateState.Ready).release
+        assertEquals(current + 2, newer.versionCode)
+        assertEquals(Updater.NO_SESSION, app.store.installSession)
+        fresh.onStatus(session, PackageInstaller.STATUS_FAILURE_CONFLICT, "signatures", null)
+        assertEquals(UpdateState.Ready(newer), fresh.state.value)
+        assertNull(app.store.rejectedUpdate)
+        assertTrue(File(dir, newer.fileName).isFile)
+    }
+
+    @Test fun aDamagedCachedListIsDroppedSoTheNextCheckFetchesItAgain() {
+        publish(current to apk(current))
+        val u = updater()
+        u.check()
+        val feed = File(app.noBackupFilesDir, "release-feed.json")
+        feed.writeText(feed.readText().take(10))
+        u.check()
+        assertEquals(UpdateState.Failed(R.string.update_bad_feed), u.state.value)
+        assertFalse(feed.exists())
+        assertNull(app.store.feedEtag)
+        u.check()
+        assertTrue(u.state.value is UpdateState.UpToDate)
     }
 
     @Test fun anUnexpectedErrorDoesNotCrash() {

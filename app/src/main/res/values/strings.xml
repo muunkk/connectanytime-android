@@ -172,7 +172,7 @@
     <string name="update_refused">Android didn’t install the update. Activity says why.</string>
     <string name="update_install_failed">Couldn’t start the install. Try again.</string>
     <string name="update_offline">Couldn’t reach GitHub. Check your connection and try again.</string>
-    <string name="update_busy">GitHub is limiting update checks right now. Try again later.</string>
+    <string name="update_busy">GitHub is limiting update checks right now. Try again later, or with the VPN off.</string>
     <string name="update_bad_feed">GitHub sent a release list the app couldn’t read. Try again later.</string>
     <string name="update_storage">There isn’t enough free space on the phone to download the update.</string>
     <string name="update_corrupt">The download didn’t match the release, so it was deleted. Try again.</string>

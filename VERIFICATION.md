@@ -728,9 +728,12 @@ it is after the council rounds. The rounds are listed at the end.
     - otherwise a new session replaces the old one.
 - **Answers.**
   - Abort: Ready, with "cancelled".
-  - CONFLICT (which is how a different signer comes back), INCOMPATIBLE and INVALID:
-    drop the APK, remember it, Failed "Android didn't install the update".
-  - Other failures: Ready, with that note. Failures are logged.
+  - CONFLICT (which is how a different signer comes back) and INVALID: drop the APK,
+    remember it, Failed "Android didn't install the update".
+  - Other failures, including INCOMPATIBLE (Android also uses it for a policy block that
+    can pass): Ready, with that note. Failures are logged.
+  - A newer release downloaded while an old attempt's answer is still on its way ends that
+    attempt first, so the late answer can't be taken as the newer release's.
   - Success: nothing. Android stops the process. `BootReceiver` then logs "Updated from X
     to Y", posts "Updated to version …" if notifications are allowed, and clears
     `updatingFrom`.
@@ -815,6 +818,7 @@ usage.
 | 1 | 7.5 | 7 | Sessions tracked; confirmation via the activity; no crashes in the VPN process; up to date only when true; staging download; VPN note follows `BootReceiver`; copy; `Updater` tests |
 | 2 | 8 | 8 | `goAsync`; the notification opens the confirmation itself; retry after a failed download; double tap; Try again re-shows the confirmation; fresh-process answers; CONFLICT is permanent; error wording; rejoin copy names the ended-session case; ETag claim corrected |
 | 3 | 8.5 | 8.5 | Try again only after 30 s, and never over a silent install in progress; notifications turned off no longer swallow the confirmation; its own default-importance channel; `elapsedRealtime` for the window; a refused release doesn't trigger a check at every opening; manifest comment |
+| 4 (fresh, full review before first ship) | 8.5, ship | 7, don't ship | A late answer about a replaced release could reject the newer one; `BootReceiver` waited on the disk before the VPN restart; INCOMPATIBLE no longer permanent; a damaged cached list is dropped; rate-limit copy mentions the VPN |
 
 ## Limits
 
