@@ -315,20 +315,23 @@ preserve non-ASCII bytes. SOCKS reports DNS failure as host unreachable (0x04),
 connection refusal as 0x05, and other failures as 0x01. It refuses connections if that network disappears. TCP only: SOCKS4
 and UDP ASSOCIATE are unsupported.
 
-In the app, turn on **Share the VPN → Share over USB or hotspot**, then turn on USB
-tethering or the hotspot in Android (the app links to it). While the VPN is connected,
-the app shows one card per connection in use, with its proxy address, for example
-`192.168.42.129:1080` over USB. Interfaces are rescanned every two seconds and on
+In the app, under **Share the VPN**, turn on **Share over USB tethering**, **Share
+over hotspot**, or both, then turn on that tethering in Android (the app links to it).
+They are separate switches, both off by default: anyone who can join the hotspot can use
+the proxy, so USB sharing (from 0.1.1) never turns on hotspot sharing. While the VPN is
+connected, each link that is sharing shows a card under its switch with the proxy
+address, for example `192.168.42.129:1080` over USB. Interfaces are rescanned every two seconds and on
 every change in Android's tether state. The address changes when Android picks a new tether
-subnet, and the app then shows the new one. The backend distinguishes waiting for
-tethering, waiting for a reconnecting VPN, and a port-1080 bind failure. Bind
+subnet, and the app then shows the new one. Each switch says, for its own link, whether it is
+waiting for tethering, waiting for a reconnecting VPN, blocked by another app on port
+1080, or (hotspot only) can't start because Android doesn't say which Wi-Fi is the hotspot. Bind
 failures are retried every two seconds and logged once per address until recovery
 or removal.
 
 On an iPhone on the hotspot: **Settings → Wi-Fi → ⓘ next to the hotspot → Configure
 Proxy → Manual**, with the Server and Port shown in the hotspot card and
-Authentication off. iOS keeps this per Wi-Fi network, so only the hotspot is
-affected; set it back to **Off** when you're done.
+Authentication off, then tap **Save**. iOS keeps this per Wi-Fi network, so only the
+hotspot is affected; set it back to **Off** (and Save) when you're done.
 
 On macOS: **System Settings → Network → the phone's USB service (or Wi-Fi, on the
 hotspot) → Details → Proxies**. Turn on **Web proxy (HTTP)**, **Secure web proxy (HTTPS)** and
@@ -336,7 +339,9 @@ hotspot) → Details → Proxies**. Turn on **Web proxy (HTTP)**, **Secure web p
 authentication. Or tap **Copy Terminal command** in the app and paste it into
 Terminal. It finds the network service whose router is the phone, so you don't
 need its name, and sets all three proxies with `sudo networksetup`. Run it again
-after the address changes.
+after the address changes. macOS keeps proxies per network service, not per Wi-Fi
+network: on the hotspot that service is Wi-Fi, so the proxies stay on when the Mac
+joins any other Wi-Fi. Run the turn-off command before leaving the hotspot.
 
 Only apps honoring macOS proxy settings use it. **Other Mac traffic still goes
 around the VPN**, including direct connections and unsupported UDP. SOCKS clients
@@ -346,8 +351,11 @@ This is a no-auth proxy restricted to tethering interfaces and clients in the bo
 interface's IPv4 subnet. USB means numbered `usb`, `rndis` and `ncm` interfaces. The
 hotspot means a Wi-Fi tether name (`wlan`, `swlan`, `softap`, `ap`, `ap_br_*`,
 `wigig`) that Android's sticky `TETHER_STATE_CHANGED` broadcast lists as tethering.
-If that broadcast is unavailable, only names used for nothing but a hotspot count
-(`swlan`, `softap`, `ap`, `ap_br_*`), never `wlan`. An interface carrying any of the
+When Android lists tethering interfaces, USB ones must be listed too. If that broadcast
+is unavailable, the hotspot is never guessed at (`wlan` is also the Wi-Fi the phone
+joins, and hotspot-only names also serve local-only hotspots such as Quick Share);
+USB keeps its name rule. The interface's role is checked again after reading its
+addresses and before serving each new client. An interface carrying any of the
 phone's own networks (the Wi-Fi it joined, mobile data) is never listened on, whatever
 its name, so the proxy is never offered to a café or campus network. Anyone who can
 join the hotspot can use the proxy while sharing is on. Phone apps cannot use the proxy,
@@ -355,6 +363,7 @@ including apps in other profiles. After VPN DNS resolution, the proxy refuses
 loopback, unspecified, link-local, multicast and phone-interface destinations
 (SOCKS ruleset refusal / HTTP 403). Other private-network destinations remain
 available through the VPN. Do not enable it with an untrusted
-USB peer or hotspot guest. The Mac's proxy settings belong to the phone's USB or Wi-Fi
-service, and the iPhone's to the hotspot network, so other networks are unaffected. While tethered with sharing off, apps using the proxy can't connect:
+USB peer or hotspot guest. Over USB the Mac's proxy settings belong to the phone's USB
+service, and the iPhone's to the hotspot network, so other networks are unaffected; a
+Mac on the hotspot is the exception above. While tethered with sharing off, apps using the proxy can't connect:
 turn the proxies off on the Mac, or sharing back on.

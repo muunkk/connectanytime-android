@@ -16,16 +16,17 @@ class ConnectApp : Application() {
         log = ActivityLog(this)
         fun refreshTetherState() {
             if (!state.value.connected && state.value.status != "Reconnecting…")
-                mutableTetherShare.value = if (store.shareWithTether) TetherShare.VpnNotConnected else TetherShare.Off
+                mutableTetherShare.value = if (store.sharing) TetherShare.VpnNotConnected else TetherShare.Off
         }
         refreshTetherState()
         tetherPreferenceListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-            if (key == "shareWithTether") refreshTetherState()
+            if (key in SHARE_KEYS) refreshTetherState()
         }
         store.prefs.registerOnSharedPreferenceChangeListener(tetherPreferenceListener)
         Notices.channels(this)
     }
     companion object {
+        internal val SHARE_KEYS = setOf("shareWithTether", "shareOverHotspot")
         internal val mutableTetherShare = MutableStateFlow<TetherShare>(TetherShare.Off)
         val tetherShare = mutableTetherShare.asStateFlow()
         internal val mutableState = MutableStateFlow(VpnState())

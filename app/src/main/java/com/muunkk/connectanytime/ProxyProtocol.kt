@@ -201,25 +201,27 @@ internal fun usbTetherName(name: String) = name.matches(Regex("(?:rndis|ncm|usb)
 internal enum class TetherLink { Usb, Hotspot }
 
 // The same file's config_tether_wifi_regexs (wlan, softap, and the bridged dual-band ap_br_*),
-// plus Samsung's swlan, plain ap and wigig (60 GHz). `wlan` is also the name of the Wi-Fi the
-// phone itself joins, so it only counts when Android lists it as tethering.
-private val WIFI_TETHER = Regex("(?:wlan|swlan|softap|ap|ap_br_wlan|ap_br_ap|wigig)[0-9]+")
-private val HOTSPOT_ONLY = Regex("(?:swlan|softap|ap|ap_br_wlan|ap_br_ap)[0-9]+")
+// plus Samsung's swlan, plain ap and wigig (60 GHz). Bluetooth and Ethernet tethering aren't
+// shared.
+private val WIFI_TETHER = Regex("(?:wlan|swlan|softap|ap|ap_br_wlan|ap_br_ap|ap_br_softap|wigig)[0-9]+")
 
 /**
  * Which downstream link interface `name` serves, or null to never listen on it.
  *
  * `upstream` holds the interfaces of the phone's own networks (Wi-Fi it joined, mobile data).
  * They are never shared, whatever their name: listening there would offer the VPN to everyone
- * on that café or campus Wi-Fi. `tethered` is Android's list of interfaces it is tethering on,
- * or null when that list isn't available; then only names used for nothing but a hotspot count.
+ * on that café or campus Wi-Fi. `tethered` is Android's list of interfaces it is tethering on.
+ * When Android lists them, that list decides. When it doesn't (null), the hotspot is never
+ * guessed at: `wlan` is also the Wi-Fi the phone joins, and hotspot-only names are also used
+ * for local-only hotspots (Quick Share, Android Auto) that aren't yours to share. USB keeps
+ * its name rule then, as before hotspot sharing.
  */
 internal fun tetherLink(name: String, tethered: Set<String>?, upstream: Set<String>): TetherLink? = when {
     name in upstream -> null
+    tethered != null && name !in tethered -> null
     usbTetherName(name) -> TetherLink.Usb
-    !WIFI_TETHER.matches(name) -> null
-    tethered != null -> if (name in tethered) TetherLink.Hotspot else null
-    else -> if (HOTSPOT_ONLY.matches(name)) TetherLink.Hotspot else null
+    tethered != null && WIFI_TETHER.matches(name) -> TetherLink.Hotspot
+    else -> null
 }
 
 /** Android's sticky tether-state broadcast (ConnectivityManager.ACTION_TETHER_STATE_CHANGED and

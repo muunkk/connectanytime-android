@@ -26,13 +26,22 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 sealed interface TetherShare {
+    /** Neither USB nor hotspot sharing is turned on. */
     data object Off : TetherShare
-    data object WaitingForTether : TetherShare
-    data object WaitingForVpn : TetherShare
-    data object PortInUse : TetherShare
-    /** The proxy's address on USB tethering and on the hotspot; at least one is set. */
-    data class Sharing(val port: Int, val usb: String? = null, val hotspot: String? = null) : TetherShare
     data object VpnNotConnected : TetherShare
+    data object WaitingForVpn : TetherShare
+    /** The VPN is up; how each kind of link is doing. */
+    data class Active(val port: Int, val usb: Link = Link.Off, val hotspot: Link = Link.Off) : TetherShare
+    sealed interface Link {
+        /** Sharing over this link is turned off. */
+        data object Off : Link
+        /** Turned on, but that tethering isn't. */
+        data object Waiting : Link
+        data object PortInUse : Link
+        /** Android doesn't say which Wi-Fi is its hotspot, so the hotspot isn't guessed at. */
+        data object Unknown : Link
+        data class Sharing(val address: String) : Link
+    }
 }
 
 /** One controller per service, serialized reconciliation; accepted sockets belong to a listener. */
@@ -44,18 +53,22 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
     private val closed = AtomicBoolean()
     @Volatile private var connected = false
     @Volatile private var reconnecting = false
-    private val bindFailures = mutableSetOf<InetAddress>()
+    private val bindFailures = mutableSetOf<Binding>()
     // Atomic, not the controller monitor: reconcile and close hold that while joining this
     // accept thread, which would then wait out the join timeout to log a refusal.
     private val lastRefusal = java.util.concurrent.atomic.AtomicLong(0)
     private val prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-        if (key == "shareWithTether" && !closed.get()) runCatching { timer.execute { reconcile() } }
+        if (key in ConnectApp.SHARE_KEYS && !closed.get()) runCatching { timer.execute { reconcile() } }
     }
     /** Interfaces Android says it is tethering on, from its sticky broadcast; null if unknown. */
     @Volatile private var tethered: Set<String>? = null
+    // Registration returns the sticky intent on this thread while broadcasts arrive on the main
+    // thread, so a newer broadcast may land first; once one has, the older return value is dropped.
+    private val tetherLock = Any()
+    private var heardBroadcast = false
     private val tetherReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            tethered = activeTethers(intent)
+            synchronized(tetherLock) { tethered = activeTethers(intent); heardBroadcast = true }
             if (!closed.get()) runCatching { timer.execute { reconcile() } }
         }
     }
@@ -64,10 +77,11 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
         // Only the system can send this protected broadcast, so exporting the receiver is safe;
         // the sender is the Tethering module, which isn't the system UID that NOT_EXPORTED admits.
         val filter = IntentFilter(TETHER_STATE_CHANGED)
-        tethered = activeTethers(runCatching {
+        val sticky = runCatching {
             if (android.os.Build.VERSION.SDK_INT >= 33) service.registerReceiver(tetherReceiver, filter, Context.RECEIVER_EXPORTED)
             else service.registerReceiver(tetherReceiver, filter)
-        }.getOrNull())
+        }.getOrNull()
+        synchronized(tetherLock) { if (!heardBroadcast) tethered = activeTethers(sticky) }
         timer.scheduleWithFixedDelay({ reconcile() }, 0, 2, TimeUnit.SECONDS)
     }
     fun state(connected: Boolean, reconnecting: Boolean) {
@@ -75,31 +89,45 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
         if (!closed.get()) runCatching { timer.execute { reconcile() } }
     }
     private data class Binding(val name: String, val link: TetherLink, val address: InetAddress, val prefix: Int)
-    private fun bindings(): Set<Binding> {
+    /** Interfaces of the phone's own networks. Throws if unreadable: then nothing is shared. */
+    private fun upstream(): Set<String> {
         val cm = service.getSystemService(ConnectivityManager::class.java)
-        // The phone's own networks. If this can't be read, share nothing rather than guess.
         @Suppress("DEPRECATION")
-        val upstream = cm.allNetworks.mapNotNull { cm.getLinkProperties(it)?.interfaceName }.toSet()
-        val tethered = tethered
-        return NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()
-            .filter { it.isUp && !it.isLoopback && !it.isPointToPoint }
-            .mapNotNull { iface -> tetherLink(iface.name, tethered, upstream)?.let { iface to it } }
-            .flatMap { (iface, link) -> iface.interfaceAddresses.filter { it.address is Inet4Address && !it.address.isLoopbackAddress && !it.address.isLinkLocalAddress && it.networkPrefixLength in 1..32 }
-                .map { Binding(iface.name, link, it.address, it.networkPrefixLength.toInt()) } }.toSet()
+        return cm.allNetworks.mapNotNull { cm.getLinkProperties(it)?.interfaceName }.toSet()
     }
+    private fun bindings(): Set<Binding> {
+        val found = NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()
+            .filter { it.isUp && !it.isLoopback && !it.isPointToPoint }
+            .mapNotNull { iface -> tetherLink(iface.name, tethered, upstream())?.let { iface to it } }
+            .flatMap { (iface, link) -> iface.interfaceAddresses.filter { it.address is Inet4Address && !it.address.isLoopbackAddress && !it.address.isLinkLocalAddress && it.networkPrefixLength in 1..32 }
+                .map { Binding(iface.name, link, it.address, it.networkPrefixLength.toInt()) } }
+        // Check again after reading the addresses: if the hotspot's interface became the phone's
+        // own Wi-Fi meanwhile, its new address must not be taken for the hotspot's.
+        val upstream = upstream(); val tethered = tethered
+        return found.filter { tetherLink(it.name, tethered, upstream) == it.link }.toSet()
+    }
+    /** Whether a listener's link is still what it was bound as, checked for every new client. */
+    private fun stillServes(b: Binding): Boolean = runCatching {
+        !closed.get() && app.store.shares(b.link) && tetherLink(b.name, tethered, upstream()) == b.link &&
+            NetworkInterface.getByName(b.name)?.let { iface -> iface.isUp && iface.interfaceAddresses.any {
+                it.address == b.address && it.networkPrefixLength.toInt() == b.prefix } } == true
+    }.getOrDefault(false)
     @Synchronized private fun reconcile() {
         if (closed.get()) return
         sessions.filter { System.nanoTime() - it.activity > TimeUnit.SECONDS.toNanos(if (it.ready) 300 else 15) }.forEach { it.close() }
-        val enabled = app.store.shareWithTether
-        val wanted = if (enabled && (connected || reconnecting)) runCatching { bindings() }.getOrDefault(emptySet()) else emptySet()
+        val usbOn = app.store.shareWithTether
+        val hotspotOn = app.store.shareOverHotspot
+        val enabled = usbOn || hotspotOn
+        val wanted = if (enabled && (connected || reconnecting))
+            runCatching { bindings() }.getOrDefault(emptySet()).filter { app.store.shares(it.link) }.toSet() else emptySet()
         for (key in listeners.keys.toList()) if (key !in wanted) listeners.remove(key)?.close()
-        bindFailures.retainAll(wanted.map { it.address }.toSet())
+        bindFailures.retainAll(wanted)
         // A reconnect may retain existing listeners but must not start sharing before first Connected.
         if (connected) for (binding in wanted) if (binding !in listeners) {
             try {
                 val listener = Listener(binding)
                 listeners[binding] = listener
-                bindFailures.remove(binding.address)
+                bindFailures.remove(binding)
                 app.log.add(service.getString(if (binding.link == TetherLink.Usb) R.string.tether_started else R.string.tether_started_hotspot,
                     binding.address.hostAddress, port))
                 listener.thread.start()
@@ -107,23 +135,26 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
                 // Only "address in use" means another app has the port. Anything else, such as
                 // EADDRNOTAVAIL when the address went away between the scan and the bind (also a
                 // BindException), is retried quietly on the next rescan without blaming an app.
-                if (portInUse(e) && bindFailures.add(binding.address))
+                if (portInUse(e) && bindFailures.add(binding))
                     app.log.add(service.getString(R.string.tether_port_in_use, binding.address.hostAddress, port))
+            }
+        }
+        fun link(kind: TetherLink, on: Boolean): TetherShare.Link {
+            if (!on) return TetherShare.Link.Off
+            // One address per kind, stable across rescans when a link has several.
+            val shared = listeners.keys.filter { it.link == kind }.minByOrNull { "${it.name} ${it.address.hostAddress}" }
+            return when {
+                shared != null -> TetherShare.Link.Sharing(shared.address.hostAddress!!)
+                bindFailures.any { it.link == kind } -> TetherShare.Link.PortInUse
+                kind == TetherLink.Hotspot && tethered == null -> TetherShare.Link.Unknown
+                else -> TetherShare.Link.Waiting
             }
         }
         ConnectApp.mutableTetherShare.value = when {
             !enabled -> TetherShare.Off
             !connected && !reconnecting -> TetherShare.VpnNotConnected
-            wanted.isEmpty() -> TetherShare.WaitingForTether
             !connected -> TetherShare.WaitingForVpn
-            listeners.isEmpty() && bindFailures.isNotEmpty() -> TetherShare.PortInUse
-            listeners.isEmpty() -> TetherShare.WaitingForTether
-            else -> {
-                // One address per kind, stable across rescans when a link has several.
-                fun first(link: TetherLink) = listeners.keys.filter { it.link == link }
-                    .minByOrNull { "${it.name} ${it.address.hostAddress}" }?.address?.hostAddress
-                TetherShare.Sharing(port, usb = first(TetherLink.Usb), hotspot = first(TetherLink.Hotspot))
-            }
+            else -> TetherShare.Active(port, link(TetherLink.Usb, usbOn), link(TetherLink.Hotspot, hotspotOn))
         }
     }
     private fun portInUse(e: Exception) = e is java.net.BindException &&
@@ -145,8 +176,14 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
                         app.log.add(service.getString(R.string.tether_refused))
                     continue
                 }
+                if (!stillServes(binding)) {
+                    // The link changed under this listener; the rescan closes it.
+                    client.close()
+                    runCatching { timer.execute { reconcile() } }
+                    continue
+                }
                 synchronized(sessions) {
-                    if (closed.get() || server.isClosed || !app.store.shareWithTether || (!connected && !reconnecting) || sessions.size >= 256) client.close()
+                    if (closed.get() || server.isClosed || !app.store.shares(binding.link) || (!connected && !reconnecting) || sessions.size >= 256) client.close()
                     else {
                         val session = Session(this, client); sessions.add(session)
                         try { workers.execute { session.run() } } catch (_: Exception) { session.close() }
@@ -162,7 +199,7 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
         }
     }
     private fun vpn(): ProxyNetwork? {
-        if (closed.get() || !app.store.shareWithTether || (!connected && !reconnecting)) return null
+        if (closed.get() || !app.store.sharing || (!connected && !reconnecting)) return null
         val cm = service.getSystemService(ConnectivityManager::class.java)
         // Match our actual tun, not another VPN visible during a handover/revocation.
         val iface = service.tetherVpnInterface() ?: return null
@@ -241,7 +278,7 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
         listeners.values.toList().forEach { runCatching { it.close() } }; listeners.clear()
         synchronized(sessions) { sessions.toList().forEach { it.close() } }
         workers.shutdownNow(); workers.awaitTermination(3, TimeUnit.SECONDS)
-        ConnectApp.mutableTetherShare.value = if (app.store.shareWithTether) TetherShare.VpnNotConnected else TetherShare.Off
+        ConnectApp.mutableTetherShare.value = if (app.store.sharing) TetherShare.VpnNotConnected else TetherShare.Off
     }
 }
 

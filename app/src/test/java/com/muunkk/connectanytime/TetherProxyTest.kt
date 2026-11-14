@@ -52,6 +52,47 @@ class TetherProxyTest {
         assertEquals(setOf("rndis0"), tethered(proxy))
         @Suppress("DEPRECATION") app.removeStickyBroadcast(android.content.Intent(TETHER_STATE_CHANGED))
     }
+    private fun awaitShare(predicate: (TetherShare) -> Boolean): TetherShare {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        while (System.nanoTime() < deadline) {
+            val now = ConnectApp.tetherShare.value
+            if (predicate(now)) return now
+            Thread.sleep(20)
+        }
+        return ConnectApp.tetherShare.value
+    }
+    @Test fun eachLinkReportsItsOwnStateAndTheHotspotIsNeverGuessed() {
+        val app = ApplicationProvider.getApplicationContext<ConnectApp>()
+        app.store.shareWithTether = true; app.store.shareOverHotspot = true
+        @Suppress("DEPRECATION") app.removeStickyBroadcast(android.content.Intent(TETHER_STATE_CHANGED))
+        val service = Robolectric.buildService(ConnectVpnService::class.java).get()
+        // No list from Android: USB waits for tethering, the hotspot says it can't be told apart.
+        var proxy = TetherProxy(service, app, 0)
+        try {
+            proxy.state(connected = true, reconnecting = false)
+            assertEquals(TetherShare.Active(0, TetherShare.Link.Waiting, TetherShare.Link.Unknown),
+                awaitShare { it is TetherShare.Active && it.hotspot == TetherShare.Link.Unknown })
+        } finally { proxy.close() }
+        // Android lists a hotspot that this machine doesn't have: waiting, not sharing anything else.
+        @Suppress("DEPRECATION")
+        app.sendStickyBroadcast(android.content.Intent(TETHER_STATE_CHANGED).putStringArrayListExtra("tetherArray", arrayListOf("wlan9")))
+        proxy = TetherProxy(service, app, 0)
+        try {
+            proxy.state(connected = true, reconnecting = false)
+            assertEquals(TetherShare.Active(0, TetherShare.Link.Waiting, TetherShare.Link.Waiting),
+                awaitShare { it is TetherShare.Active && it.hotspot == TetherShare.Link.Waiting })
+            // Hotspot sharing turned off: reported off, USB unaffected.
+            app.store.shareOverHotspot = false
+            assertEquals(TetherShare.Active(0, TetherShare.Link.Waiting, TetherShare.Link.Off),
+                awaitShare { it is TetherShare.Active && it.hotspot == TetherShare.Link.Off })
+            app.store.shareWithTether = false
+            assertEquals(TetherShare.Off, awaitShare { it == TetherShare.Off })
+        } finally {
+            proxy.close()
+            @Suppress("DEPRECATION") app.removeStickyBroadcast(android.content.Intent(TETHER_STATE_CHANGED))
+            app.store.shareWithTether = false; app.store.shareOverHotspot = false
+        }
+    }
     @Test fun closeWaitsForAnInFlightRescan() {
         val app = ApplicationProvider.getApplicationContext<ConnectApp>()
         app.store.shareWithTether = false

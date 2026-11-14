@@ -36,9 +36,16 @@ class Store(private val context: Context) {
     var sharedBefore: Boolean
         get() = prefs.getBoolean("sharedBefore", false)
         set(v) { prefs.edit().putBoolean("sharedBefore", v).apply() }
+    /** Share over USB tethering. The key predates hotspot sharing, which has its own. */
     var shareWithTether: Boolean
         get() = prefs.getBoolean("shareWithTether", false)
         set(v) { prefs.edit().putBoolean("shareWithTether", v).apply() }
+    /** Share over the Wi-Fi hotspot, where anyone who joins can use it: separate, and off by default. */
+    var shareOverHotspot: Boolean
+        get() = prefs.getBoolean("shareOverHotspot", false)
+        set(v) { prefs.edit().putBoolean("shareOverHotspot", v).apply() }
+    val sharing: Boolean get() = shareWithTether || shareOverHotspot
+    internal fun shares(link: TetherLink) = if (link == TetherLink.Usb) shareWithTether else shareOverHotspot
     var stayConnected: Boolean
         get() = prefs.getBoolean("stayConnected", true)
         set(v) { prefs.edit().putBoolean("stayConnected", v).apply() }

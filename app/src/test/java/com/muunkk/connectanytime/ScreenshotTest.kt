@@ -106,7 +106,7 @@ class ScreenshotTest(private val dark: Boolean) {
     }
     @Test fun sharing() {
         account(); app.store.shareWithTether = true
-        ConnectApp.mutableTetherShare.value = TetherShare.Sharing(1080, usb = "192.168.42.129")
+        ConnectApp.mutableTetherShare.value = TetherShare.Active(1080, usb = TetherShare.Link.Sharing("192.168.42.129"))
         try {
             home(VpnState("Connected", busy = true, connected = true))
             compose.onNodeWithText("Only apps that use", substring = true).performScrollTo()
@@ -114,43 +114,70 @@ class ScreenshotTest(private val dark: Boolean) {
         } finally { ConnectApp.mutableTetherShare.value = TetherShare.Off }
     }
     @Test fun sharingHotspot() {
-        account(); app.store.shareWithTether = true
-        ConnectApp.mutableTetherShare.value = TetherShare.Sharing(1080, hotspot = "10.84.137.1")
+        account(); app.store.shareOverHotspot = true
+        ConnectApp.mutableTetherShare.value = TetherShare.Active(1080, hotspot = TetherShare.Link.Sharing("10.84.137.1"))
         try {
             home(VpnState("Connected", busy = true, connected = true))
             compose.onNodeWithText("Only apps that use", substring = true).performScrollTo()
             compose.onNodeWithTag("share-address").assertDoesNotExist()
-            compose.onNodeWithText("Configure Proxy → Manual", substring = true).assertExists()
+            compose.onNodeWithText("leave Authentication off, then tap Save", substring = true).assertExists()
+            compose.onNodeWithText("Anyone who joins the hotspot can use the VPN", substring = true).assertExists()
+            // Alone on the hotspot, its card keeps the Mac's turn-off command.
+            compose.onNodeWithText("Copy command to turn off").assertExists()
             save("home-share-hotspot")
         } finally { ConnectApp.mutableTetherShare.value = TetherShare.Off }
     }
     @Test fun sharingBoth() {
-        account(); app.store.shareWithTether = true
-        ConnectApp.mutableTetherShare.value = TetherShare.Sharing(1080, usb = "192.168.42.129", hotspot = "10.84.137.1")
+        account(); app.store.shareWithTether = true; app.store.shareOverHotspot = true
+        ConnectApp.mutableTetherShare.value = TetherShare.Active(1080, usb = TetherShare.Link.Sharing("192.168.42.129"), hotspot = TetherShare.Link.Sharing("10.84.137.1"))
         try {
             home(VpnState("Connected", busy = true, connected = true))
             compose.onNodeWithTag("share-hotspot-address").performScrollTo()
             compose.onNodeWithTag("share-address").assertTextEquals("192.168.42.129:1080")
             compose.onNodeWithTag("share-hotspot-address").assertTextEquals("10.84.137.1")
-            compose.onNodeWithText("Sharing over USB and the hotspot, port 1080.").assertExists()
+            compose.onNodeWithText("Sharing over USB, port 1080.").assertExists()
+            // The turn-off command is the same for both, so it's shown once.
+            compose.onAllNodesWithText("Copy command to turn off").assertCountEquals(1)
             save("home-share-both")
         } finally { ConnectApp.mutableTetherShare.value = TetherShare.Off }
     }
-    @Test fun shareWaiting() {
+    @Test fun hotspotOnlyWhenTurnedOn() {
+        // USB sharing from 0.1.1 doesn't extend to the hotspot: its own switch stays off.
         account(); app.store.shareWithTether = true
-        ConnectApp.mutableTetherShare.value = TetherShare.WaitingForTether
+        ConnectApp.mutableTetherShare.value = TetherShare.Active(1080, usb = TetherShare.Link.Waiting, hotspot = TetherShare.Link.Off)
         try {
             home(VpnState("Connected", busy = true, connected = true))
-            compose.onNodeWithTag("share").performScrollTo()
+            compose.onNodeWithTag("share-hotspot").performScrollTo().assert(SemanticsMatcher.expectValue(
+                androidx.compose.ui.semantics.SemanticsProperties.ToggleableState, androidx.compose.ui.state.ToggleableState.Off))
+            compose.onNodeWithText("Anyone who joins the hotspot can use it.", substring = true).assertExists()
+        } finally { ConnectApp.mutableTetherShare.value = TetherShare.Off }
+    }
+    @Test fun shareWaiting() {
+        account(); app.store.shareWithTether = true; app.store.shareOverHotspot = true
+        ConnectApp.mutableTetherShare.value = TetherShare.Active(1080, usb = TetherShare.Link.Waiting, hotspot = TetherShare.Link.Waiting)
+        try {
+            home(VpnState("Connected", busy = true, connected = true))
+            compose.onNodeWithTag("share-hotspot").performScrollTo()
             save("home-share-waiting")
         } finally { ConnectApp.mutableTetherShare.value = TetherShare.Off }
     }
-    @Test fun sharePortInUse() {
-        account(); app.store.shareWithTether = true
-        ConnectApp.mutableTetherShare.value = TetherShare.PortInUse
+    @Test fun shareHotspotUnknown() {
+        account(); app.store.shareWithTether = true; app.store.shareOverHotspot = true
+        ConnectApp.mutableTetherShare.value = TetherShare.Active(1080, usb = TetherShare.Link.Sharing("192.168.42.129"), hotspot = TetherShare.Link.Unknown)
         try {
             home(VpnState("Connected", busy = true, connected = true))
-            compose.onNodeWithTag("share").performScrollTo()
+            compose.onNodeWithTag("share-hotspot").performScrollTo()
+            compose.onNodeWithText("which Wi‑Fi is its hotspot", substring = true).assertExists()
+            save("home-share-hotspot-unknown")
+        } finally { ConnectApp.mutableTetherShare.value = TetherShare.Off }
+    }
+    @Test fun sharePortInUse() {
+        account(); app.store.shareWithTether = true; app.store.shareOverHotspot = true
+        ConnectApp.mutableTetherShare.value = TetherShare.Active(1080, usb = TetherShare.Link.Sharing("192.168.42.129"), hotspot = TetherShare.Link.PortInUse)
+        try {
+            home(VpnState("Connected", busy = true, connected = true))
+            compose.onNodeWithTag("share-hotspot").performScrollTo()
+            compose.onNodeWithText("using port 1080", substring = true).assertExists()
             save("home-share-port-in-use")
         } finally { ConnectApp.mutableTetherShare.value = TetherShare.Off }
     }
