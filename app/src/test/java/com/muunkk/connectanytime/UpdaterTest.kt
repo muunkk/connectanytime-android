@@ -345,6 +345,21 @@ class UpdaterTest {
         assertTrue(app.log.state.value.last().contains("AssertionError"))
     }
 
+    @Test fun tryAgainAtTheRetryWindowWorksAfterSlowVerification() {
+        val (u, _) = readyUpdater()
+        facts = {
+            now += 1_000
+            ApkFacts(app.packageName, versionOf(it), setOf("me"))
+        }
+        u.install()
+        val confirm = Intent("android.content.pm.action.CONFIRM_INSTALL")
+        u.onStatus(app.store.installSession, PackageInstaller.STATUS_PENDING_USER_ACTION, null, confirm)
+        assertEquals(confirm, u.takeConfirmation())
+        now += Updater.RETRY_AFTER - 1_000
+        u.install()
+        assertEquals(confirm, u.takeConfirmation())
+    }
+
     @Test fun tryAgainShowsAnOpenConfirmationAgain() {
         val (u, _) = readyUpdater()
         u.install()

@@ -375,6 +375,7 @@ class Updater internal constructor(
                 else -> return@launch
             }
             mutable.value = UpdateState.Installing(release)
+            committedAt = clock()
             try {
                 val file = File(dir, release.fileName)
                 verify(file, release)
@@ -401,7 +402,6 @@ class Updater internal constructor(
                         // Mutable: the installer adds the status extras. The intent is explicit.
                         val sender = PendingIntent.getBroadcast(app, id, intent, PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT).intentSender
                         app.log.add(app.getString(R.string.update_installing_log, release.versionName, release.versionCode))
-                        committedAt = clock()
                         session.commit(sender)
                     }
                 } catch (e: Exception) {
