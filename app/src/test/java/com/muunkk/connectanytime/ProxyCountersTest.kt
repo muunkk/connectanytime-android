@@ -8,6 +8,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -36,6 +37,19 @@ class ProxyCountersTest {
         assertEquals(50L, ProxyCounters.forwardingCpuNs.sum())
         cpu = 240; meter.flush()
         assertEquals(50L, ProxyCounters.forwardingCpuNs.sum())
+    }
+    @Test fun periodicCpuFlushDoesNotWaitForTheGlobalCounterMonitor() {
+        ProxyCounters.gen = 1
+        var cpu = 100L
+        val meter = CpuMeter({ cpu }, { 0 })
+        val worker = Executors.newSingleThreadExecutor()
+        try {
+            synchronized(ProxyCounters) {
+                cpu = 150
+                worker.submit { meter.tick(TimeUnit.SECONDS.toNanos(1)) }.get(2, TimeUnit.SECONDS)
+                assertEquals(50L, ProxyCounters.forwardingCpuNs.sum())
+            }
+        } finally { worker.shutdownNow(); assertTrue(worker.awaitTermination(5, TimeUnit.SECONDS)) }
     }
     @Test fun unmeteredTasksAndReadsNeverAllocateCpuMeters() {
         val allocations = AtomicInteger()

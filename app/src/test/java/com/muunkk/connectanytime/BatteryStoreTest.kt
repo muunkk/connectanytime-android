@@ -9,6 +9,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
+import org.robolectric.shadows.ShadowLog
 import org.robolectric.annotation.Config
 import android.os.Looper
 import kotlinx.coroutines.CoroutineScope
@@ -41,7 +42,21 @@ class BatteryStoreTest {
         val missing = BatteryCsv.parse(BatteryCsv.write(row.copy(chargeUah = Int.MIN_VALUE.toLong(), energyNwh = Long.MIN_VALUE,
             mobileRx = -1, currentAvg = 0, voltageMv = Int.MIN_VALUE)))!!
         assertNull(missing.chargeUah); assertNull(missing.energyNwh); assertNull(missing.mobileRx)
-        assertNull(missing.currentAvg); assertNull(missing.voltageMv); assertEquals(-1L, missing.currentNow)
+        assertEquals(0L, missing.currentAvg); assertNull(missing.voltageMv); assertEquals(-1L, missing.currentNow)
+    }
+    @Test fun csvPreservesZeroCurrentsAndFiltersUnsupportedCountersAndSentinels() {
+        val row = batteryTrace().first().copy(currentNow = 0, currentAvg = 0, chargeUah = 0, energyNwh = 0)
+        val columns = BatteryCsv.write(row).split(',')
+        assertEquals(listOf("", "", "0", "0"), columns.subList(15, 19))
+        val parsed = BatteryCsv.parse(BatteryCsv.write(row))!!
+        assertEquals(0L, parsed.currentNow); assertEquals(0L, parsed.currentAvg)
+        assertNull(parsed.chargeUah); assertNull(parsed.energyNwh)
+        val missing = BatteryCsv.parse(BatteryCsv.write(row.copy(currentNow = Int.MIN_VALUE.toLong(), currentAvg = Long.MIN_VALUE)))!!
+        assertNull(missing.currentNow); assertNull(missing.currentAvg)
+        // Also filter sentinels in an imported CSV rather than only on write.
+        val imported = columns.toMutableList().apply { this[17] = Int.MIN_VALUE.toString(); this[18] = Long.MIN_VALUE.toString() }
+        assertNull(BatteryCsv.parse(imported.joinToString(","))!!.currentNow)
+        assertNull(BatteryCsv.parse(imported.joinToString(","))!!.currentAvg)
     }
     @Test fun storeWorksWhileOffAndExportIsExclusiveFlushedAndMainThread() {
         val d = disk()
@@ -130,30 +145,51 @@ class BatteryStoreTest {
             assertEquals(0, d.report.value!!.rowCount)
         } finally { collector.cancel() }
     }
-    @Test fun reportRebuildFailureDoesNotTurnSuccessfulFlushIntoAWriteRetry() {
+    @Test fun reportRebuildFailureKeepsLastReportAndLogsOnceWithoutReportingSaveFailure() {
         val saved = File(app.filesDir, "saved.csv")
+        var breakReport = false
         val d = BatteryStore(app, app.store, append = { file, text ->
             file.appendText(text)
-            if (!text.startsWith("#")) {
-                // Make the CSV unreadable after the append succeeds.
+            if (breakReport && !text.startsWith("#")) {
+                // Make only the report read fail after the append succeeds.
                 check(file.renameTo(saved)); check(file.mkdir())
             }
         }).also { stores += it }
         val collector = CoroutineScope(Dispatchers.Unconfined).launch { d.report.collect {} }
         try {
-            d.add(batteryTrace().first()); d.awaitIdle()
+            val rows = batteryTrace().take(2)
+            d.add(rows[0]); d.flush(); d.awaitIdle()
+            val lastReport = d.report.value!!
+            breakReport = true
+            d.add(rows[1]); d.awaitIdle()
+            val logsBefore = ShadowLog.getLogsForTag("BatteryStore").size
             var completed = false
             d.flush { completed = true }
             d.awaitIdle(); shadowOf(Looper.getMainLooper()).idle()
             assertTrue(completed)
-            assertTrue(d.failed.value)
+            assertFalse("The append succeeded; this is only a report failure", d.failed.value)
+            assertSame(lastReport, d.report.value)
             assertTrue(d.bufferedRows().isEmpty())
-            assertEquals(1, saved.readLines().mapNotNull(BatteryCsv::parse).size)
+            assertEquals(rows, saved.readLines().mapNotNull(BatteryCsv::parse))
             val retry = BatteryStore::class.java.getDeclaredField("retry").apply { isAccessible = true }.get(d)
             assertNull(retry)
+            d.refresh(); d.summarize { fail("Unreadable report must not call the summary callback") }; d.awaitIdle()
+            assertFalse(d.failed.value)
+            assertSame(lastReport, d.report.value)
+            val logs = ShadowLog.getLogsForTag("BatteryStore").drop(logsBefore)
+            assertEquals(1, logs.size)
+            assertTrue(logs.single().msg.contains("FileNotFoundException"))
+            assertFalse(logs.single().msg.contains(d.file.path))
+            assertNull(logs.single().throwable)
             assertTrue(d.file.delete()); assertTrue(saved.renameTo(d.file))
             d.refresh(); d.awaitIdle()
-            assertEquals(1, d.report.value!!.rowCount)
+            assertEquals(2, d.report.value!!.rowCount)
+            assertFalse(d.failed.value)
+            // Recovery resets the report failure latch for the next failure episode.
+            assertTrue(d.file.renameTo(saved)); assertTrue(d.file.mkdir())
+            d.refresh(); d.refresh(); d.awaitIdle()
+            assertEquals(logsBefore + 2, ShadowLog.getLogsForTag("BatteryStore").size)
+            assertFalse(d.failed.value)
         } finally { collector.cancel(); saved.delete() }
     }
     @Test fun failedFlushRetainsIdsAndDedupsCompleteRowsAfterRestart() {

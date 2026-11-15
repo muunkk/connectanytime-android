@@ -41,14 +41,12 @@ internal class CpuMeter(private val cpu: () -> Long = Debug::threadCpuTimeNanos,
         }
     }
     fun flush() {
-        synchronized(ProxyCounters) {
-            val current = ProxyCounters.gen
-            if (current == 0L) { gen = 0; return }
-            val now = cpu()
-            if (gen == current) ProxyCounters.forwardingCpuNs.add((now - last).coerceAtLeast(0))
-            last = if (gen == current) maxOf(last, now) else now
-            gen = current
-        }
+        val current = ProxyCounters.gen
+        if (current == 0L) { gen = 0; return }
+        val now = cpu()
+        if (gen == current) ProxyCounters.forwardingCpuNs.add((now - last).coerceAtLeast(0))
+        last = if (gen == current) maxOf(last, now) else now
+        gen = current
     }
 }
 

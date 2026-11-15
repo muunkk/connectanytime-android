@@ -5,6 +5,7 @@ import android.os.Build
 import android.os.Debug
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
@@ -36,6 +37,7 @@ internal class BatteryStore(private val context: Context, private val prefs: Sto
     internal val exports = File(context.cacheDir, "battery-export")
     private val buffer = ArrayDeque<BatteryRow>()
     private var failures = 0
+    private var reportBuildFailed = false
     private var retry: java.util.concurrent.ScheduledFuture<*>? = null
     private val mutableReport = MutableStateFlow<BatteryReport?>(null)
     val report = mutableReport.asStateFlow()
@@ -45,7 +47,7 @@ internal class BatteryStore(private val context: Context, private val prefs: Sto
     val ioCpuUs = AtomicLong()
     private fun task(block: () -> Unit) = Runnable {
         val start = cpu()
-        runCatching(block).onFailure { mutableFailed.value = true }
+        runCatching(block).onFailure { Log.w("BatteryStore", "Battery task failed (${it.javaClass.simpleName})") }
         ioCpuUs.addAndGet(((cpu() - start) / 1000).coerceAtLeast(0))
     }
     private fun execute(block: () -> Unit) { io.execute(task(block)) }
@@ -111,7 +113,7 @@ internal class BatteryStore(private val context: Context, private val prefs: Sto
             false
         }
         // A report read can fail after a successful append or during write recovery.
-        if (mutableReport.subscriptionCount.value > 0) runCatching { rebuild() }.onFailure { mutableFailed.value = true }
+        if (mutableReport.subscriptionCount.value > 0) rebuild()
         return saved
     }
     private fun rotate() {
@@ -142,14 +144,21 @@ internal class BatteryStore(private val context: Context, private val prefs: Sto
             })
         }
     }
-    private fun rebuild() { mutableReport.value = rows { BatteryMath.report(it, prefs.proxySetup) } }
+    private fun buildReport(): BatteryReport? = try {
+        rows { BatteryMath.report(it, prefs.proxySetup) }.also { reportBuildFailed = false }
+    } catch (cause: Throwable) {
+        if (!reportBuildFailed) Log.w("BatteryStore", "Battery report failed (${cause.javaClass.simpleName})")
+        reportBuildFailed = true
+        null
+    }
+    private fun rebuild() { buildReport()?.let { mutableReport.value = it } }
     /** Build from retained data on battery-io even when the UI report is unobserved. */
-    fun summarize(callback: (BatteryReport) -> Unit) = execute { callback(rows { BatteryMath.report(it, prefs.proxySetup) }) }
+    fun summarize(callback: (BatteryReport) -> Unit) = execute { buildReport()?.let(callback) }
     private fun pruneExports() {
         val cutoff = now() - 3_600_000
         exports.listFiles()?.filter { it.lastModified() < cutoff }?.forEach { it.delete() }
     }
-    fun refresh() = execute { pruneExports(); truncateTail(); rebuild() }
+    fun refresh() = execute { pruneExports(); rebuild() }
     fun flush(callback: (() -> Unit)? = null) = execute {
         try { flushNow() } finally { callback?.let { main.post(it) } }
     }

@@ -17,6 +17,7 @@ import org.robolectric.annotation.Config
 import java.io.File
 import java.nio.file.Files
 import java.time.Duration
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
@@ -435,6 +436,61 @@ class BatteryRecorderTest {
         app.store.shareOverHotspot = !app.store.shareOverHotspot; drain(c)
         busy(); drain(c)
         assertEquals(BatteryTransport.tls, saved(c).last().transport)
+    }
+    @Test fun eventsEveryThirtySecondsDoNotDelayThePeriodicCadence() {
+        val c = control(); busy(); c.setEnabled(true); drain(c)
+        val start = elapsed
+        repeat(6) { index ->
+            wall += 30_000; elapsed += 30_000
+            shadowOf(handler(c).looper).idleFor(Duration.ofSeconds(30)); drain(c)
+            app.sendBroadcast(Intent(if (index % 2 == 0) Intent.ACTION_SCREEN_OFF else Intent.ACTION_SCREEN_ON))
+            drain(c)
+        }
+        val rows = saved(c)
+        assertEquals(listOf(start + 60_000, start + 120_000, start + 180_000),
+            rows.filter { it.kind == BatteryKind.periodic }.map { it.elapsedMs })
+        assertTrue(rows.count { it.kind == BatteryKind.event } >= 6)
+    }
+    @Test fun pendingClearRetainsPausedStatusUntilEraseCompletes() {
+        val c = control(); c.setEnabled(true); drain(c)
+        assertEquals(BatteryStatus.PausedVpnOff, c.status.value)
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        c.disk.summarize { entered.countDown(); check(release.await(10, TimeUnit.SECONDS)) }
+        assertTrue(entered.await(5, TimeUnit.SECONDS))
+        try {
+            c.clear()
+            busy(); shadowOf(Looper.getMainLooper()).idle()
+            assertTrue(c.clearing.value)
+            assertEquals(0L, ProxyCounters.gen)
+            assertEquals(BatteryStatus.PausedVpnOff, c.status.value)
+        } finally { release.countDown(); drain(c) }
+        assertFalse(c.clearing.value)
+        assertEquals(BatteryStatus.Measuring, c.status.value)
+        assertTrue(ProxyCounters.gen > 0)
+    }
+    @Test fun readingsPreserveZeroCurrentsButFilterCounterZerosAndUnsupportedSentinels() {
+        val bm = shadowOf(app.getSystemService(BatteryManager::class.java))
+        bm.setIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW, 0)
+        bm.setIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_AVERAGE, 0)
+        bm.setIntProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER, 0)
+        bm.setLongProperty(BatteryManager.BATTERY_PROPERTY_ENERGY_COUNTER, 0)
+        val source = BatteryReadings(app, BatteryProc(File("missing-proc"), 100))
+        val row = source.read()
+        assertEquals(0L, row.currentNow); assertEquals(0L, row.currentAvg)
+        assertNull(row.chargeUah); assertNull(row.energyNwh)
+        val csv = BatteryCsv.parse(BatteryCsv.write(row))!!
+        assertEquals(0L, csv.currentNow); assertEquals(0L, csv.currentAvg)
+        bm.setIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW, Int.MIN_VALUE)
+        bm.setIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_AVERAGE, Int.MIN_VALUE)
+        bm.setIntProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER, Int.MIN_VALUE)
+        bm.setLongProperty(BatteryManager.BATTERY_PROPERTY_ENERGY_COUNTER, Long.MIN_VALUE)
+        val missing = source.read()
+        assertNull(missing.currentNow); assertNull(missing.currentAvg)
+        assertNull(missing.chargeUah); assertNull(missing.energyNwh)
+        bm.setIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW, -20)
+        bm.setIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_AVERAGE, 15)
+        assertEquals(-20L, source.read().currentNow); assertEquals(15L, source.read().currentAvg)
     }
     @Test fun periodicSamplingRecoversAfterTransientReadingFailure() {
         val c = control(); busy(); c.setEnabled(true); drain(c)

@@ -105,6 +105,7 @@ class BatteryControl internal constructor(private val app: ConnectApp,
             else -> null
         }
         mutableStatus.value = when {
+            clearPending -> mutableStatus.value
             !state.prefs.enabled -> if (state.prefs.autoStopped) BatteryStatus.AutoStopped else BatteryStatus.Off
             state.failed || startFailed -> BatteryStatus.CouldNotSave
             !state.busy -> BatteryStatus.PausedVpnOff

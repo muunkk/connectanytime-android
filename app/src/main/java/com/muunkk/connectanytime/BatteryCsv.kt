@@ -32,7 +32,7 @@ internal object BatteryCsv {
     }
     fun write(r: BatteryRow): String = with(r) {
         listOf(v, boot, rec, seq, gen, pgen, transportGen, kind, wallMin, elapsedMs, uptimeMs, level, scale, status, plugged,
-            supported(chargeUah, true), supported(energyNwh, true), supported(currentNow, true), supported(currentAvg, true),
+            supported(chargeUah, true), supported(energyNwh, true), supported(currentNow), supported(currentAvg),
             voltageMv, tempDc, interactive, doze, powerSave, thermal, vpn, transport, hotspot, sharingOn,
             hotUp, hotDown, usbUp, usbDown, mobileRx?.takeUnless { it == -1L }, mobileTx?.takeUnless { it == -1L }, uplink, reconnects,
             cpuProcMs, cpuVpnMs, cpuFwdMs, samplerCpuUs, ioCpuUs).joinToString(",") {
@@ -49,7 +49,7 @@ internal object BatteryCsv {
             BatteryRow(p[0].toInt().also { require(it == 1) }, p[1].toLong(), p[2].toLong(), p[3].toLong(), p[4].toLong(),
                 p[5].toLong(), p[6].toLong(), BatteryKind.valueOf(p[7]), p[8].toLong(), p[9].toLong(), p[10].toLong(),
                 n(11)?.toInt(), n(12)?.toInt(), n(13)?.toInt(), n(14)?.toInt(), supported(n(15), true), supported(n(16), true),
-                supported(n(17), true), supported(n(18), true), n(19)?.toInt(), n(20)?.toInt(), b(21), b(22), b(23), n(24)?.toInt(),
+                n(17), n(18), n(19)?.toInt(), n(20)?.toInt(), b(21), b(22), b(23), n(24)?.toInt(),
                 BatteryVpn.valueOf(p[25]), BatteryTransport.valueOf(p[26]), BatteryHotspot.valueOf(p[27]), b(28), p[29].toLong(),
                 p[30].toLong(), p[31].toLong(), p[32].toLong(), n(33)?.takeUnless { it == -1L }, n(34)?.takeUnless { it == -1L }, p[35].takeIf(String::isNotEmpty)?.let(Uplink::valueOf),
                 p[36].toLong(), n(37), n(38), n(39), p[40].toLong(), p[41].toLong())

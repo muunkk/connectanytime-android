@@ -123,7 +123,8 @@ internal open class BatteryReadings(private val context: Context, private val pr
         val bm = context.getSystemService(BatteryManager::class.java)
         val pm = context.getSystemService(PowerManager::class.java)
         fun extra(name: String): Int? = sticky?.takeIf { it.hasExtra(name) }?.getIntExtra(name, Int.MIN_VALUE)?.takeUnless { it == Int.MIN_VALUE }
-        fun prop(id: Int) = BatteryCsv.supported(bm.getIntProperty(id).toLong(), true)
+        fun prop(id: Int) = BatteryCsv.supported(bm.getIntProperty(id).toLong(),
+            zeroUnsupported = id != BatteryManager.BATTERY_PROPERTY_CURRENT_NOW && id != BatteryManager.BATTERY_PROPERTY_CURRENT_AVERAGE)
         val cpu = proc.read()
         return BatteryRow(boot = Settings.Global.getInt(context.contentResolver, Settings.Global.BOOT_COUNT, 0).toLong(),
             wallMin = wall() / 60_000, elapsedMs = elapsed(), uptimeMs = uptime(),
@@ -253,7 +254,11 @@ internal class BatteryRecorder(private val app: ConnectApp, private val disk: Ba
         if (!running.get() || !pending.compareAndSet(false, true)) return
         post { pending.set(false); sample(BatteryKind.event) }
     }
-    private val periodic = Runnable { if (running.get() && ProxyCounters.gen == rec) runCatching { sample(BatteryKind.periodic) } }
+    private var periodicScheduled = false
+    private val periodic = Runnable {
+        periodicScheduled = false
+        if (running.get() && ProxyCounters.gen == rec) runCatching { sample(BatteryKind.periodic) }
+    }
     private val expiry = Runnable {
         if (running.get() && ProxyCounters.gen == rec) runCatching {
             if (readings.wall() >= app.store.batteryDeadline) expired() else armExpiry()
@@ -308,9 +313,15 @@ internal class BatteryRecorder(private val app: ConnectApp, private val disk: Ba
                 }
             }
         } finally {
-            handler?.removeCallbacks(periodic)
-            if (kind != BatteryKind.stop && running.get() && ProxyCounters.gen == rec) {
-                if (periodicEnabled) handler?.postDelayed(periodic, 60_000)
+            val active = kind != BatteryKind.stop && running.get() && ProxyCounters.gen == rec
+            if (!active || !periodicEnabled) {
+                handler?.removeCallbacks(periodic)
+                periodicScheduled = false
+            } else if (!periodicScheduled) {
+                // Event rows must not postpone an already scheduled periodic sample.
+                periodicScheduled = handler?.postDelayed(periodic, 60_000) == true
+            }
+            if (active) {
                 armExpiry()
             }
         }
