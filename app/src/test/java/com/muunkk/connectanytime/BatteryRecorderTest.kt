@@ -778,15 +778,81 @@ class BatteryRecorderTest {
             File(root, "task/5/stat").apply { parentFile!!.mkdirs(); writeText(stat(5, BatteryThreads.VPN, 100, 1)) }
             File(root, "task/5/comm").writeText("unrelated\n")
             File(root, "task/6/stat").apply { parentFile!!.mkdirs(); writeText(stat(6, BatteryThreads.TIMER, 100, 1)) }
-            val proc = BatteryProc(root, 100)
+            val proc = BatteryProc(root, 100, elapsed = { 100_000L })
             assertEquals(BatteryProc.Cpu(1000, 200, 100), proc.read())
             task.delete(); timer.delete()
             assertEquals(BatteryProc.Cpu(1000, 200, 100), proc.read())
-            task.writeText(stat(3, BatteryThreads.VPN, 5, 2)); timer.writeText(stat(4, BatteryThreads.ACCEPT, 5, 2))
+            task.writeText(stat(3, BatteryThreads.VPN, 5, 10_001)); timer.writeText(stat(4, BatteryThreads.ACCEPT, 5, 10_001))
             File(timer.parentFile, "comm").writeText(BatteryThreads.ACCEPT + "\n")
             assertEquals(BatteryProc.Cpu(1000, 300, 200), proc.read())
         } finally { root.deleteRecursively() }
         assertEquals(BatteryProc.Cpu(null, 0, 0), BatteryProc(File("missing-proc"), 100).read())
+    }
+    @Test fun procBaselinesPreexistingThreadsAfterInitialStatOrCommReadFailure() {
+        for (name in listOf(BatteryThreads.VPN, BatteryThreads.TIMER, BatteryThreads.ACCEPT)) {
+            for (missing in listOf("stat", "comm")) {
+                val root = Files.createTempDirectory("battery-proc-late").toFile()
+                fun stat(tid: Int, name: String, ticks: Int): String {
+                    val fields = MutableList(20) { "0" }
+                    fields[0] = "S"; fields[11] = ticks.toString(); fields[19] = "1"
+                    return "$tid ($name) " + fields.joinToString(" ")
+                }
+                fun update(process: Int, thread: Int) {
+                    File(root, "stat").writeText(stat(1, "app", process))
+                    File(root, "task/3/stat").apply { parentFile!!.mkdirs(); writeText(stat(3, name, thread)) }
+                    File(root, "task/3/comm").writeText("$name\n")
+                }
+                var fail = true
+                val proc = BatteryProc(root, 100, elapsed = { 100_000L }) { file ->
+                    if (fail && file == File(root, "task/3/$missing")) error("transient read")
+                    file.readText()
+                }
+                try {
+                    update(1000, 900)
+                    val first = proc.read()
+                    assertEquals(BatteryProc.Cpu(10_000, 0, 0), first)
+                    fail = false
+                    update(1010, 905)
+                    val recovered = proc.read()
+                    assertEquals("$name after failed $missing read", BatteryProc.Cpu(10_100, 0, 0), recovered)
+                    update(1020, 910)
+                    val next = proc.read()
+                    assertEquals(BatteryProc.Cpu(10_200, if (name == BatteryThreads.VPN) 50 else 0,
+                        if (name == BatteryThreads.VPN) 0 else 50), next)
+                    assertTrue(next.vpn + next.forwarding <= next.process!! - first.process!!)
+                    File(root, "task/3").deleteRecursively()
+                    assertEquals(next, proc.read()) // Exited threads retain only the counted CPU.
+                } finally { root.deleteRecursively() }
+            }
+        }
+    }
+    @Test fun procCountsThreadBornAfterRecordingFromZeroEvenWhenItsFirstReadFails() {
+        for (name in listOf(BatteryThreads.VPN, BatteryThreads.TIMER, BatteryThreads.ACCEPT)) {
+            val root = Files.createTempDirectory("battery-proc-new").toFile()
+            fun stat(tid: Int, name: String, ticks: Int, start: Int): String {
+                val fields = MutableList(20) { "0" }
+                fields[0] = "S"; fields[11] = ticks.toString(); fields[19] = start.toString()
+                return "$tid ($name) " + fields.joinToString(" ")
+            }
+            var now = 100_000L
+            val proc = BatteryProc(root, 100, elapsed = { now })
+            try {
+                File(root, "stat").writeText(stat(1, "app", 1000, 1))
+                assertEquals(BatteryProc.Cpu(10_000, 0, 0), proc.read())
+                now += 1000
+                val task = File(root, "task/3/stat").apply {
+                    parentFile!!.mkdirs(); writeText(stat(3, name, 10, 10_001))
+                }
+                // It was born after the initial scan, but comm is temporarily unreadable.
+                assertEquals(BatteryProc.Cpu(10_000, 0, 0), proc.read())
+                now += 1000
+                File(task.parentFile, "comm").writeText("$name\n")
+                File(root, "stat").writeText(stat(1, "app", 1020, 1))
+                task.writeText(stat(3, name, 15, 10_001))
+                assertEquals(BatteryProc.Cpu(10_200, if (name == BatteryThreads.VPN) 150 else 0,
+                    if (name == BatteryThreads.VPN) 0 else 150), proc.read())
+            } finally { root.deleteRecursively() }
+        }
     }
     @Test fun procNamesAreReadOncePerTidStartIncludingWorkersAndOtherThreads() {
         fun stat(tid: Int, name: String, ticks: Int, start: Int): String {
@@ -808,7 +874,7 @@ class BatteryRecorderTest {
             task(5, "unrelated", 900, 1)
             task(7, BatteryThreads.VPN, 10, 1)
             File(root, "task/7/comm").delete()
-            val proc = BatteryProc(root, 100) { file ->
+            val proc = BatteryProc(root, 100, elapsed = { 100_000L }) { file ->
                 val name = file.relativeTo(root).path
                 reads[name] = (reads[name] ?: 0) + 1
                 file.readText()
@@ -821,21 +887,23 @@ class BatteryRecorderTest {
             assertEquals("Known workers must skip stat on the next nine samples", 1, reads["task/3/stat"])
             assertEquals(10, reads["task/4/stat"])
             assertEquals(10, reads["stat"])
-            task(3, BatteryThreads.ACCEPT, 5, 2) // A reused worker TID needs a fresh classification.
+            task(3, BatteryThreads.ACCEPT, 5, 10_001) // A reused worker TID needs a fresh classification.
             assertEquals(BatteryProc.Cpu(1000, 200, 50), proc.read())
             assertEquals("Revalidate a cached worker TID every ten samples", 2, reads["task/3/stat"])
             assertEquals(2, reads["task/3/comm"])
             assertEquals(1, reads["task/4/comm"])
-            task(4, BatteryThreads.WORKER, 500, 2)
+            task(4, BatteryThreads.WORKER, 500, 10_001)
             assertEquals(BatteryProc.Cpu(1000, 200, 50), proc.read())
             assertEquals(2, reads["task/4/comm"])
-            task(6, BatteryThreads.TIMER, 3, 1) // New TIDs also read comm once.
+            task(6, BatteryThreads.TIMER, 3, 10_001) // New TIDs also read comm once.
             assertEquals(BatteryProc.Cpu(1000, 200, 80), proc.read())
             assertEquals(1, reads["task/6/comm"])
             task(7, BatteryThreads.VPN, 15, 1) // A previously unreadable name can recover.
-            assertEquals(BatteryProc.Cpu(1000, 350, 80), proc.read())
+            assertEquals(BatteryProc.Cpu(1000, 200, 80), proc.read())
+            task(7, BatteryThreads.VPN, 20, 1)
+            assertEquals(BatteryProc.Cpu(1000, 250, 80), proc.read())
             File(root, "task").deleteRecursively()
-            assertEquals(BatteryProc.Cpu(1000, 350, 80), proc.read())
+            assertEquals(BatteryProc.Cpu(1000, 250, 80), proc.read())
         } finally { root.deleteRecursively() }
     }
     @Test fun transportClassifiesEvery921FallbackAndSeedsOnlyCurrentBuildTail() {

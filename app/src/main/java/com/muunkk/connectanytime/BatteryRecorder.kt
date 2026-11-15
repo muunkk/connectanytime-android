@@ -40,12 +40,17 @@ internal fun batteryProcStat(line: String): BatteryProcStat? = runCatching {
 /** Keep exited threads' last totals. TID reuse has a different start tick. */
 internal class BatteryProc(private val root: File = File("/proc/self"),
     private val ticks: Long = Os.sysconf(OsConstants._SC_CLK_TCK),
+    private val elapsed: () -> Long = SystemClock::elapsedRealtime,
     private val readText: (File) -> String = { it.readText() }) {
-    private val seen = mutableMapOf<Pair<Long, Long>, BatteryProcStat>()
+    private data class Counter(val stat: BatteryProcStat, val baseline: Long)
+    private val seen = mutableMapOf<Pair<Long, Long>, Counter>()
     private val names = mutableMapOf<Long, Pair<Long, String>>()
+    private var startTicks: Long? = null
     private var samples = 0
     data class Cpu(val process: Long?, val vpn: Long, val forwarding: Long)
     fun read(): Cpu {
+        val initialScan = startTicks == null
+        val start = startTicks ?: (elapsed() * ticks / 1000).also { startTicks = it }
         fun read(file: File) = runCatching { batteryProcStat(readText(file)) }.getOrNull()
         // Worker CPU is metered separately. Periodically check for TID reuse without
         // reopening every worker stat on every event and minute sample.
@@ -62,13 +67,19 @@ internal class BatteryProc(private val root: File = File("/proc/self"),
             }
             if (cached.second !in BATTERY_CPU_THREAD_NAMES || stat.name !in BATTERY_CPU_THREAD_NAMES) return@forEach
             val key = stat.tid to stat.start
-            if (stat.ticks >= (seen[key]?.ticks ?: 0)) seen[key] = stat
+            val previous = seen[key]
+            if (stat.ticks >= (previous?.stat?.ticks ?: 0)) {
+                // A missed initial stat/comm read must not add pre-recording CPU later.
+                // Threads born during recording still contribute their whole lifetime.
+                val baseline = previous?.baseline ?: if (!initialScan && stat.start < start) stat.ticks else 0
+                seen[key] = Counter(stat, baseline)
+            }
         }
         names.keys.retainAll(live)
         fun ms(t: Long) = if (ticks > 0) t * 1000 / ticks else 0
         return Cpu(read(root.resolve("stat"))?.let { ms(it.ticks) },
-            ms(seen.values.filter { it.name == BatteryThreads.VPN }.sumOf { it.ticks }),
-            ms(seen.values.filter { it.name != BatteryThreads.VPN }.sumOf { it.ticks }))
+            ms(seen.values.filter { it.stat.name == BatteryThreads.VPN }.sumOf { it.stat.ticks - it.baseline }),
+            ms(seen.values.filter { it.stat.name != BatteryThreads.VPN }.sumOf { it.stat.ticks - it.baseline }))
     }
 }
 

@@ -223,7 +223,8 @@ internal object BatteryMath {
         fun progress(matches: (BatterySituation) -> Boolean) = retained.entries
             .filter { matches(it.key) && it.key.uplink == compareUplink }.sumOf { entry -> entry.value.sumOf { it.ms } }
         val top = grouped.entries.sortedByDescending { it.value.hours }.take(3)
-        val highest = grouped.entries.filter { it.value.ready }.maxByOrNull { it.value.percentPerHour!! }?.key
+        val highest = top.filter { it.value.ready }.takeIf { it.size >= 2 }
+            ?.maxByOrNull { it.value.percentPerHour!! }?.key
         val topKeys = top.map { it.key }.toSet()
         val other = windows.filter { it.situation !in topKeys || it.ms < 600_000 }
         val elapsed = intervals.sumOf { it.ms }

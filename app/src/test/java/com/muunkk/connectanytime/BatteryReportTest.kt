@@ -107,6 +107,32 @@ class BatteryReportTest {
         assertEquals(3, report(all).situations.size)
         assertTrue(report(all).otherOrShort.hours > 0)
     }
+    @Test fun highestSituationIsChosenFromTheShownRowsWhenHiddenRowHasHigherDrain() {
+        val rows = listOf(120, 90, 60, 30).flatMapIndexed { index, minutes ->
+            batteryTrace(minutes, rec = index + 1L, uplink = Uplink.entries[index])
+        }
+        val r = report(rows)
+        assertEquals(3, r.situations.size)
+        assertTrue(r.situations.all { it.rate.ready })
+        assertEquals(Uplink.entries[2], r.situations.single { it.highest }.situation.uplink)
+        assertTrue(r.otherOrShort.percentPerHour!! > r.situations.maxOf { it.rate.percentPerHour!! })
+    }
+    @Test fun highestSituationRequiresAtLeastTwoShownReadyRows() {
+        val rows = listOf(120, 90, 60, 30).flatMapIndexed { index, minutes ->
+            batteryTrace(minutes, loss = when (index) { 0 -> 100_000; 3 -> 10_000; else -> 0 },
+                rec = index + 1L, uplink = Uplink.entries[index])
+        }
+        val r = report(rows)
+        assertEquals(3, r.situations.size)
+        assertEquals(1, r.situations.count { it.rate.ready })
+        assertTrue(r.otherOrShort.ready)
+        assertTrue(r.situations.none { it.highest })
+    }
+    @Test fun highestSituationIsAbsentForASingleReadySituation() {
+        val r = report(batteryTrace())
+        assertTrue(r.situations.single().rate.ready)
+        assertFalse(r.situations.single().highest)
+    }
     @Test fun quantumUnavailableForSingleStepAndShortReasonTakesPriority() {
         val rows = batteryTrace()
         val r = report(listOf(rows.first(), rows.last()))

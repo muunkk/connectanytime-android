@@ -195,7 +195,7 @@ internal class BatteryStore(private val context: Context, private val prefs: Sto
                 retry?.cancel(false); retry = null; buffer.clear()
                 check(!file.exists() || file.delete())
                 File(file.parentFile, "samples.tmp").delete()
-                check(!exports.exists() || exports.deleteRecursively())
+                // Recipients may still open shared snapshots; leave them to the one-hour prune.
                 prefs.batteryAutoStopped = false
                 failures = 0; mutableFailed.value = false; mutableReport.value = null
                 rebuild()

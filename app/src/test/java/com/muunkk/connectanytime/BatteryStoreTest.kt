@@ -359,17 +359,31 @@ class BatteryStoreTest {
         assertTrue(text.contains("# device="))
         assertTrue(text.contains("# adb:"))
     }
-    @Test fun clearDeletesBufferCsvExportsAndLatchAndIgnoresConcurrentClear() {
+    @Test fun clearDeletesBufferCsvAndLatchButKeepsExportsReadableUntilPruned() {
         val d = disk()
         batteryTrace().take(5).forEach(d::add); d.awaitIdle()
-        d.exports.mkdirs(); File(d.exports, "old.csv").writeText("old")
+        var exported: File? = null
+        d.export { exported = it }; d.awaitIdle(); shadowOf(Looper.getMainLooper()).idle()
+        val snapshot = exported!!
+        val text = snapshot.readText()
+        batteryTrace().drop(5).take(2).forEach(d::add); d.awaitIdle()
+        assertEquals(2, d.bufferedRows().size)
         app.store.batteryAutoStopped = true
         var callback = false
         assertTrue(d.clear { callback = true })
         d.awaitIdle(); shadowOf(Looper.getMainLooper()).idle()
-        assertTrue(callback); assertFalse(d.file.exists()); assertFalse(d.exports.exists())
+        assertTrue(callback); assertFalse(d.file.exists())
+        assertTrue(d.exports.exists())
+        // A share target can open the snapshot after Clear has completed.
+        assertEquals(text, snapshot.inputStream().bufferedReader().use { it.readText() })
         assertTrue(d.bufferedRows().isEmpty()); assertFalse(app.store.batteryAutoStopped)
         assertEquals(0, d.report.value!!.rowCount)
+        snapshot.setLastModified(6_400_000) // Exactly one hour old is still retained.
+        d.refresh(); d.awaitIdle()
+        assertTrue(snapshot.exists())
+        snapshot.setLastModified(6_399_999)
+        d.refresh(); d.awaitIdle()
+        assertFalse(snapshot.exists())
     }
     @Test fun exportDeletesOnlyOldSnapshotsAndProviderRestrictsPaths() {
         val d = disk()
