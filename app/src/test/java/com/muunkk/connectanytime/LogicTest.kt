@@ -103,16 +103,87 @@ class LogicTest {
     }
     private val cfg = TunnelConfig("10.0.0.1", "255.255.255.0", "", listOf("10.0.0.2"),
         "nyu.edu", "192.0.2.1", emptyList(), emptyList(), emptyList(), 1400)
-    @Test fun configChangesIncludeAllBuilderInputs() {
-        assertFalse(cfg.changedFrom(cfg.copy()))
-        assertTrue(cfg.changedFrom(null))
+    @Test fun everyBuilderInputNeedsANewInterface() {
+        assertTrue(cfg.needsNewInterface(null))
+        assertFalse(cfg.needsNewInterface(cfg.copy()))
         listOf(cfg.copy(address = "10.0.0.3"), cfg.copy(mask = "255.255.0.0"),
             cfg.copy(address6 = "fd00::1/128"), cfg.copy(dns = listOf("10.0.0.3")),
-            cfg.copy(domain = "shanghai.nyu.edu"), cfg.copy(gateway = "192.0.2.2"),
+            cfg.copy(dns = listOf("10.0.0.2", "10.0.0.4")), cfg.copy(domain = "shanghai.nyu.edu"),
             cfg.copy(includes = listOf("10.0.0.0/8")), cfg.copy(excludes = listOf("192.168.0.0/16")),
-            cfg.copy(splitDns = listOf("nyu.edu")), cfg.copy(mtu = 1280)).forEach {
-            assertTrue(it.changedFrom(cfg))
+            cfg.copy(mtu = 1280)).forEach {
+            assertTrue(it.toString(), it.needsNewInterface(cfg))
         }
+    }
+    @Test fun aReconnectThatChangesNothingTheInterfaceUsesKeepsIt() {
+        val routes = cfg.copy(includes = listOf("10.0.0.0/8", "172.16.0.0/12"), excludes = listOf("10.1.0.0/16", "10.2.0.0/16"))
+        listOf(
+            cfg.copy(mtu = 1406), // larger MTU still fits
+            cfg.copy(gateway = "192.0.2.2"), // not a Builder input
+            cfg.copy(splitDns = listOf("nyu.edu")), // not a Builder input
+            cfg.copy(domain = "  nyu.edu "), // same search domains
+        ).forEach { assertFalse(it.toString(), it.needsNewInterface(cfg)) }
+        val reordered = routes.copy(includes = routes.includes.reversed(), excludes = routes.excludes.reversed())
+        assertFalse(reordered.needsNewInterface(routes))
+        // DNS order is priority.
+        val two = cfg.copy(dns = listOf("10.0.0.2", "10.0.0.3"))
+        assertTrue(two.copy(dns = two.dns.reversed()).needsNewInterface(two))
+        // An interface that set no MTU got Android's 1500.
+        assertFalse(cfg.copy(mtu = 1500).needsNewInterface(cfg.copy(mtu = 0)))
+        assertTrue(cfg.copy(mtu = 1406).needsNewInterface(cfg.copy(mtu = 0)))
+    }
+    @Test fun changesNameFieldsButNotTheirValues() {
+        assertEquals(emptyList<String>(), cfg.changes(cfg.copy()))
+        val next = cfg.copy(address = "10.9.9.9", gateway = "192.0.2.77", mtu = 1406,
+            dns = listOf("10.0.0.2", "10.0.0.8"), includes = listOf("10.0.0.0/8"))
+        val changes = next.changes(cfg)
+        assertEquals(listOf("address changed", "DNS servers changed (1 → 2)", "server address changed",
+            "split-include routes changed (0 → 1)", "MTU 1400 → 1406"), changes)
+        val text = changes.joinToString()
+        listOf("10.9.9.9", "192.0.2.77", "10.0.0.8", "10.0.0.0").forEach { assertFalse(it, text.contains(it)) }
+        val two = cfg.copy(dns = listOf("10.0.0.2", "10.0.0.3"))
+        assertEquals(listOf("DNS servers reordered"), two.copy(dns = two.dns.reversed()).changes(two))
+    }
+    @Test fun aSettingsChangeSwitchesInterfacesWithoutEndingTheRun() {
+        val closed = mutableListOf<String>()
+        val tuns = TunHandoff<String> { closed += it }
+        tuns.install("a") // first login
+        assertEquals("a", tuns.current())
+        assertNull(tuns.take()) // nothing offered: OpenConnect keeps its fd
+        tuns.offer("b") // reconnect brought new settings: b is established, a still in use
+        assertEquals(emptyList<String>(), closed)
+        assertEquals("b", tuns.take()) // OpenConnect's thread switches
+        assertEquals(emptyList<String>(), closed) // a stays open until the switch is reported
+        tuns.switched()
+        assertEquals(listOf("a"), closed)
+        assertEquals("b", tuns.current())
+        tuns.switched()
+        assertEquals(listOf("a"), closed)
+    }
+    @Test fun aSecondChangeBeforeTheSwitchReplacesTheFirst() {
+        val closed = mutableListOf<String>()
+        val tuns = TunHandoff<String> { closed += it }
+        tuns.install("a")
+        tuns.offer("b")
+        tuns.offer("c") // b was never handed to OpenConnect
+        assertEquals(listOf("b"), closed)
+        assertEquals("c", tuns.take())
+        assertNull(tuns.take()) // the second SWITCH_TUN finds nothing
+        tuns.switched()
+        assertEquals(listOf("b", "a"), closed)
+    }
+    @Test fun aRunThatEndsBeforeSwitchingLeavesTheNewestInterface() {
+        val closed = mutableListOf<String>()
+        val tuns = TunHandoff<String> { closed += it }
+        tuns.install("a")
+        tuns.offer("b") // Android already routes through b
+        assertEquals("b", tuns.idle()) // the rejoin runs on b, not on a's dead interface
+        assertEquals(listOf("a"), closed)
+        tuns.install("c") // the rejoin needed yet another interface
+        assertEquals(listOf("a", "b"), closed)
+        tuns.offer("d"); tuns.take(); tuns.offer("e")
+        tuns.closeAll() // stop: everything goes, including what was retired but not reported
+        assertEquals(setOf("a", "b", "c", "d", "e"), closed.toSet())
+        assertNull(tuns.current())
     }
     @Test fun logDropsCountdownsAndEmptyLines() {
         assertNull(LogLines.filter("sleep 5s"))

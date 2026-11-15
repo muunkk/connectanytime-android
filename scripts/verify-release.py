@@ -38,7 +38,7 @@ for variant, package, label in [
 jni = (ROOT / "app/src/main/cpp/jni.c").read_text()
 entry_points = re.findall(r"JNIEXPORT \w+ JNICALL API\((\w+)\)", jni)
 callbacks = dict(re.findall(r'GetMethodID\(e, cls, "(\w+)", "([^"]+)"\)', jni))
-assert len(entry_points) == 11 and len(callbacks) == 4
+assert len(entry_points) == 11 and len(callbacks) == 5
 with zipfile.ZipFile(APK) as archive, tempfile.TemporaryDirectory() as folder:
     for abi in ["arm64-v8a", "x86_64"]:
         info = archive.getinfo(f"lib/{abi}/libconnectanytime.so")

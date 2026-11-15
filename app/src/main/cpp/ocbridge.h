@@ -12,6 +12,8 @@ typedef struct ocb_session ocb_session;
 typedef int (*ocb_trust_fn)(void *ctx, const unsigned char **der, const int *lengths, int count, const char *hostname);
 typedef void (*ocb_protect_fn)(void *ctx, int fd);
 typedef void (*ocb_log_fn)(void *ctx, int level, const char *line);
+/// On OpenConnect's thread, after ocb_switch_tun: the tun fd to switch to, or -1.
+typedef int (*ocb_next_tun_fn)(void *ctx);
 
 /// Tunnel settings pushed by the server. Strings are owned by the struct.
 typedef struct {
@@ -30,13 +32,16 @@ typedef struct {
 /// OCB_RECONNECTING: the connection dropped and OpenConnect is retrying.
 /// OCB_ATTEMPT: a reconnect attempt is starting.
 /// OCB_RECONNECTED: back up; `cfg` holds the server's (possibly new) tunnel settings.
+/// OCB_TUN_SWITCHED: OpenConnect now uses the fd from ocb_next_tun_fn and no longer
+/// touches the previous one, which may be closed.
 /// `cfg` is NULL for the other events, and only valid during the call.
-enum { OCB_RECONNECTING, OCB_ATTEMPT, OCB_RECONNECTED };
+enum { OCB_RECONNECTING, OCB_ATTEMPT, OCB_RECONNECTED, OCB_TUN_SWITCHED };
 typedef void (*ocb_event_fn)(void *ctx, int event, const ocb_config *cfg);
 
 ocb_session *ocb_new(const char *server, const char *user, const char *password,
                      const char *second_password, ocb_log_fn log,
-                     ocb_event_fn event, ocb_trust_fn trust, ocb_protect_fn protect, void *ctx);
+                     ocb_event_fn event, ocb_trust_fn trust, ocb_protect_fn protect,
+                     ocb_next_tun_fn next_tun, void *ctx);
 
 /// Logs in (username, password, then second password for Duo) and opens the
 /// VPN session. Blocks until Duo is approved or rejected. 0 on success,
@@ -54,12 +59,12 @@ int ocb_connect(ocb_session *s, char *err, size_t errlen);
 int ocb_resume(ocb_session *s, const char *url, const char *cookie, const char *dnsname,
                const char *ip, char *err, size_t errlen);
 
-/// After ocb_connect or ocb_resume succeeds: what ocb_resume needs to rejoin the
-/// session later. Owned by the session. The cookie is a credential; never log it.
-const char *ocb_session_url(ocb_session *s);
-const char *ocb_session_cookie(ocb_session *s);
-const char *ocb_session_dnsname(ocb_session *s);
-const char *ocb_session_ip(ocb_session *s);
+/// What ocb_resume needs to rejoin the session later (url, cookie, dnsname, ip), as
+/// of the last successful connect, resume or reconnect. Thread-safe: copies taken
+/// while ocb_run may be reconnecting. Free them with ocb_saved_free. 0 on success.
+/// The cookie is a credential (it carries the current STRAP key); never log it.
+int ocb_session_saved(ocb_session *s, char *out[4]);
+void ocb_saved_free(char *saved[4]);
 
 int ocb_get_config(ocb_session *s, ocb_config *out);
 void ocb_config_free(ocb_config *c);
@@ -73,6 +78,10 @@ int ocb_run(ocb_session *s, int tun_fd, int reconnect_timeout);
 /// Thread-safe: drops the current connection and reconnects right away with
 /// the existing session, e.g. after switching networks.
 void ocb_reconnect(ocb_session *s);
+
+/// Thread-safe: asks ocb_run to switch to a new tun fd on its own thread, keeping
+/// the connection. It asks ocb_next_tun_fn for the fd, then reports OCB_TUN_SWITCHED.
+void ocb_switch_tun(ocb_session *s);
 
 /// Thread-safe: aborts ocb_connect or ocb_run, logging out of the server's session.
 void ocb_cancel(ocb_session *s);

@@ -11,7 +11,7 @@ static JavaVM *vm;
 typedef struct {
     ocb_session *s;
     jobject callbacks;
-    jmethodID log, event, trust, protect;
+    jmethodID log, event, trust, protect, next_tun;
     char error[512];
 } bridge;
 
@@ -112,6 +112,12 @@ static void protect_cb(void *ctx, int fd) {
     // connect/send fails, and OpenConnect closes it without an fd reuse race.
     if (!leave(c) || !ok) poison_socket(fd);
 }
+// OpenConnect's thread asks which tun fd to switch to (see ocb_switch_tun).
+static int next_tun_cb(void *ctx) {
+    bridge *b = ctx; callback_env c = enter(); if (!c.env) return -1;
+    jint fd = (*c.env)->CallIntMethod(c.env, b->callbacks, b->next_tun);
+    return leave(c) ? fd : -1;
+}
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *v, void *unused) {
     (void)unused; vm = v; return JNI_VERSION_1_6;
 }
@@ -128,12 +134,13 @@ JNIEXPORT jlong JNICALL API(create)(JNIEnv *e, jobject self, jbyteArray server, 
     b->event = (*e)->GetMethodID(e, cls, "onEvent", "(I[Ljava/lang/String;)V");
     b->trust = (*e)->GetMethodID(e, cls, "verify", "([[BLjava/lang/String;)Z");
     b->protect = (*e)->GetMethodID(e, cls, "protectSocket", "(I)Z");
+    b->next_tun = (*e)->GetMethodID(e, cls, "nextTun", "()I");
     (*e)->DeleteLocalRef(e, cls);
     char *s = from_utf8(e, server);
     char *u = from_utf8(e, user);
     char *p = from_utf8(e, password);
     if (s && u && p && !(*e)->ExceptionCheck(e))
-        b->s = ocb_new(s, u, p, "push", log_cb, event_cb, trust_cb, protect_cb, b);
+        b->s = ocb_new(s, u, p, "push", log_cb, event_cb, trust_cb, protect_cb, next_tun_cb, b);
     if (p) {
         size_t n = (*e)->GetArrayLength(e, password);
         wipe(p, n);
@@ -157,8 +164,11 @@ JNIEXPORT jstring JNICALL API(error)(JNIEnv *e, jobject self, jlong handle) {
     (void)self; return string(e, B->error);
 }
 JNIEXPORT jobjectArray JNICALL API(saved)(JNIEnv *e, jobject self, jlong handle) {
-    (void)self; const char *s[] = {ocb_session_url(B->s), ocb_session_cookie(B->s), ocb_session_dnsname(B->s), ocb_session_ip(B->s)};
-    return strings(e, s, 4);
+    (void)self; char *s[4];
+    if (ocb_session_saved(B->s, s)) { const char *none[4] = {0}; return strings(e, none, 4); }
+    jobjectArray a = strings(e, (const char **)s, 4);
+    ocb_saved_free(s); // wipes the cookie copy
+    return a;
 }
 JNIEXPORT jobjectArray JNICALL API(config)(JNIEnv *e, jobject self, jlong handle) {
     (void)self; ocb_config cfg; if (ocb_get_config(B->s, &cfg)) return NULL;
@@ -174,6 +184,7 @@ JNIEXPORT void JNICALL API(command)(JNIEnv *e, jobject self, jlong handle, jint 
     (void)e; (void)self;
     if (cmd == 0) ocb_reconnect(B->s);
     else if (cmd == 1) ocb_cancel(B->s);
+    else if (cmd == 3) ocb_switch_tun(B->s);
     else ocb_detach(B->s);
 }
 JNIEXPORT void JNICALL API(free)(JNIEnv *e, jobject self, jlong handle) {

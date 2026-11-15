@@ -113,9 +113,47 @@ data class TunnelConfig(
     val domain: String, val gateway: String, val includes: List<String>, val excludes: List<String>,
     val splitDns: List<String>, val mtu: Int
 ) {
-    // Structural equality includes every input to Builder. No delimiter collisions.
-    fun changedFrom(previous: TunnelConfig?) = this != previous
+    private val domains get() = domain.split(Regex("\\s+")).filter(String::isNotBlank)
+    private val interfaceMtu get() = if (mtu > 0) mtu else DEFAULT_MTU
+
+    /** Whether an interface built from [installed] can't carry these settings. Builder
+     *  can't change an established interface, but most of what a reconnect changes
+     *  never reached it: the server's address and split DNS aren't used, routes are a
+     *  set, and a larger MTU still fits. A smaller one doesn't: OpenConnect reads each
+     *  packet into a buffer of the new MTU. DNS servers and search domains stay
+     *  ordered, because the order is their priority. */
+    fun needsNewInterface(installed: TunnelConfig?) = installed == null ||
+        address != installed.address || mask != installed.mask || address6 != installed.address6 ||
+        dns != installed.dns || domains != installed.domains ||
+        includes.toSet() != installed.includes.toSet() || excludes.toSet() != installed.excludes.toSet() ||
+        interfaceMtu < installed.interfaceMtu
+
+    /** What changed since [previous], for the activity log: field names only, never the
+     *  addresses, servers or routes themselves; the MTU is shown since it says nothing
+     *  about the user. */
+    fun changes(previous: TunnelConfig): List<String> = buildList {
+        fun list(name: String, now: List<String>, was: List<String>) {
+            if (now == was) return
+            add(when {
+                now.toSet() == was.toSet() -> "$name reordered"
+                now.size != was.size -> "$name changed (${was.size} → ${now.size})"
+                else -> "$name changed"
+            })
+        }
+        if (address != previous.address) add("address changed")
+        if (mask != previous.mask) add("netmask changed")
+        if (address6 != previous.address6) add("IPv6 address changed")
+        list("DNS servers", dns, previous.dns)
+        list("search domains", domains, previous.domains)
+        if (gateway != previous.gateway) add("server address changed")
+        list("split-include routes", includes, previous.includes)
+        list("split-exclude routes", excludes, previous.excludes)
+        list("split DNS", splitDns, previous.splitDns)
+        if (mtu != previous.mtu) add("MTU ${previous.mtu} → $mtu")
+    }
     companion object {
+        /** What Android gives an interface whose Builder set no MTU. */
+        const val DEFAULT_MTU = 1500
         fun from(a: Array<String>) = TunnelConfig(a[0], a[1], a[2], a.slice(3..5).filter(String::isNotEmpty),
             a[6], a[7], lines(a[8]), lines(a[9]), lines(a[10]), a[11].toInt())
         private fun lines(s: String) = s.lineSequence().filter(String::isNotBlank).toList()
@@ -137,4 +175,61 @@ class NetworkBaseline {
         identity = next
         return changed
     }
+}
+
+/** Which tun interface OpenConnect reads and writes, and which can be closed. A live
+ *  session switches to a new interface without reconnecting: the service establishes it
+ *  (so traffic never bypasses the VPN) and [offer]s it, OpenConnect [take]s it on its own
+ *  thread, and once it reports the switch, [switched] closes the old one. Never close an
+ *  interface OpenConnect may still use: the fd number could be reused under it.
+ *  Thread-safe; `close` runs under the lock and must not block. */
+class TunHandoff<T : Any>(private val close: (T) -> Unit) {
+    private var current: T? = null
+    private var next: T? = null
+    private val retired = ArrayList<T>()
+
+    /** The interface a new run uses. */
+    @Synchronized fun current(): T? = current
+
+    /** No run is using any interface: make the newest established one current, and close
+     *  the rest (one offered to a run that ended before taking it, for instance). */
+    @Synchronized fun idle(): T? {
+        next?.let { n -> current?.let(retired::add); current = n; next = null }
+        closeRetired()
+        return current
+    }
+
+    /** No run is using any interface: [tun] replaces them all. */
+    @Synchronized fun install(tun: T) {
+        listOfNotNull(current, next).forEach(retired::add)
+        current = tun; next = null
+        closeRetired()
+    }
+
+    /** A run is going: switch to [tun] when OpenConnect asks. Replaces (and closes) one
+     *  offered earlier that it hasn't taken yet. */
+    @Synchronized fun offer(tun: T) {
+        next?.let(close)
+        next = tun
+    }
+
+    /** On OpenConnect's thread: the interface to switch to, or null. */
+    @Synchronized fun take(): T? {
+        val n = next ?: return null
+        current?.let(retired::add)
+        current = n; next = null
+        return n
+    }
+
+    /** OpenConnect has switched to what it took: close what it used before. */
+    @Synchronized fun switched() = closeRetired()
+
+    /** Stopped, and no run is using any interface. */
+    @Synchronized fun closeAll() {
+        listOfNotNull(current, next).forEach(retired::add)
+        current = null; next = null
+        closeRetired()
+    }
+
+    private fun closeRetired() { retired.forEach(close); retired.clear() }
 }

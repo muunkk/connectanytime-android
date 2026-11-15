@@ -13,6 +13,8 @@ class NativeBridge {
         fun onEvent(event: Int, config: Array<String>?)
         fun verify(chain: Array<ByteArray>, hostname: String): Boolean
         fun protectSocket(fd: Int): Boolean
+        /** On OpenConnect's thread after [SWITCH_TUN]: the tun fd to switch to, or -1. */
+        fun nextTun(): Int
     }
     external fun setNetwork(handle: Long)
     external fun create(server: ByteArray, user: ByteArray, password: ByteArray, callbacks: Callbacks): Long
@@ -31,6 +33,13 @@ class NativeBridge {
         const val RECONNECT = 0
         const val CANCEL = 1
         const val DETACH = 2
+        /** Switch to the interface [Callbacks.nextTun] gives, keeping the connection. */
+        const val SWITCH_TUN = 3
+        // onEvent: ocbridge.h's OCB_* events
+        const val RECONNECTING = 0
+        const val ATTEMPT = 1
+        const val RECONNECTED = 2
+        const val TUN_SWITCHED = 3
         init { System.loadLibrary("connectanytime") }
     }
 }
