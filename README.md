@@ -564,7 +564,18 @@ service, and the iPhone's to the hotspot network, so other networks are unaffect
 Mac on the hotspot is the exception above. While tethered with sharing off, apps using the proxy can't connect:
 turn the proxies off on the Mac, or sharing back on.
 
-## Battery measurement ground truth steps
+## Battery drain measurement
+
+Settings → **Battery drain** turns on a recorder that checks the battery about once a
+minute while the VPN is on and the phone is unplugged (it turns itself off after 7
+days). It records counts only: battery charge, voltage, temperature, screen and power
+state, network type, the app's processor time, and proxy and cellular byte totals. It
+records no sites, addresses, or names of connected devices. The Battery drain screen
+shows whole-phone drain for screen-off sharing, a sharing-in-use vs off (or idle)
+comparison, the app's processor use, and a CSV export. The design, accuracy limits
+and drain suspects are in [docs/battery-measurement.md](docs/battery-measurement.md).
+
+### Ground truth steps
 
 CSV headers point here for an adb cross-check. Use wireless debugging on Android 11+
 so the phone can stay unplugged during measurement. Pair and connect with the addresses

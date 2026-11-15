@@ -1194,3 +1194,63 @@ Opus 8/10 ship, GPT Sol 7/10 don't ship. Fixed:
 - [ ] Disconnect still logs out, and Connect needs Duo afterwards.
 - [ ] Rarely seen, so check only if it happens: "The saved session key was refused;
       trying the newer one" followed by a successful rejoin.
+
+# Battery drain measurement (2026-11-15)
+
+## Problem
+
+Sharing the VPN over the hotspot (Sharing card, tether proxy, Automatic PAC) empties
+the battery in about two hours, and there was no data to optimize against.
+
+## What this adds
+
+An opt-in recorder (Settings → Battery drain) and a report screen. Design, feasibility
+and accuracy limits, ranked drain suspects with file:line evidence, quick wins and the
+adb cross-check: `docs/battery-measurement.md`.
+
+- `BatteryRecorder` (`battery-rec` HandlerThread): one row a minute while unplugged and
+  the VPN is on, plus event rows on screen, power, hotspot, sharing, uplink, VPN and
+  transport changes. No wakelock. Situation generations (`gen`, `pgen`,
+  `transport_gen`) make intervals that span unseen transitions "Mixed".
+- `BatteryStore` (`battery-io`): CSV in `filesDir/battery`, 4 MiB cap with atomic
+  rotation, tail repair, idempotent retries, export through a FileProvider limited to
+  `cache-path battery-export/`.
+- `BatteryReport`: pure functions. Charge-counter and level paths, gauge-step range
+  (a sampling estimate, root-sum-square over windows), readiness, watts from the energy
+  counter or charge × voltage, CPU share over common valid intervals, and a comparison
+  whose sides, readiness and uplink come from the same windows.
+- Edits to existing code, all checked in the diff: thread names (`oc-run`,
+  `proxy-timer`, `proxy-worker`, `proxy-accept`); status counters in
+  `ConnectVpnService.state()` (one `getAndSet` and two atomic increments); `ProxyWorkers`
+  (same pool parameters, per-task CPU meter created only while measuring); the
+  `ProxyCounters.traffic` hook beside `meter.traffic`; an exception-contained
+  `ActivityLog` observer. No change to connect, reconnect, rejoin or native code.
+  `VpnStatusContractTest` pins the status literals the counters compare against.
+- Debug builds enable pseudo-locales (for the RTL screenshot); release is unchanged.
+
+## Checks
+
+- `./gradlew testDebugUnitTest lintDebug lintRelease assembleDebug assembleRelease`:
+  449 tests, 0 failures; lint 0 errors (warnings unchanged in kind; 2 `UseKtx` in
+  `BatteryControl.kt`).
+- `scripts/verify-release.py`: all PASS (signature, 16 KB alignment, versions 0.1.4 (5)
+  unchanged, JNI names after R8).
+- Screenshots in `app/build/screenshots/battery-*` and `home-battery-*` were reviewed by
+  eye. They are written, not compared, as with the existing `ScreenshotTest`.
+- Not tested on a device.
+
+## Device checklist (battery measurement)
+
+- [ ] Overhead: same proxied download and a many-short-connections page load on 0.1.4,
+      this build with measuring off, and with it on. Process CPU (`top -H`, batterystats
+      UID CPU) and throughput. Target under 0.5 % of one core extra, no throughput change.
+- [ ] VPN reliability with measuring on: Wi‑Fi ↔ mobile, a forced reconnect (airplane mode
+      ~5 s), a tunnel switch, force-stop and rejoin without Duo. All as in 0.1.4.
+- [ ] Export and Clear during a reconnect.
+- [ ] TalkBack: with the Battery drain screen open, plug the charger in and out, and turn
+      the VPN off: each is announced once; turning the switch yourself isn't announced twice.
+- [ ] The comparison reaches ready on the phone (an hour of screen-off sharing in use, an hour
+      with Share over hotspot off), and the sentence agrees with the two side rows.
+- [ ] batterystats cross-check (README, Ground truth steps): drain and UID CPU agree within
+      the gauge's resolution.
+- [ ] The CSV contains no hostnames, IP addresses or device names.
