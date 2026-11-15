@@ -37,6 +37,9 @@ import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 class MainActivity : ComponentActivity() {
+    private companion object {
+        const val STATE_NOTIFICATION_DENIED = "notificationDenied"
+    }
     private val consent = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         if (it.resultCode == RESULT_OK) Controls.connect(this)
     }
@@ -89,11 +92,13 @@ class MainActivity : ComponentActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putBoolean(Controls.EXTRA_CONFIRM_HOTSPOT, confirmHotspot)
+        outState.putBoolean(STATE_NOTIFICATION_DENIED, notificationDenied)
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
         confirmHotspot = savedInstanceState?.getBoolean(Controls.EXTRA_CONFIRM_HOTSPOT) ?: false
+        notificationDenied = savedInstanceState?.getBoolean(STATE_NOTIFICATION_DENIED) ?: false
         if (savedInstanceState == null) takeConfirmHotspot(intent)
         enableEdgeToEdge()
         setContent {
