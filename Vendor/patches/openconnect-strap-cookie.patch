@@ -1,0 +1,68 @@
+diff --git a/cstp.c b/cstp.c
+index b071174..d40664a 100644
+--- a/cstp.c
++++ b/cstp.c
+@@ -223,6 +223,39 @@ static void append_connect_strap_headers(struct openconnect_info *vpninfo,
+ }
+ #endif
+ 
++#ifdef HAVE_HPKE_SUPPORT
++/* Every CONNECT on a live session rekeys STRAP, and the server then expects the new
++ * key. The session cookie still carries the key from login, so a client that saves
++ * it could never resume the session in a new process. Put the key the server just
++ * accepted back into the cookie. */
++static void refresh_strap_cookie(struct openconnect_info *vpninfo)
++{
++	static const char prefix[] = "openconnect_strapkey=";
++	struct oc_text_buf *buf;
++	const char *rest;
++
++	if (vpninfo->no_external_auth || !vpninfo->strap_key || !vpninfo->cookie ||
++	    strncmp(vpninfo->cookie, prefix, sizeof(prefix) - 1) ||
++	    !(rest = strchr(vpninfo->cookie, ';')))
++		return;
++
++	buf = buf_alloc();
++	buf_append(buf, "%s", prefix);
++	append_strap_privkey(vpninfo, buf);
++	buf_append(buf, "%s", rest);
++	if (!buf_error(buf) && buf->pos > (int)sizeof(prefix) - 1 + (int)strlen(rest)) {
++		memset(vpninfo->cookie, 0, strlen(vpninfo->cookie));
++		free(vpninfo->cookie);
++		vpninfo->cookie = buf->data;
++		buf->data = NULL;
++		vpn_progress(vpninfo, PRG_DEBUG, _("Refreshed STRAP key in session cookie\n"));
++	} else if (buf->data) {
++		memset(buf->data, 0, buf->buf_len);
++	}
++	buf_free(buf);
++}
++#endif
++
+ static int start_cstp_connection(struct openconnect_info *vpninfo, int strap_rekey)
+ {
+ 	struct oc_text_buf *reqbuf;
+@@ -728,6 +761,9 @@ int cstp_connect(struct openconnect_info *vpninfo)
+ 	ret = start_cstp_connection(vpninfo, strap_rekey);
+ 	if (ret)
+ 		goto out;
++#ifdef HAVE_HPKE_SUPPORT
++	refresh_strap_cookie(vpninfo);
++#endif
+ 
+ 	/* Allow for the theoretical possibility of having *different*
+ 	 * compression type for CSTP and DTLS. Although all we've seen
+diff --git a/openssl.c b/openssl.c
+index 761cb03..c26b8f3 100644
+--- a/openssl.c
++++ b/openssl.c
+@@ -2440,6 +2440,9 @@ void append_strap_privkey(struct openconnect_info *vpninfo,
+ 	int derlen = i2d_ECPrivateKey(vpninfo->strap_key, &der);
+ 	if (derlen > 0)
+ 		buf_append_base64(buf, der, derlen, 0);
++	/* A private key: wipe it, and don't leak it on every reconnect. */
++	if (der)
++		OPENSSL_clear_free(der, derlen > 0 ? derlen : 0);
+ }
+ 
+ #include <openssl/kdf.h>

@@ -1,0 +1,20 @@
+diff --git a/tun.c b/tun.c
+index 234f980..714b30b 100644
+--- a/tun.c
++++ b/tun.c
+@@ -444,6 +444,15 @@ int openconnect_setup_tun_fd(struct openconnect_info *vpninfo, int tun_fd)
+ 
+ 	if (vpninfo->tun_fd >= 0)
+ 		unmonitor_fd(vpninfo, tun);
++#ifdef HAVE_VHOST
++	/* Switching to a new tun on a live session: vhost-net is bound to the old
++	 * one. Drop it before setting up again, rather than leak it. */
++	if (vpninfo->vhost_fd >= 0) {
++		if (vpninfo->vhost_call_fd >= 0)
++			unmonitor_fd(vpninfo, vhost_call);
++		shutdown_vhost(vpninfo);
++	}
++#endif
+ 
+ 	vpninfo->tun_fd = tun_fd;
+ 
