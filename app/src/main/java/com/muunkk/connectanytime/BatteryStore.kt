@@ -99,7 +99,7 @@ internal class BatteryStore(private val context: Context, private val prefs: Sto
             buffer.clear()
             rotate()
             failures = 0; retry?.cancel(false); retry = null; mutableFailed.value = false
-            rebuild()
+            if (mutableReport.subscriptionCount.value > 0) rebuild()
             return true
         } catch (_: Throwable) {
             mutableFailed.value = true
@@ -107,7 +107,7 @@ internal class BatteryStore(private val context: Context, private val prefs: Sto
                 val minutes = minOf(30L, 1L shl minOf(failures++, 5))
                 retry = io.schedule(task { retry = null; flushNow() }, minutes, TimeUnit.MINUTES)
             }
-            rebuild()
+            if (mutableReport.subscriptionCount.value > 0) rebuild()
             return false
         }
     }

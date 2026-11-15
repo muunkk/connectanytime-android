@@ -4,7 +4,7 @@ import android.os.Debug
 import java.util.concurrent.SynchronousQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.LongAdder
 
 internal object BatteryThreads {
     const val VPN = "oc-run"
@@ -17,9 +17,9 @@ internal object BatteryThreads {
 
 /** Separate totals survive the sharing card's per-link resets and contain no peer data. */
 internal object ProxyCounters {
-    val hotUp = AtomicLong(); val hotDown = AtomicLong()
-    val usbUp = AtomicLong(); val usbDown = AtomicLong()
-    val forwardingCpuNs = AtomicLong()
+    val hotUp = LongAdder(); val hotDown = LongAdder()
+    val usbUp = LongAdder(); val usbDown = LongAdder()
+    val forwardingCpuNs = LongAdder()
     @Volatile var gen = 0L
     private val task = ThreadLocal<CpuMeter>()
     fun before(meter: CpuMeter = CpuMeter()) { task.set(meter) }
@@ -27,7 +27,7 @@ internal object ProxyCounters {
     fun traffic(link: TetherLink, up: Boolean, bytes: Int, now: Long) {
         if (gen == 0L) return
         val total = if (link == TetherLink.Hotspot) { if (up) hotUp else hotDown } else { if (up) usbUp else usbDown }
-        total.addAndGet(bytes.toLong())
+        total.add(bytes.toLong())
         task.get()?.tick(now)
     }
 }
@@ -48,7 +48,7 @@ internal class CpuMeter(private val cpu: () -> Long = Debug::threadCpuTimeNanos,
             val current = ProxyCounters.gen
             if (current == 0L) { gen = 0; return }
             val now = cpu()
-            if (gen == current) ProxyCounters.forwardingCpuNs.addAndGet((now - last).coerceAtLeast(0))
+            if (gen == current) ProxyCounters.forwardingCpuNs.add((now - last).coerceAtLeast(0))
             last = if (gen == current) maxOf(last, now) else now
             gen = current
         }

@@ -17,6 +17,9 @@ import org.robolectric.annotation.Config
 import java.io.File
 import java.nio.file.Files
 import java.time.Duration
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.flow.MutableStateFlow
 
 @RunWith(RobolectricTestRunner::class)
 @Config(application = ConnectApp::class, sdk = [35], shadows = [TetherProxyTest.ShadowNativeBridge::class])
@@ -27,17 +30,22 @@ class BatteryRecorderTest {
     private var wall = 1_000_000L
     private var elapsed = 100_000L
     private var plugged = false
+    private var readingFailures = 0
     private val readings get() = object : BatteryReadings(app, BatteryProc(File("missing-proc"), 100)) {
         override fun wall() = wall
         override fun elapsed() = elapsed
         override fun uptime() = android.os.SystemClock.uptimeMillis()
         override fun cpu() = elapsed * 1000
-        override fun read() = batteryTrace().first().copy(wallMin = wall / 60_000, elapsedMs = elapsed, uptimeMs = elapsed,
+        override fun read(): BatteryRow {
+            if (readingFailures > 0) { readingFailures--; error("transient battery read") }
+            return batteryTrace().first().copy(wallMin = wall / 60_000, elapsedMs = elapsed, uptimeMs = elapsed,
             plugged = if (plugged) 1 else 0, status = if (plugged) BatteryManager.BATTERY_STATUS_CHARGING else BatteryManager.BATTERY_STATUS_DISCHARGING)
+        }
     }
     @Before fun init() {
         app = ApplicationProvider.getApplicationContext()
         app.battery.close()
+        Thread.getAllStackTraces().keys.filter { it.name == BatteryThreads.RECORDER }.forEach { it.join(2000) }
         ConnectApp.mutableState.value = VpnState()
         app.store.measureBattery = false
         shadowOf(Looper.getMainLooper()).idle()
@@ -118,6 +126,7 @@ class BatteryRecorderTest {
             onCreate()
         }
         shadowOf(Looper.getMainLooper()).idle()
+        drain(recovered.battery)
         assertTrue(recovered.store.batteryRec > 0)
         assertEquals(BatteryStatus.Measuring, recovered.battery.status.value)
         recovered.store.measureBattery = false; shadowOf(Looper.getMainLooper()).idle(); recovered.battery.close()
@@ -154,9 +163,7 @@ class BatteryRecorderTest {
         val intent = Intent(TETHER_STATE_CHANGED).putStringArrayListExtra("tetherArray", arrayListOf("usb0", "bt-pan"))
         app.sendBroadcast(intent); drain(c)
         c.disk.flush(); c.disk.awaitIdle()
-        assertEquals(BatteryHotspot.off, c.report.value!!.let {
-            c.disk.file.readLines().mapNotNull(BatteryCsv::parse).last().hotspot
-        })
+        assertEquals(BatteryHotspot.off, c.disk.file.readLines().mapNotNull(BatteryCsv::parse).last().hotspot)
         app.sendBroadcast(Intent(TETHER_STATE_CHANGED).putStringArrayListExtra("tetherArray", arrayListOf("wlan0", "usb0")))
         drain(c); c.disk.flush(); c.disk.awaitIdle()
         assertEquals(BatteryHotspot.on, c.disk.file.readLines().mapNotNull(BatteryCsv::parse).last().hotspot)
@@ -199,6 +206,204 @@ class BatteryRecorderTest {
         assertFalse(c.autoStopped.value); assertEquals(BatteryStatus.Off, c.status.value)
         c.setEnabled(true); drain(c)
         assertEquals(wall + 7 * 86_400_000L, app.store.batteryDeadline)
+    }
+    private fun handler(c: BatteryControl): android.os.Handler {
+        val recorder = BatteryControl::class.java.getDeclaredField("recorder").apply { isAccessible = true }.get(c)
+        return BatteryRecorder::class.java.getDeclaredField("handler").apply { isAccessible = true }.get(recorder) as android.os.Handler
+    }
+    private fun saved(c: BatteryControl): List<BatteryRow> {
+        c.disk.flush(); c.disk.awaitIdle()
+        return c.disk.file.readLines().mapNotNull(BatteryCsv::parse)
+    }
+    @Test fun handshakeBeforeConnectedSurvivesOtherConnectingProjections() {
+        val c = control()
+        ConnectApp.mutableState.value = VpnState("Connecting…", busy = true)
+        c.setEnabled(true); drain(c)
+        app.log.add("CSTP connected. DPD 60, Keepalive 20"); drain(c)
+        app.store.shareOverHotspot = !app.store.shareOverHotspot; drain(c)
+        busy(); drain(c)
+        assertEquals(BatteryTransport.tls, saved(c).last().transport)
+    }
+    @Test fun reconnectResetsOnceAndKeepsHandshakeUntilConnected() {
+        val c = control(); busy(); c.setEnabled(true); drain(c)
+        app.log.add("Established DTLS connection"); drain(c)
+        ConnectApp.reconnectEpisodes.incrementAndGet()
+        ConnectApp.mutableState.value = VpnState("Reconnecting…", busy = true); drain(c)
+        assertEquals(BatteryTransport.unknown, saved(c).last().transport)
+        app.log.add("CSTP connected"); drain(c)
+        app.store.shareOverHotspot = !app.store.shareOverHotspot; drain(c)
+        busy(); drain(c)
+        assertEquals(BatteryTransport.tls, saved(c).last().transport)
+    }
+    @Test fun periodicSamplingRecoversAfterTransientReadingFailure() {
+        val c = control(); busy(); c.setEnabled(true); drain(c)
+        val h = handler(c)
+        readingFailures = 1
+        shadowOf(h.looper).idleFor(Duration.ofMinutes(1)); drain(c)
+        assertEquals(0, readingFailures)
+        wall += 120_000; elapsed += 120_000
+        shadowOf(h.looper).idleFor(Duration.ofMinutes(1)); drain(c)
+        assertTrue(saved(c).any { it.kind == BatteryKind.periodic })
+    }
+    @Test fun sampleRearmsWallDeadlineAfterDeepSleepEvenWhileCharging() {
+        val c = control(); plugged = true; busy(); c.setEnabled(true); drain(c)
+        wall = app.store.batteryDeadline - 1000
+        elapsed += 7 * 86_400_000L - 1000
+        // An awake event follows deep sleep; uptime has barely moved.
+        app.sendBroadcast(Intent(Intent.ACTION_SCREEN_ON)); drain(c)
+        wall += 1000; elapsed += 1000
+        shadowOf(handler(c).looper).idleFor(Duration.ofSeconds(1)); drain(c)
+        assertFalse(app.store.measureBattery)
+        assertEquals(BatteryStatus.AutoStopped, c.status.value)
+    }
+    @Test fun failedUnplugReadStillRetriesAndResumesPeriodicSampling() {
+        val c = control(); plugged = true; busy(); c.setEnabled(true); drain(c)
+        readingFailures = 1; plugged = false
+        app.sendBroadcast(Intent(Intent.ACTION_POWER_DISCONNECTED)); drain(c)
+        assertEquals(0, readingFailures)
+        shadowOf(handler(c).looper).idleFor(Duration.ofMinutes(1)); drain(c)
+        assertTrue(saved(c).any { it.kind == BatteryKind.periodic })
+    }
+    @Test fun recorderSeedsOutsideLogLockWithObserverInstalledAndNewerLineWinning() {
+        ConnectApp.mutableState.value = VpnState("Connecting…", busy = true)
+        app.store.batteryDeadline = wall + 60_000
+        val d = BatteryStore(app, app.store).also { disks += it }
+        val r = BatteryRecorder(app, d, readings, {}, {})
+        val pool = Executors.newSingleThreadExecutor()
+        var scanned = false
+        var heldLogMonitor = true
+        var installedObserver = false
+        @Suppress("UNCHECKED_CAST")
+        val state = ActivityLog::class.java.getDeclaredField("mutable").apply { isAccessible = true }.get(app.log) as MutableStateFlow<List<String>>
+        val snapshot = object : AbstractList<String>() {
+            override val size = state.value.size + 1
+            override fun get(index: Int): String {
+                if (!scanned) {
+                    scanned = true
+                    heldLogMonitor = Thread.holdsLock(app.log)
+                    installedObserver = app.log.observer != null
+                    pool.submit { app.log.add("Established DTLS connection") }.get(2, TimeUnit.SECONDS)
+                }
+                return "11-15 12:00:00 CSTP connected"
+            }
+        }
+        state.value = snapshot
+        try {
+            r.start()
+            val h = BatteryRecorder::class.java.getDeclaredField("handler").apply { isAccessible = true }.get(r) as android.os.Handler
+            shadowOf(h.looper).idle()
+            assertTrue(scanned)
+            assertFalse("Seeding held ActivityLog's monitor", heldLogMonitor)
+            assertTrue(installedObserver)
+            d.flush(); d.awaitIdle()
+            assertEquals(BatteryTransport.dtls, d.file.readLines().mapNotNull(BatteryCsv::parse).first().transport)
+        } finally {
+            r.stop()
+            Thread.getAllStackTraces().keys.filter { it.name == BatteryThreads.RECORDER }.forEach { it.join(2000) }
+            pool.shutdownNow()
+        }
+    }
+    @Test fun startupSeedsHandshakeWhileConnecting() {
+        app.log.add(BuildConfig.BUILD_DESCRIPTION)
+        app.log.add("CSTP connected")
+        ConnectApp.mutableState.value = VpnState("Connecting…", busy = true)
+        val c = control(); c.setEnabled(true); drain(c)
+        busy(); drain(c)
+        assertEquals(BatteryTransport.tls, saved(c).last().transport)
+    }
+    @Test fun allocationRunsOnRecorderBeforeCountersAndSamplesStart() {
+        val d = BatteryStore(app, app.store).also { disks += it }
+        var allocations = 0
+        var sampled = false
+        val source = readings
+        val r = BatteryRecorder(app, d, object : BatteryReadings(app, BatteryProc(File("missing-proc"), 100)) {
+            override fun wall() = wall
+            override fun read(): BatteryRow {
+                assertEquals(1, allocations)
+                assertEquals(app.store.batteryRec, ProxyCounters.gen)
+                sampled = true
+                return source.read()
+            }
+        }, {}, {}, allocateRec = {
+            assertEquals(BatteryThreads.RECORDER, Thread.currentThread().name)
+            assertNotEquals(Looper.getMainLooper(), Looper.myLooper())
+            assertEquals(0L, ProxyCounters.gen)
+            allocations++
+            app.store.nextBatteryRec()
+        })
+        busy(); app.store.batteryDeadline = wall + 60_000
+        try {
+            r.start()
+            assertEquals(0, allocations)
+            assertEquals(0L, ProxyCounters.gen)
+            val h = BatteryRecorder::class.java.getDeclaredField("handler").apply { isAccessible = true }.get(r) as android.os.Handler
+            shadowOf(h.looper).idle()
+            assertEquals(1, allocations)
+            assertTrue(sampled)
+            d.flush(); d.awaitIdle()
+            assertTrue(d.file.readLines().mapNotNull(BatteryCsv::parse).all { it.rec == app.store.batteryRec && it.rec > 0 })
+        } finally {
+            r.stop()
+            Thread.getAllStackTraces().keys.filter { it.name == BatteryThreads.RECORDER }.forEach { it.join(2000) }
+        }
+    }
+    @Test fun workerAllocationFailureIsReportedWithoutStartingCountersOrSampling() {
+        val d = BatteryStore(app, app.store).also { disks += it }
+        var failed = false
+        var sampled = false
+        val r = BatteryRecorder(app, d, object : BatteryReadings(app, BatteryProc(File("missing-proc"), 100)) {
+            override fun wall() = wall
+            override fun read(): BatteryRow { sampled = true; return batteryTrace().first() }
+        }, {}, {}, allocateRec = { error("commit failed") }, failed = { failed = true })
+        busy(); app.store.batteryDeadline = wall + 60_000
+        try {
+            r.start()
+            val h = BatteryRecorder::class.java.getDeclaredField("handler").apply { isAccessible = true }.get(r) as android.os.Handler
+            shadowOf(h.looper).idle()
+            assertTrue(failed)
+            assertFalse(sampled)
+            assertEquals(0L, ProxyCounters.gen)
+        } finally {
+            r.stop()
+            Thread.getAllStackTraces().keys.filter { it.name == BatteryThreads.RECORDER }.forEach { it.join(2000) }
+        }
+        assertFalse(sampled) // A stop before allocation cannot write a stop sample either.
+    }
+    @Test fun initialReadingFailureStillInstallsObservationAndRetries() {
+        readingFailures = 2 // The start and initial projection both fail.
+        val c = control(); busy(); c.setEnabled(true); drain(c)
+        assertEquals(0, readingFailures)
+        app.log.add("CSTP connected"); drain(c)
+        shadowOf(handler(c).looper).idleFor(Duration.ofMinutes(1)); drain(c)
+        assertTrue(saved(c).any { it.kind == BatteryKind.periodic && it.transport == BatteryTransport.tls })
+    }
+    @Test fun seedingScansNewestTailAndLiveObservationsWinEvenWithoutAClassChange() {
+        val c = BatteryTransportClassifier()
+        val accessed = mutableListOf<Int>()
+        val lines = object : AbstractList<String>() {
+            override val size = 1000
+            override fun get(index: Int): String {
+                accessed += index
+                return when (index) {
+                    999 -> "11-15 12:00:00 unrelated"
+                    998 -> "11-15 12:00:00 ${BuildConfig.BUILD_DESCRIPTION}"
+                    else -> error("Read beyond newest build marker")
+                }
+            }
+        }
+        c.seed(lines)
+        assertEquals(listOf(999, 998), accessed)
+        assertEquals(BatteryTransport.unknown, c.transport)
+        val version = c.seedVersion()
+        c.observe("Reconnecting to the server") // Still unknown; this must invalidate old seed data too.
+        c.seed(listOf("Established DTLS connection"), version)
+        assertEquals(BatteryTransport.unknown, c.transport)
+        val next = c.seedVersion()
+        c.observe("CSTP connected")
+        c.seed(listOf("Established DTLS connection"), next)
+        assertEquals(BatteryTransport.tls, c.transport)
+        c.connection(busy = false, episodes = 0)
+        assertEquals(BatteryTransport.unknown, c.transport)
     }
     @Test fun procParserUsesLastParenAndThreadKeysRetainExitedTotals() {
         fun stat(tid: Int, name: String, ticks: Int, start: Int): String {

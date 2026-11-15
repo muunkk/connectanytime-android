@@ -11,6 +11,9 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import android.os.Looper
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import java.io.File
 
 @RunWith(RobolectricTestRunner::class)
@@ -50,7 +53,39 @@ class BatteryStoreTest {
         assertNotNull(first); assertNotNull(second); assertNotEquals(first, second)
         assertEquals(3, first!!.readLines().mapNotNull(BatteryCsv::parse).size)
         assertTrue(first!!.readText().startsWith("# schema=1\n# build="))
+        d.refresh(); d.awaitIdle()
         assertEquals(3, d.report.value!!.rowCount)
+    }
+    @Test fun unobservedFlushesKeepLastReportUntilExplicitRefresh() {
+        val d = disk()
+        val rows = batteryTrace().take(10)
+        rows.take(5).forEach(d::add); d.awaitIdle()
+        assertNull(d.report.value)
+        d.refresh(); d.awaitIdle()
+        val first = d.report.value!!
+        assertEquals(5, first.rowCount)
+        rows.drop(5).forEach(d::add); d.awaitIdle()
+        assertSame(first, d.report.value)
+        d.refresh(); d.awaitIdle()
+        assertEquals(10, d.report.value!!.rowCount)
+    }
+    @Test fun flushRebuildsOnlyDuringCollectionAndIncludesFailedBuffers() {
+        var fail = false
+        val d = disk({ fail })
+        val collector = CoroutineScope(Dispatchers.Unconfined).launch { d.report.collect {} }
+        try {
+            batteryTrace().take(5).forEach(d::add); d.awaitIdle()
+            assertEquals(5, d.report.value!!.rowCount)
+            fail = true
+            batteryTrace(rec = 2).take(5).forEach(d::add); d.awaitIdle()
+            assertTrue(d.failed.value)
+            assertEquals(10, d.report.value!!.rowCount)
+        } finally { collector.cancel() }
+        val last = d.report.value
+        batteryTrace(rec = 3).take(5).forEach(d::add); d.retrySave(); d.awaitIdle()
+        assertSame(last, d.report.value)
+        d.refresh(); d.awaitIdle()
+        assertEquals(15, d.report.value!!.rowCount)
     }
     @Test fun failedFlushRetainsIdsAndDedupsCompleteRowsAfterRestart() {
         var fail = true
@@ -85,6 +120,7 @@ class BatteryStoreTest {
         assertEquals(BatteryKind.gap, d.bufferedRows().first().kind)
         fail = false; d.retrySave(); d.awaitIdle()
         assertEquals(120, d.file.readLines().mapNotNull(BatteryCsv::parse).size)
+        d.refresh(); d.awaitIdle()
         assertTrue(d.report.value!!.droppedCoverageMs > 0)
     }
     @Test fun rotationKeepsNewestHalfWithinRealByteLimit() {

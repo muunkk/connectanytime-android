@@ -65,7 +65,8 @@ class BatteryControl internal constructor(private val app: ConnectApp,
         if (state.prefs.enabled && state.busy && !clearPending) {
             if (recorder == null && !stopping && !startFailed) {
                 runCatching {
-                    recorder = BatteryRecorder(app, disk, readings(), { onMain { autoStop() } }, { plugged.value = it })
+                    recorder = BatteryRecorder(app, disk, readings(), { onMain { autoStop() } }, { plugged.value = it },
+                        failed = { onMain { startFailed = true; stopRecorder(); reconcile() } })
                     recorder!!.start()
                 }.onFailure { startFailed = true; stopRecorder() }
             }
