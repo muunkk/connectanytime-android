@@ -26,11 +26,14 @@ class ConnectApp : Application() {
     lateinit var store: Store
     private val widgets = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
     lateinit var log: ActivityLog
+    lateinit var battery: BatteryControl
+        private set
     val updater by lazy { Updater(this) }
     override fun onCreate() {
         super.onCreate()
         store = Store(this)
         log = ActivityLog(this)
+        battery = BatteryControl(this)
         fun refreshTetherState() {
             if (!state.value.connected && state.value.status != "Reconnecting…")
                 mutableTetherShare.value = if (store.sharing) TetherShare.VpnNotConnected else TetherShare.Off
@@ -45,6 +48,9 @@ class ConnectApp : Application() {
         widgets.launch { ConnectWidget.changes(this@ConnectApp).collect { ConnectWidget.refresh(this@ConnectApp) } }
     }
     companion object {
+        val vpnTransitions = java.util.concurrent.atomic.AtomicLong()
+        val reconnectEpisodes = java.util.concurrent.atomic.AtomicLong()
+        val lastStatus = java.util.concurrent.atomic.AtomicReference("Not connected")
         internal val SHARE_KEYS = setOf("shareWithTether", "shareOverHotspot")
         internal val mutableTetherShare = MutableStateFlow<TetherShare>(TetherShare.Off)
         val tetherShare = mutableTetherShare.asStateFlow()

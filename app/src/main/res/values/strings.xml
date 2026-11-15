@@ -286,4 +286,11 @@
     <string name="updated_log">Updated from %1$s to %2$s</string>
     <string name="updated_title">Updated to version %1$s</string>
     <string name="updated_body">Tap to open ConnectAnytime.</string>
+    <string name="battery_log_start">Battery measurement started</string>
+    <string name="battery_log_stop">Battery measurement stopped</string>
+    <string name="battery_log_auto_stop">Battery measurement stopped after 7 days</string>
+    <plurals name="battery_log_summary">
+        <item quantity="one">Battery measurement. %1$d minute measured.</item>
+        <item quantity="other">Battery measurement. %1$d minutes measured.</item>
+    </plurals>
 </resources>

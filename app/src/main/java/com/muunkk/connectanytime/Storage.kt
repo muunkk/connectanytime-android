@@ -68,6 +68,19 @@ class Store(private val context: Context) {
     var shareOverHotspot: Boolean
         get() = prefs.getBoolean("shareOverHotspot", false)
         set(v) { prefs.edit().putBoolean("shareOverHotspot", v).apply() }
+    var measureBattery: Boolean
+        get() = prefs.getBoolean("measureBattery", false)
+        set(v) { prefs.edit().putBoolean("measureBattery", v).apply() }
+    var batteryAutoStopped: Boolean
+        get() = prefs.getBoolean("batteryAutoStopped", false)
+        set(v) { prefs.edit().putBoolean("batteryAutoStopped", v).apply() }
+    var batteryDeadline: Long
+        get() = prefs.getLong("batteryDeadline", 0)
+        set(v) { prefs.edit().putLong("batteryDeadline", v).apply() }
+    var batteryRec: Long
+        get() = prefs.getLong("batteryRec", 0)
+        set(v) { check(prefs.edit().putLong("batteryRec", v).commit()) }
+    internal fun nextBatteryRec(): Long = synchronized(prefs) { (batteryRec + 1).also { batteryRec = it } }
     var proxySetup: ProxySetup
         get() = runCatching { ProxySetup.valueOf(prefs.getString("proxySetup", null).orEmpty()) }.getOrDefault(ProxySetup.Manual)
         set(v) { prefs.edit().putString("proxySetup", v.name).apply() }
@@ -205,12 +218,14 @@ class ActivityLog(context: Context) {
     private val mutable = MutableStateFlow(lines.toList())
     val state = mutable.asStateFlow()
     private var pending = false
+    @Volatile var observer: ((String) -> Unit)? = null
     @Synchronized fun add(message: String) {
         LogLines.filter(message)?.lineSequence()?.forEach {
             lines.addLast(SimpleDateFormat("MM-dd HH:mm:ss", Locale.US).format(Date()) + " " + it)
             while (lines.size > 1500) lines.removeFirst()
         } ?: return
         mutable.value = lines.toList()
+        try { observer?.invoke(message) } catch (_: Throwable) { }
         if (!pending) {
             pending = true
             writes.schedule({ flush() }, 1, TimeUnit.SECONDS)
