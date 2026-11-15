@@ -35,15 +35,48 @@ connected and which network the phone is on. It also has:
 - a power button that connects or disconnects;
 - **USB** and **Hotspot** buttons that turn sharing on or off (filled when on, outlined
   when off) and show what each link is doing, or how many devices are using it;
-- a button for Android's hotspot settings.
+- a button for Android's hotspot settings, which also shows whether Android's hotspot
+  is on: a **dot** (not a notification) means on, a **slashed** sign means off, and the
+  **plain** sign means the widget doesn't know (often the case with the hotspot off; see
+  below). TalkBack says "Android hotspot, on" or "off" when it knows.
 
 Android doesn't let apps turn the hotspot itself on or off, so that button opens
 Android's tethering screen. Use Android's own Hotspot tile in Quick Settings for one tap.
 
+How the widget knows (`HotspotWatch.kt`), whether or not the VPN or sharing is on. It
+doesn't poll; Android tells the app when something changes:
+- **On** comes from Android's tethering state: a Wi-Fi interface it is tethering on (the
+  sticky `TETHER_STATE_CHANGED` broadcast; on Android 16, its public tethering callback).
+- **Off** needs the hotspot itself to report it went off (`WIFI_AP_STATE_CHANGED`, which
+  needs the no-prompt `ACCESS_WIFI_STATE` permission). An empty tethering list isn't
+  enough: it also looks empty while the hotspot is starting. On Android 12L and later
+  Android doesn't keep that broadcast, so the widget can only tell the hotspot is off if
+  the app saw it go off. After a restart it shows the plain sign until then. While the VPN
+  is connected the app keeps running and follows both.
+- It shows the plain sign when a work policy restricts tethering, while the hotspot is
+  turning on or off, when what Android reported doesn't add up (say, tethering heard
+  after the hotspot said it went off), while a Wi-Fi interface is in an error state, and
+  right after you tap the button, until Android reports again or the app looks again
+  15 seconds later. If Android pauses the idle app before then, the plain sign stays
+  until the next report or refresh.
+
+Limits: if Android freezes or stops the idle app (usual with the VPN off), the widget
+keeps showing what it last saw. Android then holds the app's broadcasts, so a hotspot
+switched from Quick Settings meanwhile shows up the next time the app runs or the widget
+refreshes (about every 30 minutes, which Android may delay). A policy that restricts
+tethering and is lifted again while the app isn't running can leave an old "on". An
+Android build that names its hotspot interface like a USB, Bluetooth or Ethernet one
+would be misread, and one whose hotspot broadcast doesn't say which hotspot it is
+(AOSP always does) would only ever show the plain sign. Only interface names, hotspot
+states and whether tethering is restricted are read: no network names, devices or
+addresses, and nothing is stored or sent.
+
 Tapping the status opens the app. It's 4 × 2 by default and resizes down to about
 3 × 2 (180 dp), where the buttons lose their words. With a larger font, titles shorten
 and the buttons lose their words; at 130% and above the second line of text goes too,
-rather than pushing the buttons out. Android 10 and 11 draw the buttons square.
+rather than pushing the buttons out. Android 10 and 11 draw the buttons square. At
+3 × 2 with a font of 130% or more, the hotspot settings button goes, and with it the
+hotspot's sign; TalkBack still says the hotspot's state on the Hotspot button.
 
 Every widget button goes through a small invisible screen, which first unlocks the
 phone if needed and decides what to do at the moment you tap, so a widget that hasn't
@@ -55,9 +88,9 @@ redrawn yet can't do the opposite.
   switch explains that anyone who joins the hotspot can use the VPN. After that, the
   widget turns it on and off directly.
 
-The widget redraws when the VPN, sharing or the switches change. If Android stops the
-app, the widget can show the old state until its 30-minute refresh or the next time
-the app starts.
+The widget redraws when the VPN, sharing, the switches or Android's hotspot change.
+If Android stops the app, the widget can show the old state until its 30-minute
+refresh or the next time the app starts.
 
 Below it: your NetID and password (show/hide, Save, and Remove saved password,
 which asks first), **Stay Connected**, a shortcut to **Android VPN settings** for

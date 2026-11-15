@@ -27,6 +27,8 @@ class ConnectApp : Application() {
     private val widgets = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
     lateinit var log: ActivityLog
     val updater by lazy { Updater(this) }
+    internal lateinit var hotspot: HotspotWatch
+        private set
     override fun onCreate() {
         super.onCreate()
         store = Store(this)
@@ -41,6 +43,8 @@ class ConnectApp : Application() {
         }
         store.prefs.registerOnSharedPreferenceChangeListener(tetherPreferenceListener)
         Notices.channels(this)
+        // Android's own hotspot, for the widget's hotspot button (HotspotWatch.kt).
+        hotspot = HotspotWatch(this, publish = { mutableAndroidHotspot.value = it }).also { it.start() }
         // Keeps the home screen widget in step with the VPN, sharing and the switches.
         widgets.launch { ConnectWidget.changes(this@ConnectApp).collect { ConnectWidget.refresh(this@ConnectApp) } }
     }
@@ -54,5 +58,7 @@ class ConnectApp : Application() {
         val uplink = mutableUplink.asStateFlow()
         internal val mutableState = MutableStateFlow(VpnState())
         val state = mutableState.asStateFlow()
+        internal val mutableAndroidHotspot = MutableStateFlow(AndroidHotspot.Unknown)
+        internal val androidHotspot = mutableAndroidHotspot.asStateFlow()
     }
 }

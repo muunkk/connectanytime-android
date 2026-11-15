@@ -113,7 +113,8 @@ class ShortcutActivity : Activity() {
             ConnectVpnService.CONNECT -> connect()
             // Decided now, not when the widget was drawn, so a stale widget can't do the opposite.
             Controls.TOGGLE -> if (ConnectApp.state.value.busy) Controls.disconnect(this) else connect()
-            Controls.OPEN_TETHERING -> openTethering(this)
+            // Opened (it throws otherwise): the widget's hotspot state goes neutral until Android reports again.
+            Controls.OPEN_TETHERING -> { openTethering(this); (application as ConnectApp).hotspot.handedOff() }
             Controls.OPEN_APP -> openApp()
             Controls.SHARE_USB -> store.shareWithTether = !store.shareWithTether
             // Until hotspot sharing has been turned on in the app once, where it says that anyone

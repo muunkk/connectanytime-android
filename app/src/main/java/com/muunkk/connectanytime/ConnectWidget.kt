@@ -63,9 +63,12 @@ internal data class WidgetModel(
     val phase: Phase, val ended: Boolean, val uplink: Uplink?,
     val usbOn: Boolean, val usb: WidgetLink, val usbDevices: Int,
     val hotspotOn: Boolean, val hotspot: WidgetLink, val hotspotDevices: Int,
+    /** Android's own hotspot (HotspotWatch), drawn on the hotspot-settings button. */
+    val androidHotspot: AndroidHotspot = AndroidHotspot.Unknown,
 )
 
-internal fun widgetModel(state: VpnState, share: TetherShare, usage: TetherUsage, usbOn: Boolean, hotspotOn: Boolean, uplink: Uplink?): WidgetModel {
+internal fun widgetModel(state: VpnState, share: TetherShare, usage: TetherUsage, usbOn: Boolean, hotspotOn: Boolean, uplink: Uplink?,
+                         androidHotspot: AndroidHotspot = AndroidHotspot.Unknown): WidgetModel {
     fun link(kind: TetherLink, on: Boolean): WidgetLink {
         if (!on) return WidgetLink.Off
         val link = (share as? TetherShare.Active)?.let { if (kind == TetherLink.Hotspot) it.hotspot else it.usb }
@@ -81,13 +84,20 @@ internal fun widgetModel(state: VpnState, share: TetherShare, usage: TetherUsage
     val hotspot = link(TetherLink.Hotspot, hotspotOn)
     return WidgetModel(state.phase(), state.error == StartRule.REFUSAL, if (state.connected) uplink else null,
         usbOn, usb, if (usb == WidgetLink.InUse) usage.usb.devices.size else 0,
-        hotspotOn, hotspot, if (hotspot == WidgetLink.InUse) usage.hotspot.devices.size else 0)
+        hotspotOn, hotspot, if (hotspot == WidgetLink.InUse) usage.hotspot.devices.size else 0,
+        // Carried as HotspotWatch decided it; nothing here overrides its Unknown (a restriction, or
+        // the hotspot settings just opened) with what the proxy last saw.
+        androidHotspot)
 }
 
 /**
  * The home screen widget: the VPN's state and a power button, a button each for sharing over
  * USB and over the hotspot, and one for Android's hotspot settings. Android doesn't let apps
- * turn the hotspot itself on or off, so that button opens the screen where you can.
+ * turn the hotspot itself on or off, so that button opens the screen where you can. It also
+ * shows whether the hotspot is on, as [HotspotWatch] last heard from Android: a dot when on, a
+ * slashed sign when off, and the plain sign when that isn't known. Off is often not known (see
+ * HotspotWatch), so plain is the usual look with the hotspot off; it never claims a state it
+ * hasn't seen.
  *
  * Every button goes through [ShortcutActivity], which unlocks the phone first wherever the
  * widget is shown, decides at the moment of the tap (so a widget that hasn't redrawn yet can't
@@ -99,6 +109,7 @@ class ConnectWidget : GlanceAppWidget() {
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val app = context.applicationContext as ConnectApp
+        app.hotspot.refresh() // what Android holds now, in case broadcasts were held while the app was idle
         val initial = current(context)
         provideContent {
             // Followed while this drawing session lasts: Glance doesn't rerun provideGlance for an
@@ -119,14 +130,16 @@ class ConnectWidget : GlanceAppWidget() {
         internal fun current(context: Context): WidgetModel {
             val store = (context.applicationContext as ConnectApp).store
             return widgetModel(ConnectApp.state.value, ConnectApp.tetherShare.value, ConnectApp.tetherUsage.value,
-                store.shareWithTether, store.shareOverHotspot, ConnectApp.uplink.value)
+                store.shareWithTether, store.shareOverHotspot, ConnectApp.uplink.value, ConnectApp.androidHotspot.value)
         }
 
         /** What the widget shows, as one value. Byte counts don't reach it, so traffic doesn't redraw. */
         @OptIn(FlowPreview::class)
         internal fun changes(app: ConnectApp): Flow<WidgetModel> =
-            combine(ConnectApp.state, ConnectApp.tetherShare, ConnectApp.tetherUsage, ConnectApp.uplink, sharePrefs(app.store)) { state, share, usage, uplink, prefs ->
-                widgetModel(state, share, usage, prefs.first, prefs.second, uplink)
+            // combine takes five typed flows, so the switches and Android's hotspot come as one.
+            combine(ConnectApp.state, ConnectApp.tetherShare, ConnectApp.tetherUsage, ConnectApp.uplink,
+                combine(sharePrefs(app.store), ConnectApp.androidHotspot, ::Pair)) { state, share, usage, uplink, (prefs, hotspot) ->
+                widgetModel(state, share, usage, prefs.first, prefs.second, uplink, hotspot)
             }.distinctUntilChanged().debounce(300)
 
         private fun sharePrefs(store: Store): Flow<Pair<Boolean, Boolean>> = callbackFlow {
@@ -146,6 +159,12 @@ class ConnectWidget : GlanceAppWidget() {
 
 class ConnectWidgetReceiver : GlanceAppWidgetReceiver() {
     override val glanceAppWidget: GlanceAppWidget = ConnectWidget()
+    /** The periodic and launcher updates: read the hotspot afresh, as a running drawing session
+     *  doesn't call provideGlance again. */
+    override fun onUpdate(context: Context, appWidgetManager: android.appwidget.AppWidgetManager, appWidgetIds: IntArray) {
+        runCatching { (context.applicationContext as ConnectApp).hotspot.refresh() }
+        super.onUpdate(context, appWidgetManager, appWidgetIds)
+    }
 }
 
 private fun shortcut(context: Context, action: String): Action = actionStartActivity(
@@ -185,10 +204,12 @@ private fun Content(model: WidgetModel) {
                 if (powerBelow) { Power(model, context, GlanceModifier.defaultWeight().height(TARGET.dp), inRow = true); Spacer(GlanceModifier.width(6.dp)) }
                 LinkButton(context, TetherLink.Usb, model.usbOn, model.usb, model.usbDevices, words, !large, background, GlanceModifier.defaultWeight())
                 Spacer(GlanceModifier.width(6.dp))
-                LinkButton(context, TetherLink.Hotspot, model.hotspotOn, model.hotspot, model.hotspotDevices, words, !large, background, GlanceModifier.defaultWeight())
+                LinkButton(context, TetherLink.Hotspot, model.hotspotOn, model.hotspot, model.hotspotDevices, words, !large, background, GlanceModifier.defaultWeight(),
+                    // The settings button isn't drawn here, so its state goes to TalkBack on the share button, whose "Waiting" it explains.
+                    androidHotspot = if (powerBelow) model.androidHotspot else AndroidHotspot.Unknown)
                 if (!powerBelow) {
                     Spacer(GlanceModifier.width(6.dp))
-                    HotspotSettings(context, connected, if (wide) GlanceModifier.size(TARGET.dp) else GlanceModifier.defaultWeight().height(TARGET.dp))
+                    HotspotSettings(context, connected, model.androidHotspot, if (wide) GlanceModifier.size(TARGET.dp) else GlanceModifier.defaultWeight().height(TARGET.dp))
                 }
             }
         }
@@ -268,13 +289,18 @@ private enum class Words { Both, Status, None }
  */
 @Composable
 private fun LinkButton(context: Context, link: TetherLink, on: Boolean, state: WidgetLink, devices: Int, words: Words, count: Boolean,
-                       background: ColorProvider, modifier: GlanceModifier) {
+                       background: ColorProvider, modifier: GlanceModifier, androidHotspot: AndroidHotspot = AndroidHotspot.Unknown) {
     val colors = GlanceTheme.colors
     val hotspot = link == TetherLink.Hotspot
     val content = if (on) colors.onPrimary else colors.onSurfaceVariant
     val name = context.getString(if (hotspot) R.string.share_hotspot_switch else R.string.share_switch)
     val status = linkStatus(context, state, devices)
-    val description = context.getString(if (on) R.string.widget_share_on else R.string.widget_share_off, name, status)
+    val described = context.getString(if (on) R.string.widget_share_on else R.string.widget_share_off, name, status)
+    val description = when (androidHotspot) {
+        AndroidHotspot.On -> context.getString(R.string.widget_share_hotspot_state_on, described)
+        AndroidHotspot.Off -> context.getString(R.string.widget_share_hotspot_state_off, described)
+        AndroidHotspot.Unknown -> described
+    }
     // The outline is the outer box's colour showing round a 1.5 dp inset.
     Box(modifier.height(TARGET.dp).cornerRadius((TARGET / 2).dp).background(if (on) colors.primary else colors.outline)
         .clickable(shortcut(context, if (hotspot) Controls.SHARE_HOTSPOT else Controls.SHARE_USB))
@@ -306,24 +332,53 @@ private fun LinkButton(context: Context, link: TetherLink, on: Boolean, state: W
     }
 }
 
-/** Android's hotspot screen (apps can't switch the hotspot itself): the hotspot sign with an
- *  "opens elsewhere" arrow, so it doesn't read as this app's settings. */
+/**
+ * Android's hotspot screen (apps can't switch the hotspot itself): the hotspot sign with an
+ * "opens elsewhere" arrow, so it doesn't read as this app's settings.
+ *
+ * Android's hotspot state is in the sign only: a dot when on, a slash when off, the plain sign
+ * when not known. The container never changes with it: filled and outlined already mean this
+ * app's sharing on and off next to it, and in the brand palette (Android 10–11) tertiary is
+ * nearly the share buttons' blue, so a fill would read as "sharing". A dot, a slash and nothing
+ * differ by shape, which holds in any palette and with the square corners of Android 10–11.
+ */
 @Composable
-private fun HotspotSettings(context: Context, connected: Boolean, modifier: GlanceModifier) {
+private fun HotspotSettings(context: Context, connected: Boolean, state: AndroidHotspot, modifier: GlanceModifier) {
     val colors = GlanceTheme.colors
     // secondaryContainer all but vanishes on the connected widget's primaryContainer.
     val fill = if (connected) colors.surfaceVariant else colors.secondaryContainer
     val ink = if (connected) colors.onSurfaceVariant else colors.onSecondaryContainer
+    val description = context.getString(when (state) {
+        AndroidHotspot.On -> R.string.widget_hotspot_settings_on
+        AndroidHotspot.Off -> R.string.widget_hotspot_settings_off
+        AndroidHotspot.Unknown -> R.string.widget_hotspot_settings
+    })
     Box(modifier.cornerRadius((TARGET / 2).dp).background(fill)
         .clickable(shortcut(context, Controls.OPEN_TETHERING))
-        .semantics { contentDescription = context.getString(R.string.widget_hotspot_settings) },
+        .semantics { contentDescription = description },
         contentAlignment = Alignment.Center) {
         Box(GlanceModifier.size(26.dp)) {
-            Image(ImageProvider(R.drawable.ic_hotspot), contentDescription = null, colorFilter = ColorFilter.tint(ink),
-                modifier = GlanceModifier.size(20.dp))
+            Image(ImageProvider(if (state == AndroidHotspot.Off) R.drawable.ic_hotspot_off else R.drawable.ic_hotspot), contentDescription = null,
+                colorFilter = ColorFilter.tint(ink), modifier = GlanceModifier.size(20.dp))
+            if (state == AndroidHotspot.On) Box(GlanceModifier.fillMaxSize(), contentAlignment = Alignment.TopEnd) {
+                // An 8 dp dot in the sign's own ink, ringed in the button's fill so it reads as a badge apart
+                // from the waves. Ink, not tertiary: Material 3 keeps an on-colour readable on its container in
+                // every palette, and promises nothing for tertiary on secondaryContainer (the brand palette's
+                // tertiary is also nearly the share buttons' blue). WidgetTest checks the drawn pixels.
+                // (10 dp is as large as the ring gets without cutting into the outer wave.)
+                Box(GlanceModifier.size(10.dp), contentAlignment = Alignment.Center) {
+                    Image(ImageProvider(R.drawable.ic_dot), contentDescription = null, colorFilter = ColorFilter.tint(fill), modifier = GlanceModifier.size(10.dp))
+                    Image(ImageProvider(R.drawable.ic_dot), contentDescription = null, colorFilter = ColorFilter.tint(ink), modifier = GlanceModifier.size(8.dp))
+                }
+            }
             Box(GlanceModifier.fillMaxSize(), contentAlignment = Alignment.BottomEnd) {
-                Image(ImageProvider(R.drawable.ic_open_external), contentDescription = null,
-                    colorFilter = ColorFilter.tint(ink), modifier = GlanceModifier.size(12.dp))
+                // A plate in the button's fill under the arrow, so the off sign's slash doesn't show through it.
+                // Drawn in every state so the arrow looks the same in all three; it trims the outer wave's
+                // lower end slightly, compared with before this state was shown.
+                Box(GlanceModifier.size(13.dp).cornerRadius(2.dp).background(fill), contentAlignment = Alignment.Center) {
+                    Image(ImageProvider(R.drawable.ic_open_external), contentDescription = null,
+                        colorFilter = ColorFilter.tint(ink), modifier = GlanceModifier.size(12.dp))
+                }
             }
         }
     }
