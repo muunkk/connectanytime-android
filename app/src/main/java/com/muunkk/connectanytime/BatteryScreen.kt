@@ -37,6 +37,7 @@ import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.state.ToggleableState
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
@@ -209,11 +210,18 @@ fun BatteryScreen(app: ConnectApp, onBack: () -> Unit, onShare: (File, String) -
         })
 }
 
+/** Stands in for the display cutout in tests and screenshots; null on a phone, which uses the real one. */
+internal val LocalCutoutInsets = staticCompositionLocalOf<WindowInsets?> { null }
+
+/** The Scaffold's [padding], then whatever of the side [cutout] it hasn't already covered, or that
+ *  an ancestor hasn't already consumed: the cutout is applied once. */
+internal fun Modifier.readablePadding(padding: PaddingValues, cutout: WindowInsets): Modifier =
+    padding(padding).consumeWindowInsets(padding).windowInsetsPadding(cutout.only(WindowInsetsSides.Horizontal))
+
 /** Side padding that keeps lines readable on wide screens, plus any cutout not already applied. */
 @Composable
 internal fun ReadableLazyColumn(padding: PaddingValues, modifier: Modifier = Modifier, bottom: Dp = 24.dp, content: LazyListScope.() -> Unit) {
-    BoxWithConstraints(modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)
-        .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Horizontal))) {
+    BoxWithConstraints(modifier.fillMaxSize().readablePadding(padding, LocalCutoutInsets.current ?: WindowInsets.displayCutout)) {
         val side = readableSide(maxWidth)
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = side, end = side, bottom = bottom), content = content)
     }
@@ -253,15 +261,6 @@ internal fun BatteryContent(store: Store, status: BatteryStatus, report: Battery
     var expectOn by remember { mutableStateOf<Boolean?>(null) }
     val current = committed.next(status, expectOn)
     SideEffect { if (current != committed) { committed = current; expectOn = null } }
-    val announce = current.announce
-    // The live region lasts a few seconds after a change, then goes quiet, so the status item
-    // recreated after scrolling (or any later rebuild) can't announce the old change again.
-    // Held here, outside the LazyColumn item, so it survives the item being disposed.
-    // Counted by change, not by status, so a quick A→B→A is still announced.
-    val change = current.changes
-    var settled by remember { mutableIntStateOf(0) }
-    LaunchedEffect(change) { delay(STATUS_LIVE_MS); settled = change }
-    val live = announce != StatusAnnounce.Quiet && settled != change
     var toggles by remember { mutableIntStateOf(0) }
     // A toggle whose status never arrives (or arrives unchanged) stops counting after a while.
     LaunchedEffect(toggles) { delay(5_000); expectOn = null }
@@ -271,7 +270,8 @@ internal fun BatteryContent(store: Store, status: BatteryStatus, report: Battery
         val subtitle = batterySubtitle(context, f, status, report)
         MediumFlexibleTopAppBar(
             title = { Text(stringResource(R.string.battery_title)) },
-            subtitle = subtitle?.let { (shown, spoken) -> { Text(shown, maxLines = 2, modifier = Modifier.semantics { contentDescription = spoken }) } },
+            subtitle = subtitle?.let { (shown, spoken) -> { Text(shown, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.semantics { contentDescription = spoken }) } },
             navigationIcon = {
                 IconButton(onClick = onBack, shapes = IconButtonDefaults.shapes()) {
                     Icon(painterResource(R.drawable.ic_back), contentDescription = stringResource(R.string.back))
@@ -295,7 +295,9 @@ internal fun BatteryContent(store: Store, status: BatteryStatus, report: Battery
                     Group(1) { SwitchRow(status) { expectOn = !status.on; toggles++; onToggle(!status.on) } }
                 }
             }
-            if (status != BatteryStatus.Off) item(key = "status") { StatusLine(status, announce, live) }
+            // Always there, even when Off (empty then), so the live region is never a node that
+            // appears already live.
+            item(key = "status") { StatusLine(status, current) }
             if (status == BatteryStatus.CouldNotSave) item(key = "retry") { SaveFailedRow(onRetry) }
             if (report == null) {
                 item(key = "loading") {
@@ -308,9 +310,11 @@ internal fun BatteryContent(store: Store, status: BatteryStatus, report: Battery
             }
             val heroReady = report.hero?.ready == true
             when {
-                !status.on && !hasRows -> item(key = "panel") {
+                status == BatteryStatus.Off && !hasRows -> item(key = "panel") {
                     Panel(stringResource(R.string.battery_off_title), stringResource(R.string.battery_off_help))
                 }
+                // The status line already says it stopped; "not measuring yet" would be wrong.
+                status == BatteryStatus.AutoStopped && !hasRows -> item(key = "panel") { Panel(null, stringResource(R.string.battery_off_help)) }
                 status == BatteryStatus.Measuring && !heroReady -> item(key = "panel") {
                     val body = stringResource(when {
                         !store.shareOverHotspot -> R.string.battery_keep_body_noshare
@@ -320,7 +324,9 @@ internal fun BatteryContent(store: Store, status: BatteryStatus, report: Battery
                     Panel(stringResource(R.string.battery_keep_title),
                         if (report.anySituationReady) body + "\n\n" + stringResource(R.string.battery_keep_other_ready) else body)
                 }
-                status == BatteryStatus.PausedVpnOff -> item(key = "panel") { Panel(null, stringResource(R.string.battery_paused_vpn_body)) }
+                status == BatteryStatus.PausedVpnOff -> item(key = "panel") {
+                    Panel(null, stringResource(if (hasRows) R.string.battery_paused_vpn_body else R.string.battery_paused_vpn_body_empty))
+                }
                 status == BatteryStatus.PausedCharging -> item(key = "panel") { Panel(null, stringResource(R.string.battery_paused_charging_body)) }
             }
             if (hasRows) {
@@ -335,11 +341,15 @@ internal fun BatteryContent(store: Store, status: BatteryStatus, report: Battery
     }
     if (confirmClear) {
         // The rows kept span the wall-clock range, which can be far longer than the counted time.
-        val stored = f.stored(report?.firstWallMinute?.let { first -> ((report.lastWallMinute ?: first) - first).coerceAtLeast(0) * 60_000 } ?: 0)
+        val span = report?.firstWallMinute?.let { first -> ((report.lastWallMinute ?: first) - first).coerceAtLeast(0) * 60_000 } ?: 0
+        val body = if (status.on) R.string.battery_clear_body_on else R.string.battery_clear_body
         AlertDialog(onDismissRequest = { confirmClear = false },
             icon = { Icon(painterResource(R.drawable.ic_delete), contentDescription = null) },
             title = { Text(stringResource(R.string.battery_clear_title)) },
-            text = { Text(stringResource(if (status.on) R.string.battery_clear_body_on else R.string.battery_clear_body, stored)) },
+            text = {
+                val spoken = stringResource(body, f.stored(span, spoken = true))
+                Text(stringResource(body, f.stored(span)), modifier = Modifier.semantics { contentDescription = spoken })
+            },
             confirmButton = {
                 TextButton(enabled = !clearing, onClick = { confirmClear = false; onClear() }, modifier = Modifier.heightIn(min = 48.dp)) {
                     Text(stringResource(R.string.clear))
@@ -348,9 +358,6 @@ internal fun BatteryContent(store: Store, status: BatteryStatus, report: Battery
             dismissButton = { TextButton(onClick = { confirmClear = false }, modifier = Modifier.heightIn(min = 48.dp)) { Text(stringResource(R.string.cancel)) } })
     }
 }
-
-/** How long the status line stays a live region after a change. */
-internal const val STATUS_LIVE_MS = 4_000L
 
 /** How the status line announces the latest change. */
 internal enum class StatusAnnounce { Quiet, Changed, Resumed }
@@ -370,6 +377,16 @@ internal data class StatusAnnouncement(val last: BatteryStatus, val announce: St
         }
         return StatusAnnouncement(status, announce, changes + 1)
     }
+    /** What the status line's live region holds, or null for nothing. It changes only when the
+     *  phone caused the change: the user's own toggle is said by the switch, and so is plain
+     *  Measuring, so those leave it empty rather than repeat the switch. */
+    val spoken: Int? get() = when {
+        last == BatteryStatus.Off -> null
+        last == BatteryStatus.Measuring -> if (announce == StatusAnnounce.Resumed) R.string.battery_status_resumed else null
+        changes > 0 && announce == StatusAnnounce.Quiet -> null
+        last == BatteryStatus.CouldNotSave -> R.string.battery_status_problem_spoken
+        else -> batteryStatusText(last)
+    }
 }
 
 @Composable
@@ -384,31 +401,30 @@ private fun SwitchRow(status: BatteryStatus, onClick: () -> Unit) {
         supportingContent = { Text(stringResource(R.string.battery_measure_help)) }) { Text(stringResource(R.string.battery_measure)) }
 }
 
-/** The only live region on the screen. It never ticks. */
+/** The only live region on the screen, and one stable node in every state, so TalkBack sees its
+ *  content change rather than a node that appears already live. It never ticks. */
 @Composable
-private fun StatusLine(status: BatteryStatus, announce: StatusAnnounce, live: Boolean) {
-    val text = stringResource(batteryStatusText(status))
-    val spoken = when {
-        status == BatteryStatus.CouldNotSave -> stringResource(R.string.battery_status_problem_spoken)
-        announce == StatusAnnounce.Resumed -> stringResource(R.string.battery_status_resumed)
-        else -> text
-    }
+private fun StatusLine(status: BatteryStatus, announcement: StatusAnnouncement) {
+    val spoken = announcement.spoken?.let { stringResource(it) } ?: ""
     val error = status == BatteryStatus.CouldNotSave
     val color = if (error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
-    // Measuring is already said by the switch, so the line is hidden then, with no live region,
-    // unless the phone itself resumed measuring after a pause: that's said as "Measuring again".
-    val hidden = status == BatteryStatus.Measuring && announce != StatusAnnounce.Resumed
-    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp).testTag("battery-status")
-        .clearAndSetSemantics {
-            if (hidden) hideFromAccessibility() else {
-                contentDescription = spoken
-                if (live) liveRegion = LiveRegionMode.Polite
-            }
-        }, horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-        // Sized with the text so it scales with the font size.
-        Icon(painterResource(statusGlyph(status)), contentDescription = null, tint = color,
-            modifier = Modifier.size(with(LocalDensity.current) { 18.sp.toDp() }))
-        Text(text, style = MaterialTheme.typography.bodyMedium, color = color)
+    // Lines that can be spoken get a full touch-exploration target.
+    val target = status == BatteryStatus.PausedVpnOff || status == BatteryStatus.PausedCharging || status == BatteryStatus.AutoStopped || error
+    val shown = status != BatteryStatus.Off
+    val layout = when {
+        !shown -> Modifier
+        target -> Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp).heightIn(min = 48.dp)
+        else -> Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp)
+    }
+    Row(Modifier.fillMaxWidth().then(layout).testTag("battery-status")
+        .clearAndSetSemantics { contentDescription = spoken; liveRegion = LiveRegionMode.Polite },
+        horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (shown) {
+            // Sized with the text so it scales with the font size.
+            Icon(painterResource(statusGlyph(status)), contentDescription = null, tint = color,
+                modifier = Modifier.size(with(LocalDensity.current) { 18.sp.toDp() }))
+            Text(stringResource(batteryStatusText(status)), style = MaterialTheme.typography.bodyMedium, color = color)
+        }
     }
 }
 
@@ -416,7 +432,7 @@ private fun StatusLine(status: BatteryStatus, announce: StatusAnnounce, live: Bo
 private fun SaveFailedRow(onRetry: () -> Unit) {
     Column(Modifier.padding(top = 8.dp)) {
         Group(1) {
-            FieldSegment(0, 1, padded = false) {
+            FieldSegment(0, 1, padded = false, shape = segmentShape(0, 1)) {
                 ListItem(modifier = Modifier.testTag("battery-save-failed"),
                     headlineContent = { Text(stringResource(R.string.battery_save_failed), color = MaterialTheme.colorScheme.error) },
                     leadingContent = { Icon(painterResource(R.drawable.ic_error), contentDescription = null, tint = MaterialTheme.colorScheme.error) },
@@ -494,12 +510,12 @@ private fun Hero(f: BatteryFormat, report: BatteryReport) {
 }
 
 /** A list row that only shows values. With a spoken form it's read as one node. At large text
- *  the value moves under the label. */
+ *  (or with [stack]) the value moves under the label. */
 @Composable
 private fun InfoRow(index: Int, count: Int, headline: String, supporting: List<String> = emptyList(), value: String? = null,
-    spoken: String? = null, leading: Int? = null, tag: String? = null) {
-    val stacked = LocalDensity.current.fontScale >= 1.5f
-    FieldSegment(index, count, padded = false) {
+    spoken: String? = null, leading: Int? = null, tag: String? = null, stack: Boolean = false) {
+    val stacked = stack || LocalDensity.current.fontScale >= 1.5f
+    FieldSegment(index, count, padded = false, shape = segmentShape(index, count)) {
         var modifier: Modifier = Modifier
         if (tag != null) modifier = modifier.testTag(tag)
         if (spoken != null) modifier = modifier.clearAndSetSemantics { contentDescription = spoken }
@@ -528,9 +544,17 @@ private fun Compared(f: BatteryFormat, store: Store, report: BatteryReport) {
     val context = LocalContext.current
     val setup = store.proxySetup
     val c = report.comparison
+    // The rows shown are the comparison's own sides when there is one, so readiness comes from them.
+    val (inUse, baseline) = comparisonSides(report)
+    val bothReady = inUse.ready && baseline.ready
     Column {
         SectionTitle(if (setup == ProxySetup.Automatic) R.string.battery_compared_auto else R.string.battery_compared_manual)
-        val bothReady = c != null && c.inUse.ready && c.baseline.ready
+        // Both sides come from one network; say which, once there's anything recorded.
+        if (c != null || report.compareInUseProgressMs > 0 || report.compareBaselineProgressMs > 0) {
+            Text(stringResource(R.string.battery_compared_uplink, stringResource(uplinkTitle(report.compareUplink))),
+                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp).testTag("battery-compare-uplink"))
+        }
         if (c != null && bothReady) {
             comparisonText(context, f, c)?.let {
                 Text(it, style = MaterialTheme.typography.bodyLargeEmphasized, modifier = Modifier.padding(horizontal = 16.dp).testTag("battery-compare"))
@@ -544,14 +568,14 @@ private fun Compared(f: BatteryFormat, store: Store, report: BatteryReport) {
                 modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 12.dp))
         }
         // Both sides always show; a side with nothing recorded yet is a not-ready placeholder.
-        val (inUse, baseline) = comparisonSides(report)
         val count = if (bothReady) 2 else 3
         // Keyed by role: the in-use and baseline rows keep their nodes when the help row comes or goes.
         KeyedGroup(listOf("in-use", "baseline", "how").take(count)) { index ->
             when (index) {
-                0 -> Side(f, index, count, stringResource(R.string.battery_side_in_use), inUse, "battery-side-in-use")
+                0 -> Side(f, index, count, stringResource(R.string.battery_side_in_use), inUse, report.compareInUseProgressMs, "battery-side-in-use")
                 1 -> Side(f, index, count,
-                    stringResource(if (setup == ProxySetup.Automatic) R.string.battery_side_off else R.string.battery_side_idle), baseline, "battery-side-baseline")
+                    stringResource(if (setup == ProxySetup.Automatic) R.string.battery_side_off else R.string.battery_side_idle), baseline,
+                    report.compareBaselineProgressMs, "battery-side-baseline")
                 else -> InfoRow(index, count, stringResource(R.string.battery_how_title),
                     listOf(stringResource(if (setup == ProxySetup.Automatic) R.string.battery_how_auto else R.string.battery_how_manual)),
                     leading = R.drawable.ic_info)
@@ -560,22 +584,21 @@ private fun Compared(f: BatteryFormat, store: Store, report: BatteryReport) {
     }
 }
 
-/** The two sides, from the report's comparison sides (worked out over every situation, so their
- *  progress is real even before either is ready); a side with nothing recorded yet is an empty
- *  not-ready rate. */
+/** The two sides as shown: the comparison's own sides when there is one, otherwise the report's
+ *  progress estimates; a side with nothing recorded yet is an empty not-ready rate. */
 internal fun comparisonSides(report: BatteryReport): Pair<BatteryRate, BatteryRate> =
     (report.compareInUse ?: BatteryRate()) to (report.compareBaseline ?: BatteryRate())
 
+/** [progressMs] is all the time recorded on this side, short windows included, for "N min so far". */
 @Composable
-private fun Side(f: BatteryFormat, index: Int, count: Int, name: String, rate: BatteryRate, tag: String) {
+private fun Side(f: BatteryFormat, index: Int, count: Int, name: String, rate: BatteryRate, progressMs: Long, tag: String) {
     val (line1, line1Spoken) = when {
         rate.ready -> f.hours(rate.hours) to f.hours(rate.hours, spoken = true)
         rate.reason == BatteryReason.ReadingsTooUneven -> stringResource(R.string.battery_not_ready_coarse).let { it to it }
         // Under a minute would read "0 min so far".
-        (rate.hours * 3_600_000).roundToLong() < 60_000 ->
-            stringResource(R.string.battery_not_yet) to stringResource(R.string.battery_not_yet_spoken)
-        else -> stringResource(R.string.battery_not_ready_short, f.hours(rate.hours), f.duration(1_800_000)) to
-            stringResource(R.string.battery_not_ready_short, f.hours(rate.hours, true), f.duration(1_800_000, true))
+        progressMs < 60_000 -> stringResource(R.string.battery_not_yet) to stringResource(R.string.battery_not_yet_spoken)
+        else -> stringResource(R.string.battery_not_ready_short, f.duration(progressMs), f.duration(1_800_000)) to
+            stringResource(R.string.battery_not_ready_short, f.duration(progressMs, true), f.duration(1_800_000, true))
     }
     val unknown = stringResource(R.string.battery_unknown)
     val proxy = rate.proxyBytesPerHour?.let(f::size) ?: unknown
@@ -601,7 +624,8 @@ private fun ThisApp(f: BatteryFormat, report: BatteryReport) {
         val total = report.cpu.totalPercent
         val value = total?.let { stringResource(R.string.battery_cpu_total, f.percent(it)) } ?: stringResource(R.string.battery_not_yet)
         val spoken = total?.let { stringResource(R.string.battery_cpu_total_spoken, f.percent(it)) } ?: stringResource(R.string.battery_not_yet_spoken)
-        Group(1) { InfoRow(0, 1, title, listOf(help), value, spoken = "$title. $help. $spoken", tag = "battery-cpu") }
+        // The value goes under the help, so a long "% of one core" never squeezes the text at 360 dp.
+        Group(1) { InfoRow(0, 1, title, listOf(help), value, spoken = "$title. $help. $spoken", tag = "battery-cpu", stack = true) }
     }
 }
 

@@ -308,7 +308,7 @@
     <string name="battery_status_paused_charging">Paused while charging</string>
     <string name="battery_status_save_failed_home">Couldn’t save measurements. Open to retry</string>
     <string name="battery_status_problem">Couldn’t save</string>
-    <string name="battery_status_problem_spoken">Couldn’t save measurements. Try saving again is below.</string>
+    <string name="battery_status_problem_spoken">Couldn’t save measurements. The Try saving again button is below.</string>
     <string name="battery_status_auto">Stopped after 7 days</string>
     <string name="battery_state_off">Off</string>
     <string name="battery_state_measuring">On, measuring</string>
@@ -357,6 +357,8 @@
     <string name="battery_keep_body_noshare">Turn on Share over hotspot. The number appears after at least 30 minutes of screen-off time while a device uses it.</string>
     <string name="battery_keep_other_ready">Other situations already have numbers below. The main number needs screen-off time while a device uses the proxy.</string>
     <string name="battery_paused_vpn_body">Connect the VPN to keep measuring.</string>
+    <!-- Paused for the VPN before anything has been recorded. -->
+    <string name="battery_paused_vpn_body_empty">Measuring starts when the VPN connects.</string>
     <string name="battery_paused_charging_body">Unplug the phone to keep measuring. Time on the charger isn’t counted.</string>
     <!-- Hero. %1$s = the network, title case (Mobile data). -->
     <string name="battery_hero_label">Whole phone · screen off · sharing in use · %1$s</string>
@@ -375,6 +377,8 @@
     <!-- Compared. -->
     <string name="battery_compared_auto">Sharing in use vs off</string>
     <string name="battery_compared_manual">Sharing in use vs idle</string>
+    <!-- The network both sides were measured on. %1$s = the network, title case. -->
+    <string name="battery_compared_uplink">Both sides on %1$s</string>
     <!-- %1$s = a plain decimal (no percent sign), %2$s = the network, title case. -->
     <string name="battery_compare_more">%2$s: %1$s percentage points an hour more with sharing in use</string>
     <string name="battery_compare_less">%2$s: %1$s percentage points an hour less with sharing in use</string>

@@ -3,9 +3,11 @@ package com.muunkk.connectanytime
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.view.View
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.core.app.ApplicationProvider
@@ -331,10 +333,10 @@ class ScreenshotTest(private val dark: Boolean) {
     }
 
     // ---- Battery drain ----
-    private fun battery(status: BatteryStatus, report: BatteryReport?, fontScale: Float? = null) {
+    private fun battery(status: BatteryStatus, report: BatteryReport?, fontScale: Float? = null, cutout: WindowInsets? = null) {
         compose.setContent { ConnectTheme(dark = dark, dynamicColor = false) {
             val density = LocalDensity.current
-            CompositionLocalProvider(LocalDensity provides Density(density.density, fontScale ?: density.fontScale)) {
+            CompositionLocalProvider(LocalDensity provides Density(density.density, fontScale ?: density.fontScale), LocalCutoutInsets provides cutout) {
                 BatteryContent(app.store, status, report, false, {}, {}, {}, {}, {})
             }
         } }
@@ -383,6 +385,12 @@ class ScreenshotTest(private val dark: Boolean) {
         battery(BatteryStatus.Measuring, BatteryFakes.compared(), fontScale = 2f); save("battery-landscape-200pct")
         scrollTo("battery-hero"); save("battery-landscape-200pct-hero")
     }
+    // A phone in landscape with a 32 dp cutout on the left: the list clears it, once.
+    @Test @Config(qualifiers = "w800dp-h360dp-xhdpi") fun batteryLandscapeCutout() {
+        app.store.proxySetup = ProxySetup.Automatic
+        battery(BatteryStatus.Measuring, BatteryFakes.compared(), cutout = WindowInsets(left = 32.dp)); save("battery-landscape-cutout")
+    }
+    @Test fun batteryAutoStoppedEmpty() { battery(BatteryStatus.AutoStopped, BatteryReport()); save("battery-auto-stopped-empty") }
     @Test fun batteryPortrait200() { battery(BatteryStatus.Measuring, BatteryFakes.compared(), fontScale = 2f); save("battery-200pct") }
     // The RTL pseudo-locale: the layout direction comes from the locale, as on a phone.
     @Test @Config(qualifiers = "ar-rXB-w411dp-h891dp-xhdpi") fun batteryRtl() {

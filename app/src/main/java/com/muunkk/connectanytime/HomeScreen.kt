@@ -430,8 +430,9 @@ private fun BatteryRow(status: BatteryStatus, onClick: () -> Unit) {
 @Composable
 internal fun segmentColors() = ListItemDefaults.segmentedColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
 
-/** A segment's shapes. A group of one is a single block, so it gets the large corners all
- *  round instead of the small inner ones segmentedShapes(0, 1) gives. */
+/** A Battery screen segment's shapes. There a group of one is a single block, so it gets the
+ *  large corners all round instead of the small inner ones segmentedShapes(0, 1) gives. Home's
+ *  groups keep segmentedShapes as they are. */
 @Composable
 internal fun segmentShapes(index: Int, count: Int): ListItemShapes {
     val shapes = ListItemDefaults.segmentedShapes(index, count)
@@ -448,8 +449,9 @@ internal fun Group(count: Int, item: @Composable (Int) -> Unit) {
 
 /** A segment of a list group that holds a text field rather than a list item. */
 @Composable
-internal fun FieldSegment(index: Int, count: Int, padded: Boolean = true, content: @Composable () -> Unit) {
-    Surface(shape = segmentShape(index, count), color = MaterialTheme.colorScheme.surfaceContainer,
+internal fun FieldSegment(index: Int, count: Int, padded: Boolean = true,
+    shape: Shape = ListItemDefaults.segmentedShapes(index, count).shape, content: @Composable () -> Unit) {
+    Surface(shape = shape, color = MaterialTheme.colorScheme.surfaceContainer,
         modifier = Modifier.fillMaxWidth()) {
         Box(if (padded) Modifier.padding(horizontal = 16.dp, vertical = 12.dp) else Modifier) { content() }
     }

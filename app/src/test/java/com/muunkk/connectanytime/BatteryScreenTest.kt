@@ -1,9 +1,19 @@
 package com.muunkk.connectanytime
 
 import android.content.Intent
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsActions
@@ -70,6 +80,8 @@ class BatteryScreenTest {
     private val polite = SemanticsMatcher.expectValue(SemanticsProperties.LiveRegion, LiveRegionMode.Polite)
     private fun scrollTo(matcher: SemanticsMatcher) = compose.onNode(hasScrollToNodeAction()).performScrollToNode(matcher)
     private val noLiveRegion = SemanticsMatcher.keyNotDefined(SemanticsProperties.LiveRegion)
+    /** The status line's live content, exactly ("" when it holds nothing). */
+    private fun says(text: String) = SemanticsMatcher.expectValue(SemanticsProperties.ContentDescription, listOf(text))
 
     @Test fun switchRowSaysWhyItIsPaused() {
         status = BatteryStatus.Measuring; show()
@@ -82,19 +94,41 @@ class BatteryScreenTest {
     }
     @Test fun onlySystemCausedChangesAreAnnounced() {
         status = BatteryStatus.Measuring; show()
-        // Measuring is hidden from TalkBack, but the line is in the tree.
-        line.assertExists().assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.HideFromAccessibility)).assert(noLiveRegion)
+        // One live node all along; plain Measuring is said by the switch, so it holds nothing.
+        line.assertExists().assert(polite).assert(says(""))
+        val id = line.fetchSemanticsNode().id
         status = BatteryStatus.PausedCharging; compose.waitForIdle()
-        line.assert(polite).assert(hasContentDescription("Paused while charging"))
-        line.assertIsDisplayed()
-        // The user's own toggle is announced by the switch, so the line drops its live region.
+        line.assert(polite).assert(says("Paused while charging"))
+        line.assertIsDisplayed().assertHeightIsAtLeast(48.dp)
+        // The user's own toggle is announced by the switch: the line empties, and stays empty.
         switch.performClick(); compose.waitForIdle()
         assertEquals(BatteryStatus.Off, status)
-        line.assertDoesNotExist()
+        line.assert(polite).assert(says(""))
         switch.performClick(); compose.waitForIdle()
-        line.assert(hasContentDescription("Paused: the VPN is off")).assert(noLiveRegion)
+        assertEquals(BatteryStatus.PausedVpnOff, status)
+        line.assert(polite).assert(says(""))
         status = BatteryStatus.CouldNotSave; compose.waitForIdle()
-        line.assert(polite)
+        line.assert(polite).assert(says("Couldn’t save measurements. The Try saving again button is below."))
+        // The same node throughout: its content changed, it never reappeared.
+        assertEquals(id, line.fetchSemanticsNode().id)
+    }
+    @Test fun statusLineIsOneLiveNodeInEveryState() {
+        status = BatteryStatus.Off; report = BatteryFakes.notReady(); show()
+        val id = line.assert(polite).assert(says("")).fetchSemanticsNode().id
+        // Each a change the phone made (or the auto-stop), in turn.
+        val expected = listOf(
+            BatteryStatus.PausedVpnOff to "Paused: the VPN is off",
+            BatteryStatus.Measuring to "Measuring again",
+            BatteryStatus.PausedCharging to "Paused while charging",
+            BatteryStatus.CouldNotSave to "Couldn’t save measurements. The Try saving again button is below.",
+            BatteryStatus.Measuring to "",
+            BatteryStatus.AutoStopped to "Stopped after 7 days",
+            BatteryStatus.Off to "")
+        for ((next, text) in expected) {
+            status = next; compose.waitForIdle()
+            line.assert(polite).assert(says(text))
+            assertEquals("$next keeps the node", id, line.fetchSemanticsNode().id)
+        }
     }
     @Test fun aToggleThatChangesNothingDoesNotSilenceTheNextSystemChange() {
         status = BatteryStatus.Measuring; show()
@@ -102,19 +136,18 @@ class BatteryScreenTest {
         switch.performClick(); compose.waitForIdle()
         assertEquals(BatteryStatus.Measuring, status)
         status = BatteryStatus.PausedCharging; compose.waitForIdle()
-        line.assert(polite).assert(hasContentDescription("Paused while charging"))
+        line.assert(polite).assert(says("Paused while charging"))
     }
     @Test fun measuringAgainAfterASystemPauseIsAnnounced() {
         status = BatteryStatus.Measuring; show()
         status = BatteryStatus.PausedVpnOff; compose.waitForIdle()
         status = BatteryStatus.Measuring; compose.waitForIdle()
-        line.assert(polite).assert(hasContentDescription("Measuring again"))
-            .assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.HideFromAccessibility))
+        line.assert(polite).assert(says("Measuring again"))
         compose.onNodeWithText("Measuring", useUnmergedTree = true).assertIsDisplayed()
-        // Back from anything but a pause (here a save problem), Measuring stays hidden and quiet.
+        // Back from anything but a pause (here a save problem), Measuring holds nothing.
         status = BatteryStatus.CouldNotSave; compose.waitForIdle()
         status = BatteryStatus.Measuring; compose.waitForIdle()
-        line.assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.HideFromAccessibility)).assert(noLiveRegion)
+        line.assert(polite).assert(says(""))
     }
     @Test fun withOneSideRecordedBothSidesAndHowToCompareShow() {
         app.store.proxySetup = ProxySetup.Automatic
@@ -188,25 +221,24 @@ class BatteryScreenTest {
         val description = compose.onNode(spoken).fetchSemanticsNode().config[SemanticsProperties.ContentDescription].single()
         assertTrue(description, "·" !in description && "backup (TLS)" in description && description.endsWith("drops packets."))
     }
-    @Test fun statusLiveRegionGoesQuietAndAScrolledBackLineDoesNotReannounce() {
+    @Test fun aScrolledBackStatusLineHoldsTheSameContent() {
         status = BatteryStatus.Measuring; report = BatteryFakes.compared(); show()
         status = BatteryStatus.PausedCharging; compose.waitForIdle()
-        line.assert(polite).assert(hasContentDescription("Paused while charging"))
-        compose.mainClock.advanceTimeBy(STATUS_LIVE_MS + 1_000); compose.waitForIdle()
-        line.assert(noLiveRegion).assert(hasContentDescription("Paused while charging"))
-        // Scroll the status item out (disposed) and back (recreated): still quiet.
+        line.assert(polite).assert(says("Paused while charging"))
+        // Scroll the status item out (disposed) and back (recreated): the content hasn't changed,
+        // so there's nothing new to announce.
         scrollTo(hasText("Measured: battery charge", substring = true))
         line.assertDoesNotExist()
         scrollTo(hasTestTag("battery-status"))
-        line.assert(noLiveRegion).assert(hasContentDescription("Paused while charging"))
-        // A later system change is announced again.
+        line.assert(polite).assert(says("Paused while charging"))
+        // A later system change is the content changing again.
         status = BatteryStatus.CouldNotSave; compose.waitForIdle()
-        line.assert(polite)
+        line.assert(polite).assert(says("Couldn’t save measurements. The Try saving again button is below."))
     }
     @Test fun couldNotSaveRowIsNotClickableAndRetryIsItsOwnTarget() {
         status = BatteryStatus.CouldNotSave; report = BatteryFakes.notReady(); show()
-        line.assert(hasContentDescription("Couldn’t save measurements. Try saving again is below."))
-        line.assertIsDisplayed()
+        line.assert(says("Couldn’t save measurements. The Try saving again button is below."))
+        line.assertIsDisplayed().assertHeightIsAtLeast(48.dp)
         compose.onNodeWithText("Couldn’t save", useUnmergedTree = true).assertIsDisplayed()
         compose.onNodeWithTag("battery-save-failed").assert(SemanticsMatcher.keyNotDefined(SemanticsActions.OnClick))
         compose.onNodeWithText("Couldn’t save measurements").assertExists()
@@ -319,7 +351,7 @@ class BatteryScreenTest {
     @Test fun offWithoutRowsShowsOnlyTheSwitchPanelAndFootnotes() {
         status = BatteryStatus.Off; report = BatteryReport(); show()
         compose.onNodeWithText("Not measuring yet").assertExists()
-        line.assertDoesNotExist()
+        line.assert(polite).assert(says(""))
         compose.onNodeWithText("This app").assertDoesNotExist()
         compose.onNodeWithContentDescription("Share battery data").assertIsNotEnabled()
         compose.onNodeWithContentDescription("Clear battery data").assertIsNotEnabled()
@@ -338,12 +370,76 @@ class BatteryScreenTest {
         compose.onNodeWithContentDescription("Clear battery data").performClick()
         compose.onNodeWithText("Clear battery data?").assertExists()
         compose.onNodeWithText("This removes 20 min of battery measurements saved on this device. Measuring continues.").assertExists()
+            .assert(hasContentDescription("This removes 20 minutes of battery measurements saved on this device. Measuring continues."))
         compose.onNodeWithText("Cancel").performClick()
         compose.onNodeWithText("Clear battery data?").assertDoesNotExist()
         // The same counted time spread over six days: the dialog says the rows' span, not the counted time.
         report = BatteryFakes.notReady(); compose.waitForIdle()
         compose.onNodeWithContentDescription("Clear battery data").performClick()
         compose.onNodeWithText("This removes 153 hr of battery measurements saved on this device. Measuring continues.").assertExists()
+    }
+    @Test fun comparedRowsAreTheComparisonsSides() {
+        app.store.proxySetup = ProxySetup.Automatic
+        status = BatteryStatus.Measuring; report = BatteryFakes.compared(); show()
+        val r = report!!; val c = r.comparison!!
+        assertEquals(c.inUse to c.baseline, comparisonSides(r))
+        val f = BatteryFormat(app)
+        compose.onNodeWithTag("battery-compare-uplink").assertTextEquals("Both sides on Mobile data")
+        scrollTo(hasTestTag("battery-side-in-use"))
+        compose.onNodeWithTag("battery-side-in-use").assert(hasContentDescription(
+            "Sharing in use. ${f.hours(c.inUse.hours, spoken = true)}.", substring = true))
+            .assert(hasContentDescription("${f.percent(c.inUse.percentPerHour!!)} an hour", substring = true))
+        scrollTo(hasTestTag("battery-side-baseline"))
+        compose.onNodeWithTag("battery-side-baseline").assert(hasContentDescription(
+            "Sharing off. ${f.hours(c.baseline.hours, spoken = true)}.", substring = true))
+            .assert(hasContentDescription("${f.percent(c.baseline.percentPerHour!!)} an hour", substring = true))
+        // The sentence goes with the rows: a side that isn't ready drops it, whatever the comparison says.
+        report = r.copy(compareBaseline = c.baseline.copy(ready = false), compareBaselineProgressMs = 25 * 60_000L); compose.waitForIdle()
+        compose.onNodeWithTag("battery-compare").assertDoesNotExist()
+        scrollTo(hasTestTag("battery-side-baseline"))
+        compose.onNodeWithTag("battery-side-baseline").assert(hasContentDescription("25 minutes so far, needs 30 minutes", substring = true))
+    }
+    @Test fun aSideSoFarIsTheRecordedTimeIncludingShortWindows() {
+        app.store.proxySetup = ProxySetup.Automatic
+        val r = BatteryFakes.notReady()
+        status = BatteryStatus.Measuring; report = r.copy(compareInUseProgressMs = 27 * 60_000L); show()
+        scrollTo(hasTestTag("battery-side-in-use"))
+        compose.onNodeWithText("27 min so far, needs 30 min", useUnmergedTree = true).assertExists()
+    }
+    @Test fun stoppedOrPausedWithNothingRecordedSaysNeitherNotYetNorKeep() {
+        status = BatteryStatus.AutoStopped; report = BatteryReport(); show()
+        compose.onNodeWithText("Not measuring yet").assertDoesNotExist()
+        compose.onNodeWithText(app.getString(R.string.battery_off_help)).assertExists()
+        status = BatteryStatus.PausedVpnOff; compose.waitForIdle()
+        compose.onNodeWithText("Measuring starts when the VPN connects.").assertExists()
+        compose.onNodeWithText("Connect the VPN to keep measuring.").assertDoesNotExist()
+        report = BatteryFakes.notReady(); compose.waitForIdle()
+        compose.onNodeWithText("Connect the VPN to keep measuring.").assertExists()
+    }
+    @Test fun processorUseValueSitsUnderItsHelp() {
+        status = BatteryStatus.Measuring; report = BatteryFakes.compared(); show()
+        scrollTo(hasTestTag("battery-cpu"))
+        val help = compose.onNodeWithText(app.getString(R.string.battery_cpu_help), useUnmergedTree = true).getBoundsInRoot()
+        val value = compose.onNodeWithText("of one core", substring = true, useUnmergedTree = true).getBoundsInRoot()
+        assertTrue("$value under $help", value.top >= help.bottom)
+    }
+    @Test fun sideCutoutPaddingIsAppliedOnce() {
+        val side = WindowInsets(left = 24.dp)
+        var case by mutableStateOf(0)
+        compose.setContent {
+            // 0: nothing applied yet. 1: an ancestor applied and consumed it. 2: the Scaffold padding
+            // covers it. 3: a cutout at the top too, which this padding leaves alone.
+            val outer = if (case == 1) Modifier.padding(start = 24.dp).consumeWindowInsets(side) else Modifier
+            val padding = if (case == 2) PaddingValues(start = 24.dp) else PaddingValues()
+            val cutout = if (case == 3) WindowInsets(left = 24.dp, top = 40.dp) else side
+            Box(Modifier.fillMaxSize().then(outer)) {
+                Box(Modifier.fillMaxSize().readablePadding(padding, cutout)) { Box(Modifier.size(10.dp).testTag("inside")) }
+            }
+        }
+        for (c in 0..3) {
+            case = c; compose.waitForIdle()
+            compose.onNodeWithTag("inside").assertLeftPositionInRootIsEqualTo(24.dp).assertTopPositionInRootIsEqualTo(0.dp)
+        }
     }
     @Test fun homeRowSpeaksItsStatusAndOpensDetails() {
         var opened = 0
