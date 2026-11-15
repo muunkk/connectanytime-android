@@ -146,7 +146,13 @@ internal object ProxyProtocol {
         val parts = h.first.split(' ')
         if (parts.size != 3 || parts[2] !in listOf("HTTP/1.0", "HTTP/1.1") || !parts[0].matches(Regex("[A-Z]+"))) throw ProxyFailure()
         val connect = parts[0] == "CONNECT"
-        val uri = try { URI(if (connect) "http://${parts[1]}" else parts[1]) } catch (_: Exception) { throw ProxyFailure() }
+        // java.net.URI rejects characters browsers send raw in http:// paths and queries (|, %, {}, ^, []),
+        // so only the authority is parsed there; the rest is forwarded verbatim.
+        val split = if (!connect && parts[1].startsWith("http://"))
+            parts[1].indexOfAny(charArrayOf('/', '?', '#'), 7).let { if (it < 0) parts[1].length else it } else parts[1].length
+        val rest = parts[1].substring(split)
+        if ('#' in rest || '\t' in rest) throw ProxyFailure()
+        val uri = try { URI(if (connect) "http://${parts[1]}" else parts[1].substring(0, split)) } catch (_: Exception) { throw ProxyFailure() }
         // Only this local endpoint is admitted; all other origin-form requests still fail.
         if (!connect && parts[1].startsWith("/") && uri.rawAuthority == null && uri.rawFragment == null &&
             uri.rawPath == PAC_PATH && parts[0] in listOf("GET", "HEAD"))
@@ -155,7 +161,7 @@ internal object ProxyProtocol {
         if (connect && (uri.port < 1 || !uri.rawPath.isNullOrEmpty() || uri.rawQuery != null)) throw ProxyFailure()
         val host = uri.host.removePrefix("[").removeSuffix("]")
         val port = if (uri.port < 0) 80 else uri.port
-        val path = uri.rawPath.ifEmpty { "/" } + (uri.rawQuery?.let { "?$it" } ?: "")
+        val path = if (rest.isEmpty() || rest.startsWith("?")) "/$rest" else rest
         val authority = (if (':' in host) "[$host]" else host) + if (port == 80) "" else ":$port"
         val forward = Head("${parts[0]} $path ${parts[2]}", h.cleaned().filterNot { it.first.equals("host", true) } + ("Host" to authority) +
             (if (h.chunked()) listOf("Transfer-Encoding" to "chunked") else emptyList()))
