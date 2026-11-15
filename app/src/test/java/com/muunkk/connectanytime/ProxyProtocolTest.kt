@@ -56,6 +56,65 @@ class ProxyProtocolTest {
         assertEquals("GET /a?q=b HTTP/1.1", request.head.first)
         assertEquals(listOf("example.org:8080"), request.head.values("Host"))
     }
+    @Test fun rawBrowserCharactersInPathAndQueryAreForwardedVerbatim() {
+        val cases = listOf(
+            Triple("http://fonts.googleapis.com/css?family=A|B", "/css?family=A|B", "fonts.googleapis.com"),
+            Triple("http://example.org/?q=100%", "/?q=100%", "example.org"),
+            Triple("http://example.org/?x={1}", "/?x={1}", "example.org"),
+            Triple("http://example.org/a^b", "/a^b", "example.org"),
+            Triple("http://example.org/a[1]", "/a[1]", "example.org"),
+            Triple("http://example.org:8080?a|b", "/?a|b", "example.org:8080"),
+            Triple("http://[2001:db8::1]/a|b", "/a|b", "[2001:db8::1]"))
+        for ((target, path, host) in cases) {
+            val request = http("GET $target HTTP/1.1\r\nHost: attacker\r\n\r\n")
+            assertEquals(target, "GET $path HTTP/1.1", request.head.first)
+            assertEquals(target, listOf(host), request.head.values("Host"))
+        }
+        assertEquals(ProxyTarget("2001:db8::1", 80), http("GET http://[2001:db8::1]/a|b HTTP/1.1\r\n\r\n").target)
+    }
+    @Test fun previouslyAcceptedTargetsForwardIdentically() {
+        val cases = mapOf("http://example.org" to "/", "http://example.org?x=1" to "/?x=1", "http://example.org/a/b?c=d" to "/a/b?c=d",
+            "http://example.org?" to "/?", "http://example.org?x=/y" to "/?x=/y", "http://example.org/a%20b?c=%41&d=/e?f" to "/a%20b?c=%41&d=/e?f",
+            "http://example.org//a/../b" to "//a/../b", "http://example.org:8080/p;q=1" to "/p;q=1")
+        for ((target, path) in cases) {
+            // The rebuild used before only the authority went through java.net.URI.
+            val uri = java.net.URI(target)
+            assertEquals(target, path, uri.rawPath.ifEmpty { "/" } + (uri.rawQuery?.let { "?$it" } ?: ""))
+            assertEquals(target, "GET $path HTTP/1.1", http("GET $target HTTP/1.1\r\n\r\n").head.first)
+        }
+        for ((target, host) in listOf("http://example.org:80/x" to "example.org", "http://example.org:/x" to "example.org",
+                "http://[::1]:8080/" to "[::1]:8080", "http://[2001:db8::1]/" to "[2001:db8::1]"))
+            assertEquals(target, listOf(host), http("GET $target HTTP/1.1\r\n\r\n").head.values("Host"))
+        assertEquals(ProxyTarget("::1", 8080), http("GET http://[::1]:8080/ HTTP/1.1\r\n\r\n").target)
+        assertEquals(ProxyTarget("example.org", 80), http("GET http://example.org:/x HTTP/1.1\r\n\r\n").target)
+    }
+    @Test fun absoluteTargetRejectionsAreUnchanged() {
+        for (target in listOf("http://example.org/a#b", "http://example.org#", "http://example.org?x#y", "http://example.org/a|b#c",
+                "http://u@example.org/a|b", "http://u:p@example.org?x", "https://example.org/a|b", "ftp://example.org/", "HTTP://example.org/",
+                "Http://example.org/", "http:example.org/", "http:/example.org/", "http:///a", "http://?x", "http://:80/",
+                "http://example.org:0/a|b", "http://example.org:65536/", "http://example.org:x/", "http://exa|mple.org/",
+                "http://example.org/a\tb", "http://example.org?a\tb", "http://example.org\t/", "http://"))
+            assertThrows(target, ProxyFailure::class.java) { http("GET $target HTTP/1.1\r\n\r\n") }
+    }
+    @Test fun connectTargetsAreUnchanged() {
+        val request = http("CONNECT example.org:443 HTTP/1.1\r\nHost: example.org:443\r\n\r\n")
+        assertEquals(ProxyTarget("example.org", 443), request.target)
+        assertTrue(request.connect)
+        assertEquals("CONNECT example.org:443 HTTP/1.1", request.head.first)
+        assertEquals(listOf("example.org:443"), request.head.values("Host"))
+        for (target in listOf("example.org:443/", "example.org:443/a|b", "example.org:443?x", "example.org:443#x", "example.org:0",
+                "example.org", "u@example.org:443", "example.org:443\t", "http://example.org:443"))
+            assertThrows(target, ProxyFailure::class.java) { http("CONNECT $target HTTP/1.1\r\n\r\n") }
+    }
+    @Test fun pacEndpointAndOriginFormAreUnchanged() {
+        for (request in listOf("GET /proxy.pac", "HEAD /proxy.pac", "GET /proxy.pac?x"))
+            assertTrue(request, http("$request HTTP/1.1\r\n\r\n").origin)
+        for (request in listOf("GET /proxy.pac#x", "GET /proxy.pac?x|y", "POST /proxy.pac", "GET /proxy.pac/", "GET /proxy.pac|x", "GET /a|b", "GET /a", "GET /proxy.pac\tx"))
+            assertThrows(request, ProxyFailure::class.java) { http("$request HTTP/1.1\r\n\r\n") }
+        val forwarded = http("GET http://example.org/proxy.pac HTTP/1.1\r\n\r\n")
+        assertFalse(forwarded.origin)
+        assertEquals("GET /proxy.pac HTTP/1.1", forwarded.head.first)
+    }
     @Test fun nominatedHostIsRecreatedFromAbsoluteUri() {
         val h = http("GET http://example.org/ HTTP/1.1\r\nConnection: Host, X-Hop\r\nHost: attacker\r\nX-Hop: removed\r\n\r\n").head
         val out = ByteArrayOutputStream(); ProxyProtocol.writeHead(out, h)
@@ -66,6 +125,19 @@ class ProxyProtocolTest {
         val h = ProxyProtocol.Head("POST / HTTP/1.1", listOf("Transfer-Encoding" to "chunked"))
         for (size in listOf("+1", "-0", "xyz", "fffffffffffffffff"))
             assertThrows(ProxyFailure::class.java) { ProxyProtocol.body(input("$size\r\na\r\n0\r\n\r\n"), ByteArrayOutputStream(), h) }
+    }
+    @Test fun chunkSizeTrailingWhitespaceIsAccepted() {
+        val h = ProxyProtocol.Head("POST / HTTP/1.1", listOf("Transfer-Encoding" to "chunked"))
+        for (size in listOf("3 ;x", "3 ", "3\t", "3\t;x", "3 \t ;x=y")) {
+            val out = ByteArrayOutputStream()
+            ProxyProtocol.body(input("$size\r\nabc\r\n0\r\n\r\n"), out, h)
+            assertEquals(size, "3\r\nabc\r\n0\r\n\r\n", out.toString())
+        }
+    }
+    @Test fun chunkSizeLeadingOrInnerWhitespaceStillRejected() {
+        val h = ProxyProtocol.Head("POST / HTTP/1.1", listOf("Transfer-Encoding" to "chunked"))
+        for (size in listOf(" 3", "\t3", "", " ", " ;x", "3 3", "0x3", "3 x"))
+            assertThrows(size, ProxyFailure::class.java) { ProxyProtocol.body(input("$size\r\nabc\r\n0\r\n\r\n"), ByteArrayOutputStream(), h) }
     }
     @Test fun malformedAndUnsupportedHttp() {
         for (target in listOf("/path", "https://example.org/", "http://u:p@example.org/", "http://example.org/#fragment"))

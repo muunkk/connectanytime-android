@@ -282,5 +282,5 @@ internal fun macOffCommand(port: Int) = ("port=$port; n=0; ok=1; d=; " +
 internal fun openTethering(context: Context) {
     // Its own task: from the widget's ShortcutActivity, Settings mustn't land in that hidden task.
     runCatching { context.startActivity(Intent("android.settings.TETHER_SETTINGS").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
-        .onFailure { context.startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+        .onFailure { runCatching { context.startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } }
 }

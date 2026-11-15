@@ -36,7 +36,7 @@ object Notices {
         value == "Connected" -> c.getString(R.string.status_connected, (c.applicationContext as ConnectApp).store.server)
         else -> c.getString(R.string.status_connecting)
     }
-    private fun open(c: Context) = PendingIntent.getActivity(c, 0, Intent(c, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+    private fun open(c: Context) = PendingIntent.getActivity(c, 0, c.packageManager.getLaunchIntentForPackage(c.packageName) ?: Intent(c, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
     fun ongoing(c: Context, status: String): Notification {
         val disconnect = PendingIntent.getService(c, 1, Intent(c, ConnectVpnService::class.java).setAction(ConnectVpnService.DISCONNECT), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         // Android already shows the app name in the header; lead with the state.

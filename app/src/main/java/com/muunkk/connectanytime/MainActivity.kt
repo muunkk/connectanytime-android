@@ -32,10 +32,14 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 class MainActivity : ComponentActivity() {
+    private companion object {
+        const val STATE_NOTIFICATION_DENIED = "notificationDenied"
+    }
     private val consent = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         if (it.resultCode == RESULT_OK) Controls.connect(this)
     }
@@ -88,11 +92,15 @@ class MainActivity : ComponentActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putBoolean(Controls.EXTRA_CONFIRM_HOTSPOT, confirmHotspot)
+        outState.putBoolean(STATE_NOTIFICATION_DENIED, notificationDenied)
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
         confirmHotspot = savedInstanceState?.getBoolean(Controls.EXTRA_CONFIRM_HOTSPOT) ?: false
+        // Only while it's still denied: it may have been allowed in Settings meanwhile.
+        notificationDenied = savedInstanceState?.getBoolean(STATE_NOTIFICATION_DENIED) == true && Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         if (savedInstanceState == null) takeConfirmHotspot(intent)
         enableEdgeToEdge()
         setContent {
@@ -106,6 +114,7 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(confirm) {
                     app.updater.takeConfirmation()?.let { runCatching { startActivity(it) } }
                 }
+                val holder = rememberSaveableStateHolder()
                 var activity by rememberSaveable { mutableStateOf(false) }
                 BackHandler(enabled = activity) { activity = false }
                 val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
@@ -122,11 +131,13 @@ class MainActivity : ComponentActivity() {
                             startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain")
                                 .putExtra(Intent.EXTRA_TEXT, (listOf(BuildConfig.BUILD_DESCRIPTION) + lines).joinToString("\n")), getString(R.string.share_activity)))
                         })
-                    } else HomeScreen(app.store, state, notificationDenied, onConnect = ::connect,
-                        onDisconnect = { Controls.disconnect(this@MainActivity) }, onActivity = { activity = true },
-                        onStayChanged = {
-                            if (state.busy) startService(Intent(this@MainActivity, ConnectVpnService::class.java).setAction(ConnectVpnService.ARM))
-                        }, update = update, onCheckUpdate = app.updater::check, onInstallUpdate = app.updater::install)
+                    } else holder.SaveableStateProvider("home") {
+                        HomeScreen(app.store, state, notificationDenied, onConnect = ::connect,
+                            onDisconnect = { Controls.disconnect(this@MainActivity) }, onActivity = { activity = true },
+                            onStayChanged = {
+                                if (state.busy) startService(Intent(this@MainActivity, ConnectVpnService::class.java).setAction(ConnectVpnService.ARM))
+                            }, update = update, onCheckUpdate = app.updater::check, onInstallUpdate = app.updater::install)
+                    }
                 }
                 // Only while it's off: it may have been turned on elsewhere meanwhile.
                 if (confirmHotspot && !app.store.shareOverHotspot) HotspotConfirm(onDismiss = { confirmHotspot = false }, onConfirm = {

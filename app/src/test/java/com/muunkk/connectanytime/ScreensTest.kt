@@ -18,6 +18,7 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
@@ -32,12 +33,25 @@ class ScreensTest {
         app.log.clear()
     }
     @After fun restoreMotion() {
+        shadowOf(app).checkActivities(false)
         Settings.Global.putFloat(app.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f)
     }
     private fun home(state: VpnState = VpnState(), denied: Boolean = false) =
         compose.setContent { ConnectTheme { HomeScreen(app.store, state, denied, {}, {}, {}, {}) } }
     private fun status(prefix: String) =
         compose.onNodeWithTag("status").assert(hasContentDescription("$prefix. ", substring = true))
+
+    @Test fun missingVpnSettingsDoesNotCloseHome() {
+        shadowOf(app).checkActivities(true)
+        home()
+        compose.onNodeWithText(app.getString(R.string.vpn_settings)).performScrollTo().performClick()
+        compose.onNodeWithText(app.getString(R.string.vpn_settings)).assertIsDisplayed()
+        compose.onNodeWithTag("primary").assertExists()
+    }
+    @Test fun missingTetheringAndWirelessSettingsDoesNotThrow() {
+        shadowOf(app).checkActivities(true)
+        openTethering(app)
+    }
 
     @Test fun mainStates() {
         var state by mutableStateOf(VpnState())

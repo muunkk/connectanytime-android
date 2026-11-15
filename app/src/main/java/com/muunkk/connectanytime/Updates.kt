@@ -154,6 +154,9 @@ class Updater internal constructor(
     // start over, and when it was committed, so a double tap doesn't replace it.
     private var lastConfirm: Intent? = null
     private var committedAt = 0L
+    // When Installing was shown, which is when the UI starts counting to Try again; hashing
+    // and copying the APK come between this and the commit.
+    private var installingAt = 0L
     private val dir get() = File(app.noBackupFilesDir, "updates")
     private val feed get() = File(app.noBackupFilesDir, "release-feed.json")
     private val current get() = BuildConfig.VERSION_CODE
@@ -356,8 +359,8 @@ class Updater internal constructor(
                 is UpdateState.Installing -> {
                     // Try again (offered after RETRY_AFTER). Sooner, it's a double tap: leave the
                     // attempt alone, as Android may be installing already.
+                    if (clock() - installingAt < RETRY_AFTER) return@launch
                     val since = clock() - committedAt
-                    if (since < RETRY_AFTER) return@launch
                     val info = installer.getSessionInfo(store.installSession)
                     // A confirmation that's still open is shown again rather than replaced.
                     val confirm = lastConfirm
@@ -375,6 +378,7 @@ class Updater internal constructor(
                 else -> return@launch
             }
             mutable.value = UpdateState.Installing(release)
+            installingAt = clock()
             try {
                 val file = File(dir, release.fileName)
                 verify(file, release)
