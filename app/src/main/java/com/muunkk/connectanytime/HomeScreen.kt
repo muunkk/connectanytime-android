@@ -344,7 +344,7 @@ private fun Settings(store: Store, state: VpnState, user: String, onUser: (Strin
                 leadingContent = { Icon(painterResource(R.drawable.ic_sync), contentDescription = null) },
                 trailingContent = { Switch(checked = stay, onCheckedChange = null) },
                 supportingContent = { Text(stringResource(R.string.stay_help)) }) { Text(stringResource(R.string.stay_connected)) }
-            1 -> SegmentedListItem(colors = segmentColors(), onClick = { context.startActivity(Intent(Settings.ACTION_VPN_SETTINGS)) }, shapes = shapes,
+            1 -> SegmentedListItem(colors = segmentColors(), onClick = { runCatching { context.startActivity(Intent(Settings.ACTION_VPN_SETTINGS)) } }, shapes = shapes,
                 leadingContent = { Icon(painterResource(R.drawable.ic_settings), contentDescription = null) },
                 trailingContent = { Icon(painterResource(R.drawable.ic_open_external), contentDescription = null) },
                 supportingContent = { Text(stringResource(R.string.always_help)) }) { Text(stringResource(R.string.vpn_settings)) }
