@@ -417,6 +417,8 @@
     <!-- %1$s = time measured, %2$s = watts. -->
     <string name="battery_situation_detail">%1$s · about %2$s W</string>
     <string name="battery_situation_detail_spoken">%1$s, about %2$s watts</string>
+    <string name="battery_situation_detail_measured">%1$s · %2$s W, energy counter</string>
+    <string name="battery_situation_detail_measured_spoken">%1$s, %2$s watts, from the energy counter</string>
     <string name="battery_situation_detail_no_w">%1$s</string>
     <string name="battery_highest">Highest</string>
     <string name="battery_detail_highest">%1$s · %2$s</string>

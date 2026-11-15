@@ -409,6 +409,7 @@ private fun BatteryRow(status: BatteryStatus, onClick: () -> Unit) {
     SegmentedListItem(colors = segmentColors(), onClick = onClick, shapes = ListItemDefaults.segmentedShapes(1, 2),
         modifier = Modifier.testTag("battery-row").clearAndSetSemantics {
             contentDescription = spoken
+            role = Role.Button
             onClick(label = open) { onClick(); true }
         },
         // The primary tint while measuring is decoration; the text says the same.

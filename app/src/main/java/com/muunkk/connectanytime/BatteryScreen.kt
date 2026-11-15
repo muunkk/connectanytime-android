@@ -10,6 +10,8 @@ import android.text.format.DateUtils
 import android.text.format.Formatter
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.expandVertically
@@ -244,21 +246,25 @@ internal fun BatteryContent(store: Store, status: BatteryStatus, report: Battery
     val f = remember(context, configuration) { BatteryFormat(context) }
     var confirmClear by rememberSaveable { mutableStateOf(false) }
     // A status change is announced only when the system caused it; the user's own toggle is
-    // already announced by the switch. Plain fields, not snapshot state: nothing here is written
-    // back into composition.
-    val announcer = remember { StatusAnnouncer(status) }
-    val announce = remember(status) { announcer.update(status) }
+    // already announced by the switch, which sets [expectOn]. The classification is derived from
+    // the last committed snapshot, and only committed after the composition is applied, so an
+    // abandoned composition can't move it on.
+    var committed by remember { mutableStateOf(StatusAnnouncement(status)) }
+    var expectOn by remember { mutableStateOf<Boolean?>(null) }
+    val current = committed.next(status, expectOn)
+    SideEffect { if (current != committed) { committed = current; expectOn = null } }
+    val announce = current.announce
     // The live region lasts a few seconds after a change, then goes quiet, so the status item
     // recreated after scrolling (or any later rebuild) can't announce the old change again.
     // Held here, outside the LazyColumn item, so it survives the item being disposed.
     // Counted by change, not by status, so a quick A→B→A is still announced.
-    val change = remember(status) { announcer.changes }
+    val change = current.changes
     var settled by remember { mutableIntStateOf(0) }
     LaunchedEffect(change) { delay(STATUS_LIVE_MS); settled = change }
     val live = announce != StatusAnnounce.Quiet && settled != change
     var toggles by remember { mutableIntStateOf(0) }
     // A toggle whose status never arrives (or arrives unchanged) stops counting after a while.
-    LaunchedEffect(toggles) { delay(5_000); announcer.expectOn = null }
+    LaunchedEffect(toggles) { delay(5_000); expectOn = null }
     val hasRows = report != null && report.rowCount > 0
     val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     Scaffold(modifier = Modifier.nestedScroll(scroll.nestedScrollConnection), topBar = { ReadableTopBar { insets ->
@@ -286,7 +292,7 @@ internal fun BatteryContent(store: Store, status: BatteryStatus, report: Battery
         ReadableLazyColumn(padding) {
             item(key = "switch") {
                 Column(Modifier.padding(top = 8.dp)) {
-                    Group(1) { SwitchRow(status) { announcer.expectOn = !status.on; toggles++; onToggle(!status.on) } }
+                    Group(1) { SwitchRow(status) { expectOn = !status.on; toggles++; onToggle(!status.on) } }
                 }
             }
             if (status != BatteryStatus.Off) item(key = "status") { StatusLine(status, announce, live) }
@@ -328,7 +334,8 @@ internal fun BatteryContent(store: Store, status: BatteryStatus, report: Battery
         }
     }
     if (confirmClear) {
-        val stored = f.stored(report?.countedMs ?: 0)
+        // The rows kept span the wall-clock range, which can be far longer than the counted time.
+        val stored = f.stored(report?.firstWallMinute?.let { first -> ((report.lastWallMinute ?: first) - first).coerceAtLeast(0) * 60_000 } ?: 0)
         AlertDialog(onDismissRequest = { confirmClear = false },
             icon = { Icon(painterResource(R.drawable.ic_delete), contentDescription = null) },
             title = { Text(stringResource(R.string.battery_clear_title)) },
@@ -348,26 +355,20 @@ internal const val STATUS_LIVE_MS = 4_000L
 /** How the status line announces the latest change. */
 internal enum class StatusAnnounce { Quiet, Changed, Resumed }
 
-/** Works out who caused each status change. The switch sets [expectOn] when the user toggles;
- *  a change that lands on that on/off state is theirs, anything else is the system's. */
-internal class StatusAnnouncer(private var last: BatteryStatus) {
-    var expectOn: Boolean? = null
-    private var current = StatusAnnounce.Quiet
-    /** How many status changes so far. */
-    var changes = 0
-        private set
-    fun update(status: BatteryStatus): StatusAnnounce {
-        if (status == last) return current
-        changes++
+/** Who caused the latest status change, and how many changes so far. Immutable: [next] works
+ *  out the following state. `expectOn` is the on/off state the user just toggled to; a change
+ *  that lands on it is theirs, anything else is the system's. */
+internal data class StatusAnnouncement(val last: BatteryStatus, val announce: StatusAnnounce = StatusAnnounce.Quiet, val changes: Int = 0) {
+    fun next(status: BatteryStatus, expectOn: Boolean?): StatusAnnouncement {
+        if (status == last) return this
         val system = expectOn != status.on
         val paused = last == BatteryStatus.PausedCharging || last == BatteryStatus.PausedVpnOff
-        current = when {
+        val announce = when {
             !system -> StatusAnnounce.Quiet
             status == BatteryStatus.Measuring -> if (paused) StatusAnnounce.Resumed else StatusAnnounce.Quiet
             else -> StatusAnnounce.Changed
         }
-        expectOn = null; last = status
-        return current
+        return StatusAnnouncement(status, announce, changes + 1)
     }
 }
 
@@ -534,12 +535,16 @@ private fun Compared(f: BatteryFormat, store: Store, report: BatteryReport) {
             comparisonText(context, f, c)?.let {
                 Text(it, style = MaterialTheme.typography.bodyLargeEmphasized, modifier = Modifier.padding(horizontal = 16.dp).testTag("battery-compare"))
             }
-            Text(stringResource(R.string.battery_points_help) + " " + stringResource(R.string.battery_compare_caveat),
+            // "Points" only needs explaining when a number of them is shown; the caveat always stays.
+            val points = c.pointsPerHour
+            val numeric = points != null && c.difference != null && c.difference != BatteryDifference.None && !f.plainIsZero(points)
+            val caveat = stringResource(R.string.battery_compare_caveat)
+            Text(if (numeric) stringResource(R.string.battery_points_help) + " " + caveat else caveat,
                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 12.dp))
         }
         // Both sides always show; a side with nothing recorded yet is a not-ready placeholder.
-        val (inUse, baseline) = c?.let { it.inUse to it.baseline } ?: comparisonSides(report, setup)
+        val (inUse, baseline) = comparisonSides(report)
         val count = if (bothReady) 2 else 3
         // Keyed by role: the in-use and baseline rows keep their nodes when the help row comes or goes.
         KeyedGroup(listOf("in-use", "baseline", "how").take(count)) { index ->
@@ -555,32 +560,20 @@ private fun Compared(f: BatteryFormat, store: Store, report: BatteryReport) {
     }
 }
 
-/** The two sides before the report has a comparison (it needs both): whatever the report
- *  already has for each, screen off with the hotspot on, else an empty not-ready rate. */
-internal fun comparisonSides(report: BatteryReport, setup: ProxySetup): Pair<BatteryRate, BatteryRate> {
-    /** [uplink] is matched exactly (null is no network) unless [anyUplink]. */
-    fun side(sharing: BatterySharing, uplink: Uplink?, anyUplink: Boolean) = report.situations.firstOrNull {
-        !it.situation.screenOn && it.situation.hotspot == BatteryHotspot.on && it.situation.sharing == sharing &&
-            (anyUplink || it.situation.uplink == uplink)
-    }
-    // With a hero, its uplink (which may be no network); without one, whichever in-use time there is.
-    val inUse = if (report.hero != null) side(BatterySharing.InUse, report.heroUplink, anyUplink = false)
-        else side(BatterySharing.InUse, null, anyUplink = true)
-    // The baseline comes from the same uplink as the in-use side, when there is one.
-    val base = if (setup == ProxySetup.Automatic) BatterySharing.Off else BatterySharing.Idle
-    val baseline = when {
-        inUse != null -> side(base, inUse.situation.uplink, anyUplink = false)
-        report.hero != null -> side(base, report.heroUplink, anyUplink = false)
-        else -> side(base, null, anyUplink = true)
-    }
-    return (report.hero ?: inUse?.rate ?: BatteryRate()) to (baseline?.rate ?: BatteryRate())
-}
+/** The two sides, from the report's comparison sides (worked out over every situation, so their
+ *  progress is real even before either is ready); a side with nothing recorded yet is an empty
+ *  not-ready rate. */
+internal fun comparisonSides(report: BatteryReport): Pair<BatteryRate, BatteryRate> =
+    (report.compareInUse ?: BatteryRate()) to (report.compareBaseline ?: BatteryRate())
 
 @Composable
 private fun Side(f: BatteryFormat, index: Int, count: Int, name: String, rate: BatteryRate, tag: String) {
     val (line1, line1Spoken) = when {
         rate.ready -> f.hours(rate.hours) to f.hours(rate.hours, spoken = true)
         rate.reason == BatteryReason.ReadingsTooUneven -> stringResource(R.string.battery_not_ready_coarse).let { it to it }
+        // Under a minute would read "0 min so far".
+        (rate.hours * 3_600_000).roundToLong() < 60_000 ->
+            stringResource(R.string.battery_not_yet) to stringResource(R.string.battery_not_yet_spoken)
         else -> stringResource(R.string.battery_not_ready_short, f.hours(rate.hours), f.duration(1_800_000)) to
             stringResource(R.string.battery_not_ready_short, f.hours(rate.hours, true), f.duration(1_800_000, true))
     }
@@ -629,8 +622,12 @@ private fun situationName(s: BatterySituation, spoken: Boolean): String {
 @Composable
 private fun situationDetail(f: BatteryFormat, rate: BatteryRate, highest: Boolean, spoken: Boolean): String {
     val time = f.hours(rate.hours, spoken)
+    val measured = rate.wattsLabel == BatteryWattsLabel.Measured
     val base = rate.watts?.let {
-        stringResource(if (spoken) R.string.battery_situation_detail_spoken else R.string.battery_situation_detail, time, f.watts(it))
+        stringResource(when {
+            measured -> if (spoken) R.string.battery_situation_detail_measured_spoken else R.string.battery_situation_detail_measured
+            else -> if (spoken) R.string.battery_situation_detail_spoken else R.string.battery_situation_detail
+        }, time, f.watts(it))
     } ?: stringResource(R.string.battery_situation_detail_no_w, time)
     return if (highest) stringResource(if (spoken) R.string.battery_detail_highest_spoken else R.string.battery_detail_highest, base,
         stringResource(R.string.battery_highest)) else base
@@ -697,7 +694,8 @@ private fun MoreDetail(f: BatteryFormat, report: BatteryReport) {
             }
         }
         val motion = MaterialTheme.motionScheme
-        AnimatedVisibility(expanded, enter = expandVertically(motion.defaultSpatialSpec()), exit = shrinkVertically(motion.fastSpatialSpec())) {
+        AnimatedVisibility(expanded, enter = if (reduced) EnterTransition.None else expandVertically(motion.defaultSpatialSpec()),
+            exit = if (reduced) ExitTransition.None else shrinkVertically(motion.fastSpatialSpec())) {
             val rows = detailRows(f, report)
             Column(Modifier.padding(top = ListItemDefaults.SegmentedGap)) {
                 Group(rows.size) { i -> val row = rows[i]; InfoRow(i, rows.size, row.headline, row.supporting, spoken = row.spoken) }

@@ -266,22 +266,43 @@ class BatteryScreenTest {
         scrollTo(hasTestTag("battery-situation-$last"))
         assertEquals(id, compose.onNodeWithTag("battery-situation-$last").fetchSemanticsNode().id)
     }
-    @Test fun comparisonSidesKeepNoNetworkApartFromAnyUplink() {
-        fun s(sharing: BatterySharing, uplink: Uplink?, hours: Double) = BatterySituationRate(
-            BatterySituation(false, BatteryHotspot.on, sharing, uplink), BatteryRate(hours = hours))
-        // No hero: in-use time with no network, baselines on Wi-Fi and with no network.
-        val report = BatteryReport(situations = listOf(s(BatterySharing.InUse, null, 1.0), s(BatterySharing.Off, Uplink.WiFi, 2.0),
-            s(BatterySharing.Off, null, 3.0)))
-        val (inUse, baseline) = comparisonSides(report, ProxySetup.Automatic)
-        assertEquals(1.0, inUse.hours, 0.0)
-        assertEquals(3.0, baseline.hours, 0.0)
-        // No in-use time at all: any uplink's baseline will do.
-        val noInUse = BatteryReport(situations = listOf(s(BatterySharing.Off, Uplink.WiFi, 2.0)))
-        assertEquals(2.0, comparisonSides(noInUse, ProxySetup.Automatic).second.hours, 0.0)
-        // A hero with no network takes the no-network baseline, not Wi-Fi's.
-        val hero = BatteryReport(hero = BatteryRate(hours = 5.0), heroUplink = null,
-            situations = listOf(s(BatterySharing.Off, Uplink.WiFi, 2.0), s(BatterySharing.Off, null, 3.0)))
-        assertEquals(5.0 to 3.0, comparisonSides(hero, ProxySetup.Automatic).let { it.first.hours to it.second.hours })
+    @Test fun comparisonSidesComeFromTheReportsSides() {
+        // The top-3 situations no longer matter: the sides are the core's, from every situation.
+        val inUse = BatteryRate(hours = 0.4); val baseline = BatteryRate(hours = 0.3)
+        val report = BatteryReport(compareInUse = inUse, compareBaseline = baseline, situations = listOf(BatterySituationRate(
+            BatterySituation(false, BatteryHotspot.on, BatterySharing.InUse, null), BatteryRate(hours = 9.0))))
+        assertEquals(inUse to baseline, comparisonSides(report))
+        // A side with nothing recorded is an empty not-ready rate.
+        val (a, b) = comparisonSides(BatteryReport(compareBaseline = baseline))
+        assertEquals(0.0, a.hours, 0.0); assertFalse(a.ready); assertEquals(baseline, b)
+    }
+    @Test fun aSideUnderAMinuteSaysNotYet() {
+        app.store.proxySetup = ProxySetup.Automatic
+        status = BatteryStatus.Measuring; report = BatteryFakes.oneSide(); show()
+        scrollTo(hasTestTag("battery-side-baseline"))
+        compose.onNodeWithTag("battery-side-baseline").assert(hasContentDescription("Sharing off. Not enough data yet", substring = true))
+        assertTrue(compose.onAllNodesWithText("0 min so far, needs 30 min", useUnmergedTree = true).fetchSemanticsNodes().isEmpty())
+    }
+    @Test fun situationRowsSayMeasuredWattsWithoutAbout() {
+        status = BatteryStatus.Measuring; report = BatteryFakes.compared(); show()
+        assertEquals(BatteryWattsLabel.Measured, report!!.situations[0].rate.wattsLabel)
+        scrollTo(hasTestTag("battery-situation-0"))
+        val row = compose.onNodeWithTag("battery-situation-0")
+        row.assert(hasContentDescription("watts, from the energy counter", substring = true))
+        row.assert(!hasContentDescription("about", substring = true, ignoreCase = true))
+        val about = report!!.situations[0].let { it.copy(rate = it.rate.copy(wattsLabel = BatteryWattsLabel.About)) }
+        report = report!!.copy(situations = listOf(about) + report!!.situations.drop(1)); compose.waitForIdle()
+        row.assert(hasContentDescription("about", substring = true))
+    }
+    @Test fun noDifferenceKeepsTheCaveatButNotThePointsHelp() {
+        app.store.proxySetup = ProxySetup.Automatic
+        val r = BatteryFakes.compared()
+        status = BatteryStatus.Measuring; report = r.copy(comparison = r.comparison!!.copy(difference = BatteryDifference.None)); show()
+        scrollTo(hasTestTag("battery-compare"))
+        compose.onNodeWithText(app.getString(R.string.battery_compare_caveat)).assertExists()
+        compose.onNodeWithText(app.getString(R.string.battery_points_help), substring = true).assertDoesNotExist()
+        report = r; compose.waitForIdle()
+        compose.onNodeWithText(app.getString(R.string.battery_points_help), substring = true).assertExists()
     }
     @Test fun moreDetailIsAnExpandableButton() {
         status = BatteryStatus.Measuring; report = BatteryFakes.compared(); show()
@@ -311,12 +332,18 @@ class BatteryScreenTest {
         compose.onNodeWithContentDescription("Share battery data").assertIsNotEnabled()
     }
     @Test fun clearDialogSaysHowMuchAndThatMeasuringContinues() {
-        status = BatteryStatus.Measuring; report = BatteryFakes.notReady(); show()
+        // 20 minutes of rows, 20 wall-clock minutes apart.
+        status = BatteryStatus.Measuring
+        report = BatteryMath.report(batteryTrace(minutes = 20, loss = 30_000).asSequence(), ProxySetup.Automatic); show()
         compose.onNodeWithContentDescription("Clear battery data").performClick()
         compose.onNodeWithText("Clear battery data?").assertExists()
         compose.onNodeWithText("This removes 20 min of battery measurements saved on this device. Measuring continues.").assertExists()
         compose.onNodeWithText("Cancel").performClick()
         compose.onNodeWithText("Clear battery data?").assertDoesNotExist()
+        // The same counted time spread over six days: the dialog says the rows' span, not the counted time.
+        report = BatteryFakes.notReady(); compose.waitForIdle()
+        compose.onNodeWithContentDescription("Clear battery data").performClick()
+        compose.onNodeWithText("This removes 153 hr of battery measurements saved on this device. Measuring continues.").assertExists()
     }
     @Test fun homeRowSpeaksItsStatusAndOpensDetails() {
         var opened = 0
