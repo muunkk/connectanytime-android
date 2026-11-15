@@ -301,6 +301,8 @@
     <string name="battery_measure_help">Checks the battery about once a minute while the phone is awake, the VPN is on and the phone is unplugged. Turns itself off 7 days after you turn it on.</string>
     <!-- Status: Home row supporting text / status line under the switch / the switch row's state description. -->
     <string name="battery_status_measuring">Measuring</string>
+    <!-- Spoken only, when measuring starts again after a pause the phone caused (charging, VPN off). -->
+    <string name="battery_status_resumed">Measuring again</string>
     <string name="battery_status_paused_vpn">Paused: the VPN is off</string>
     <string name="battery_status_paused_charging">Paused while charging</string>
     <string name="battery_status_save_failed_home">Couldn’t save measurements. Open to retry</string>
@@ -379,7 +381,7 @@
     <!-- %1$s = time so far, %2$s = time needed. -->
     <string name="battery_not_ready_short">%1$s so far, needs %2$s</string>
     <string name="battery_not_ready_coarse">Needs more battery use to be precise</string>
-    <string name="battery_side_detail">Proxy %1$s/h · Cellular %2$s/h · Awake %3$s</string>
+    <string name="battery_side_detail">Proxy %1$s/h · Cellular %2$s/h · Awake %3$s</string>
     <string name="battery_side_detail_spoken">proxy %1$s an hour, cellular %2$s an hour, awake %3$s of the time</string>
     <string name="battery_unknown">unknown</string>
     <string name="battery_how_title">How to compare</string>

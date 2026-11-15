@@ -29,6 +29,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -39,6 +40,7 @@ import androidx.compose.ui.text.input.*
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.graphics.shapes.Morph
 import androidx.graphics.shapes.RoundedPolygon
 
@@ -415,7 +417,9 @@ private fun BatteryRow(status: BatteryStatus, onClick: () -> Unit) {
         trailingContent = { Icon(painterResource(R.drawable.ic_chevron_right), contentDescription = null) },
         supportingContent = {
             if (failed) Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(painterResource(R.drawable.ic_error), contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
+                // Sized with the text so it scales with the font size.
+                Icon(painterResource(R.drawable.ic_error), contentDescription = null, tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(with(LocalDensity.current) { 18.sp.toDp() }))
                 Text(stringResource(R.string.battery_status_save_failed_home), color = MaterialTheme.colorScheme.error)
             } else Text(stringResource(batteryStatusText(status)))
         }) { Text(title) }
@@ -425,6 +429,17 @@ private fun BatteryRow(status: BatteryStatus, onClick: () -> Unit) {
 @Composable
 internal fun segmentColors() = ListItemDefaults.segmentedColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
 
+/** A segment's shapes. A group of one is a single block, so it gets the large corners all
+ *  round instead of the small inner ones segmentedShapes(0, 1) gives. */
+@Composable
+internal fun segmentShapes(index: Int, count: Int): ListItemShapes {
+    val shapes = ListItemDefaults.segmentedShapes(index, count)
+    return if (count == 1) shapes.copy(shape = MaterialTheme.shapes.large) else shapes
+}
+
+@Composable
+internal fun segmentShape(index: Int, count: Int): Shape = segmentShapes(index, count).shape
+
 @Composable
 internal fun Group(count: Int, item: @Composable (Int) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)) { repeat(count) { item(it) } }
@@ -433,7 +448,7 @@ internal fun Group(count: Int, item: @Composable (Int) -> Unit) {
 /** A segment of a list group that holds a text field rather than a list item. */
 @Composable
 internal fun FieldSegment(index: Int, count: Int, padded: Boolean = true, content: @Composable () -> Unit) {
-    Surface(shape = ListItemDefaults.segmentedShapes(index, count).shape, color = MaterialTheme.colorScheme.surfaceContainer,
+    Surface(shape = segmentShape(index, count), color = MaterialTheme.colorScheme.surfaceContainer,
         modifier = Modifier.fillMaxWidth()) {
         Box(if (padded) Modifier.padding(horizontal = 16.dp, vertical = 12.dp) else Modifier) { content() }
     }

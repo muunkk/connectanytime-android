@@ -32,6 +32,8 @@ internal object BatteryFakes {
     /** In use drains 8 %/h, sharing off 2 %/h: both ready, a clear difference. */
     fun compared(): BatteryReport = BatteryMath.report((batteryTrace(loss = 400_000) +
         batteryTrace(loss = 100_000, rec = 2, sharing = false, inUse = false)).asSequence(), ProxySetup.Automatic).dated()
+    /** An hour in use and no baseline yet: only one side of the comparison recorded. */
+    fun oneSide(): BatteryReport = BatteryMath.report(batteryTrace(loss = 400_000).asSequence(), ProxySetup.Automatic).dated()
     /** 20 minutes in use: rows, but nothing ready yet. */
     fun notReady(): BatteryReport = BatteryMath.report(batteryTrace(minutes = 20, loss = 30_000).asSequence(), ProxySetup.Automatic).dated()
     /** A ready hero on mobile data whose watts come partly from charge × voltage. */
@@ -50,9 +52,11 @@ class BatteryScreenTest {
     private var status by mutableStateOf(BatteryStatus.Off)
     private var report by mutableStateOf<BatteryReport?>(BatteryReport())
     private var retried = 0
+    /** False: the toggle goes nowhere (the status doesn't change). */
+    private var toggleTakes = true
     private fun show() {
         compose.setContent { ConnectTheme { BatteryContent(app.store, status, report, false, {}, onToggle = { on ->
-            status = if (on) BatteryStatus.PausedVpnOff else BatteryStatus.Off
+            if (toggleTakes) status = if (on) BatteryStatus.PausedVpnOff else BatteryStatus.Off
         }, onClear = {}, onRetry = { retried++ }, onShare = {}) } }
         compose.waitForIdle()
     }
@@ -87,6 +91,43 @@ class BatteryScreenTest {
         line.assert(hasContentDescription("Paused: the VPN is off")).assert(noLiveRegion)
         status = BatteryStatus.CouldNotSave; compose.waitForIdle()
         line.assert(polite)
+    }
+    @Test fun aToggleThatChangesNothingDoesNotSilenceTheNextSystemChange() {
+        status = BatteryStatus.Measuring; show()
+        toggleTakes = false
+        switch.performClick(); compose.waitForIdle()
+        assertEquals(BatteryStatus.Measuring, status)
+        status = BatteryStatus.PausedCharging; compose.waitForIdle()
+        line.assert(polite).assert(hasContentDescription("Paused while charging"))
+    }
+    @Test fun measuringAgainAfterASystemPauseIsAnnounced() {
+        status = BatteryStatus.Measuring; show()
+        status = BatteryStatus.PausedVpnOff; compose.waitForIdle()
+        status = BatteryStatus.Measuring; compose.waitForIdle()
+        line.assert(polite).assert(hasContentDescription("Measuring again"))
+            .assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.HideFromAccessibility))
+        compose.onNodeWithText("Measuring", useUnmergedTree = true).assertIsDisplayed()
+        // Back from anything but a pause (here a save problem), Measuring stays hidden and quiet.
+        status = BatteryStatus.CouldNotSave; compose.waitForIdle()
+        status = BatteryStatus.Measuring; compose.waitForIdle()
+        line.assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.HideFromAccessibility)).assert(noLiveRegion)
+    }
+    @Test fun withOneSideRecordedBothSidesAndHowToCompareShow() {
+        app.store.proxySetup = ProxySetup.Automatic
+        status = BatteryStatus.Measuring; report = BatteryFakes.oneSide(); show()
+        assertEquals(null, report!!.comparison)
+        scrollTo(hasTestTag("battery-side-in-use"))
+        compose.onNodeWithTag("battery-side-in-use").assert(hasContentDescription("8.0% an hour", substring = true))
+        scrollTo(hasTestTag("battery-side-baseline"))
+        compose.onNodeWithTag("battery-side-baseline").assert(hasContentDescription("Sharing off", substring = true))
+            .assert(hasContentDescription("Not enough data yet", substring = true))
+        scrollTo(hasText("How to compare"))
+        compose.onNodeWithTag("battery-compare").assertDoesNotExist()
+    }
+    @Test fun otherOrShortIsLeftOutWithNoTime() {
+        status = BatteryStatus.Measuring; report = BatteryFakes.compared().copy(otherOrShort = BatteryRate()); show()
+        scrollTo(hasTestTag("battery-situations"))
+        compose.onNodeWithText("Other or short", substring = true).assertDoesNotExist()
     }
     @Test fun statusLineNeverTicks() {
         status = BatteryStatus.Measuring; report = BatteryFakes.notReady(); show()
@@ -228,11 +269,21 @@ class BatteryFormatTest {
         assertTrue(f().plainIsZero(.04))
         assertFalse(f().plainIsZero(.05))
         val none = BatteryComparison(Uplink.WiFi, ProxySetup.Automatic, BatteryRate(ready = true), BatteryRate(ready = true), BatteryDifference.More, .04)
-        assertEquals("No clear difference yet. The two ranges overlap; keep measuring both.",
-            batterySummary(app, BatteryStatus.Measuring, BatteryReport(comparison = none)).lines().last())
+        val caveat = app.getString(R.string.battery_compare_caveat)
+        assertEquals(listOf("No clear difference yet. The two ranges overlap; keep measuring both.", caveat),
+            batterySummary(app, BatteryStatus.Measuring, BatteryReport(comparison = none)).lines().takeLast(2))
         val less = none.copy(difference = BatteryDifference.Less, pointsPerHour = 1.25)
         assertTrue(batterySummary(app, BatteryStatus.Measuring, BatteryReport(comparison = less)).endsWith(
-            "Wi‑Fi: 1.3 percentage points an hour less with sharing in use"))
+            "Wi‑Fi: 1.3 percentage points an hour less with sharing in use\n$caveat"))
+    }
+    @Test fun sharedSummaryKeepsTheCaveatWithTheDifference() {
+        val caveat = app.getString(R.string.battery_compare_caveat)
+        val lines = batterySummary(app, BatteryStatus.Measuring, BatteryFakes.compared()).lines()
+        val at = lines.indexOfFirst { "percentage points an hour" in it }
+        assertTrue(lines.toString(), at >= 0)
+        assertEquals(caveat, lines[at + 1])
+        // No comparison, no caveat.
+        assertFalse(caveat in batterySummary(app, BatteryStatus.Measuring, BatteryFakes.notReady()))
     }
     @Test fun durations() {
         assertEquals("less than a minute", f().stored(59_000))

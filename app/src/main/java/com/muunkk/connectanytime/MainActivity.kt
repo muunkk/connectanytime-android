@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -102,7 +103,7 @@ class MainActivity : ComponentActivity() {
                 .putExtra(Intent.EXTRA_TEXT, summary).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             send.clipData = ClipData.newRawUri(null, uri)
             startActivity(Intent.createChooser(send, getString(R.string.battery_share)))
-        }
+        }.onFailure { Toast.makeText(this, R.string.battery_share_failed, Toast.LENGTH_SHORT).show() }
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()

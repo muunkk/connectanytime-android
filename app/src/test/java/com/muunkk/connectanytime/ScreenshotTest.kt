@@ -5,8 +5,6 @@ import android.graphics.Canvas
 import android.view.View
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalLayoutDirection
-import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -333,11 +331,10 @@ class ScreenshotTest(private val dark: Boolean) {
     }
 
     // ---- Battery drain ----
-    private fun battery(status: BatteryStatus, report: BatteryReport?, fontScale: Float? = null, rtl: Boolean = false) {
+    private fun battery(status: BatteryStatus, report: BatteryReport?, fontScale: Float? = null) {
         compose.setContent { ConnectTheme(dark = dark, dynamicColor = false) {
             val density = LocalDensity.current
-            CompositionLocalProvider(LocalDensity provides Density(density.density, fontScale ?: density.fontScale),
-                LocalLayoutDirection provides if (rtl) LayoutDirection.Rtl else LayoutDirection.Ltr) {
+            CompositionLocalProvider(LocalDensity provides Density(density.density, fontScale ?: density.fontScale)) {
                 BatteryContent(app.store, status, report, false, {}, {}, {}, {}, {})
             }
         } }
@@ -356,6 +353,10 @@ class ScreenshotTest(private val dark: Boolean) {
         scrollTo("battery-side-baseline"); save("battery-ready-compared-rows")
         scrollTo("battery-more"); compose.onNodeWithTag("battery-more").performClick(); compose.onNode(hasScrollToNodeAction()).performScrollToNode(hasText("Cellular data", substring = true))
         compose.waitForIdle(); save("battery-ready-more-detail")
+    }
+    @Test fun batteryOneSide() {
+        app.store.proxySetup = ProxySetup.Automatic
+        battery(BatteryStatus.Measuring, BatteryFakes.oneSide()); scrollTo("battery-side-baseline"); save("battery-one-side")
     }
     @Test fun batteryCouldNotSave() { battery(BatteryStatus.CouldNotSave, BatteryFakes.notReady()); save("battery-could-not-save") }
     @Test fun batteryPausedCharging() { battery(BatteryStatus.PausedCharging, BatteryFakes.compared()); save("battery-paused-charging") }
@@ -378,9 +379,11 @@ class ScreenshotTest(private val dark: Boolean) {
         scrollTo("battery-hero"); save("battery-landscape-200pct-hero")
     }
     @Test fun batteryPortrait200() { battery(BatteryStatus.Measuring, BatteryFakes.compared(), fontScale = 2f); save("battery-200pct") }
-    @Test fun batteryRtl() {
+    // The RTL pseudo-locale: the layout direction comes from the locale, as on a phone.
+    @Test @Config(qualifiers = "ar-rXB-w411dp-h891dp-xhdpi") fun batteryRtl() {
         app.store.proxySetup = ProxySetup.Automatic
-        battery(BatteryStatus.Measuring, BatteryFakes.compared(), rtl = true); save("battery-rtl")
+        assertEquals(View.LAYOUT_DIRECTION_RTL, app.resources.configuration.layoutDirection)
+        battery(BatteryStatus.Measuring, BatteryFakes.compared()); save("battery-rtl")
         scrollTo("battery-more"); compose.onNodeWithTag("battery-more").performClick(); scrollTo("battery-more"); save("battery-rtl-more")
     }
     @Test @Config(qualifiers = "w360dp-h800dp-xhdpi") fun batteryCompared360Large() {

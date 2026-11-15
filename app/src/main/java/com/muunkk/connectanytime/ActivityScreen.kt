@@ -73,7 +73,7 @@ fun ActivityScreen(log: ActivityLog, onBack: () -> Unit, onShare: (List<String>)
     var confirmClear by rememberSaveable { mutableStateOf(false) }
     val groups = remember(lines) { groupLogLines(lines) }
     val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
-    Scaffold(modifier = Modifier.nestedScroll(scroll.nestedScrollConnection), topBar = {
+    Scaffold(modifier = Modifier.nestedScroll(scroll.nestedScrollConnection), topBar = { ReadableTopBar { insets ->
         MediumFlexibleTopAppBar(
             title = { Text(stringResource(R.string.activity)) },
             subtitle = if (lines.isEmpty()) null else { { Text(pluralStringResource(R.plurals.activity_count, lines.size, lines.size)) } },
@@ -90,9 +90,10 @@ fun ActivityScreen(log: ActivityLog, onBack: () -> Unit, onShare: (List<String>)
                     Icon(painterResource(R.drawable.ic_delete), contentDescription = stringResource(R.string.clear_activity))
                 }
             },
+            windowInsets = insets,
             scrollBehavior = scroll,
         )
-    }) { padding ->
+    } }) { padding ->
         if (lines.isEmpty()) {
             Empty(Modifier.fillMaxSize().padding(padding))
             return@Scaffold
