@@ -122,18 +122,31 @@ class WidgetTest {
         assertTrue(descriptions(laidOut(DpSize(180.dp, 110.dp))).none { "Android hotspot," in it })
     }
 
-    @Test fun theOnDotStandsOutFromTheButtonInEveryPalette() {
-        // The dot is a shape cue first, but it must also be visible on the button: 3:1 (WCAG non-text).
-        // It is drawn in the sign's ink on the button's fill (HotspotSettings).
-        fun lum(c: androidx.compose.ui.graphics.Color) = c.luminance().toDouble()
-        fun contrast(a: androidx.compose.ui.graphics.Color, b: androidx.compose.ui.graphics.Color) =
-            (maxOf(lum(a), lum(b)) + 0.05) / (minOf(lum(a), lum(b)) + 0.05)
-        // Android 10–11's brand palette, and Android 12+'s wallpaper palette as this test device builds it.
-        val schemes = listOf(BrandLight, BrandDark, androidx.compose.material3.dynamicLightColorScheme(app),
-            androidx.compose.material3.dynamicDarkColorScheme(app))
-        for (scheme in schemes) for ((ink, fill) in listOf(scheme.onSecondaryContainer to scheme.secondaryContainer,
-                scheme.onSurfaceVariant to scheme.surfaceVariant))
-            assertTrue("${contrast(ink, fill)}", contrast(ink, fill) >= 3.0)
+    /** Where [view] sits inside [root], in pixels. */
+    private fun offsetIn(view: View, root: View): Pair<Int, Int> {
+        var x = 0; var y = 0; var v = view
+        while (v !== root) { x += v.left; y += v.top; v = v.parent as View }
+        return x to y
+    }
+    private fun contrast(a: Int, b: Int): Double {
+        fun lum(c: Int) = Color.luminance(c).toDouble()
+        return (maxOf(lum(a), lum(b)) + 0.05) / (minOf(lum(a), lum(b)) + 0.05)
+    }
+    private fun all(view: View): List<View> = listOf(view) +
+        if (view is android.view.ViewGroup) (0 until view.childCount).flatMap { all(view.getChildAt(it)) } else emptyList()
+
+    /** The On dot as drawn: its centre pixel against the button's fill, 3:1 at least (WCAG non-text). */
+    private fun assertDotStandsOut(label: String, size: DpSize) {
+        val root = laidOut(size)
+        val button = all(root).single { it.contentDescription == app.getString(R.string.widget_hotspot_settings_on) }
+        val density = app.resources.displayMetrics.density
+        val dot = all(button).filterIsInstance<android.widget.ImageView>().single { it.width == (8 * density).toInt() }
+        val bitmap = Bitmap.createBitmap(root.width, root.height, Bitmap.Config.ARGB_8888)
+        root.draw(Canvas(bitmap))
+        val (dx, dy) = offsetIn(dot, root); val (bx, by) = offsetIn(button, root)
+        val ink = bitmap.getPixel(dx + dot.width / 2, dy + dot.height / 2)
+        val fill = bitmap.getPixel(bx + button.width / 2, by + (3 * density).toInt()) // above the sign
+        assertTrue("$label: ${contrast(ink, fill)}", contrast(ink, fill) >= 3.0)
     }
 
     private fun tap(action: String) =
@@ -290,6 +303,10 @@ class WidgetTest {
             ConnectApp.mutableUplink.value = Uplink.MobileData
             render("$prefix-wide-hotspot-$name-connected", DpSize(280.dp, 110.dp))
             render("$prefix-compact-hotspot-$name-connected", DpSize(180.dp, 110.dp))
+            if (state == AndroidHotspot.On) for (connectedNow in listOf(false, true)) {
+                ConnectApp.mutableState.value = if (connectedNow) connected else VpnState()
+                assertDotStandsOut("$prefix connected=$connectedNow", DpSize(280.dp, 110.dp))
+            }
         }
     }
 

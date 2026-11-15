@@ -283,8 +283,9 @@ class HotspotWatchTest {
         val all = mutableListOf<(Boolean) -> Unit>()
         var fail = false
         override fun register(onChange: (wifi: Boolean) -> Unit): Any {
+            all += onChange // kept even when registration then fails, as a half-done one might call
             if (fail) throw SecurityException("refused")
-            live += onChange; all += onChange
+            live += onChange
             return onChange
         }
         override fun unregister(handle: Any) { live.remove(handle) }
@@ -340,6 +341,9 @@ class HotspotWatchTest {
         assertEquals(AndroidHotspot.Unknown, value())
         first(true)
         assertEquals(AndroidHotspot.Unknown, value())
+        // The failed registration's callback, if Android calls it anyway, is silenced too.
+        types.all.last()(true)
+        assertEquals(AndroidHotspot.Unknown, value())
         // A new registration works again, and only it counts.
         types.fail = false
         watch.refresh()
@@ -360,5 +364,20 @@ class HotspotWatchTest {
         types.live.single()(true) // a change after the tap
         assertEquals(AndroidHotspot.On, value())
         watch.close()
+    }
+
+    @Test fun aRestrictionThatCameAndWentBeforeItsBroadcastStillInvalidates() {
+        stickyWifi()
+        assertEquals(AndroidHotspot.On, ConnectApp.androidHotspot.value)
+        // Applied and lifted before the (merged) broadcast is handled: the restriction reads false by then.
+        val users = shadowOf(app.getSystemService(UserManager::class.java))
+        users.setUserRestriction(Process.myUserHandle(), UserManager.DISALLOW_CONFIG_TETHERING, true)
+        users.setUserRestriction(Process.myUserHandle(), UserManager.DISALLOW_CONFIG_TETHERING, false)
+        broadcast(Intent(USER_RESTRICTIONS_CHANGED))
+        assertEquals(AndroidHotspot.Unknown, ConnectApp.androidHotspot.value)
+        app.hotspot.refresh(); idle() // the same sticky again doesn't count as new
+        assertEquals(AndroidHotspot.Unknown, ConnectApp.androidHotspot.value)
+        broadcast(tether("wlan2"))
+        assertEquals(AndroidHotspot.On, ConnectApp.androidHotspot.value)
     }
 }

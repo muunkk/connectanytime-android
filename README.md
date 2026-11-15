@@ -36,9 +36,9 @@ connected and which network the phone is on. It also has:
 - **USB** and **Hotspot** buttons that turn sharing on or off (filled when on, outlined
   when off) and show what each link is doing, or how many devices are using it;
 - a button for Android's hotspot settings, which also shows whether Android's hotspot
-  is on: a **dot** means on, a **slashed** sign means off, and the **plain** sign means
-  the widget doesn't know (often the case with the hotspot off; see below). TalkBack
-  says "Android hotspot, on" or "off" when it knows.
+  is on: a **dot** (not a notification) means on, a **slashed** sign means off, and the
+  **plain** sign means the widget doesn't know (often the case with the hotspot off; see
+  below). TalkBack says "Android hotspot, on" or "off" when it knows.
 
 Android doesn't let apps turn the hotspot itself on or off, so that button opens
 Android's tethering screen. Use Android's own Hotspot tile in Quick Settings for one tap.

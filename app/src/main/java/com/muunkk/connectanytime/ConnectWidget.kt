@@ -363,7 +363,8 @@ private fun HotspotSettings(context: Context, connected: Boolean, state: Android
             if (state == AndroidHotspot.On) Box(GlanceModifier.fillMaxSize(), contentAlignment = Alignment.TopEnd) {
                 // An 8 dp dot in the sign's own ink, ringed in the button's fill so it reads as a badge apart
                 // from the waves. Ink, not tertiary: Material 3 keeps an on-colour readable on its container in
-                // every palette, where tertiary on secondaryContainer drops near 2:1 with some wallpapers.
+                // every palette, and promises nothing for tertiary on secondaryContainer (the brand palette's
+                // tertiary is also nearly the share buttons' blue). WidgetTest checks the drawn pixels.
                 // (10 dp is as large as the ring gets without cutting into the outer wave.)
                 Box(GlanceModifier.size(10.dp), contentAlignment = Alignment.Center) {
                     Image(ImageProvider(R.drawable.ic_dot), contentDescription = null, colorFilter = ColorFilter.tint(fill), modifier = GlanceModifier.size(10.dp))

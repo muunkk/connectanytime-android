@@ -203,7 +203,9 @@ internal class HotspotWatch(private val context: Context, private val publish: (
                     apStopSeq = if (state == AP_DISABLING || state == AP_DISABLED || state == AP_FAILED) stamp else evidence.apStopSeq)
                 if (live) clearHandoff(stamp)
             }
-            USER_RESTRICTIONS_CHANGED -> readRestriction()
+            // A restriction may have come and gone before this arrives (Android also merges these
+            // broadcasts), so earlier tethering reports are treated as from before one either way.
+            USER_RESTRICTIONS_CHANGED -> readRestriction(changed = live)
             else -> return@synchronized
         }
         recompute()
@@ -225,13 +227,13 @@ internal class HotspotWatch(private val context: Context, private val publish: (
 
     /** Under [lock]: DISALLOW_CONFIG_TETHERING, or (Android 13+) DISALLOW_WIFI_TETHERING; read when
      *  they may have changed (their broadcast, a refresh). */
-    private fun readRestriction() {
+    private fun readRestriction(changed: Boolean = false) {
         val restricted = runCatching {
             val users = context.getSystemService(UserManager::class.java) ?: return@runCatching false
             users.hasUserRestriction(UserManager.DISALLOW_CONFIG_TETHERING) ||
                 (Build.VERSION.SDK_INT >= 33 && users.hasUserRestriction(UserManager.DISALLOW_WIFI_TETHERING))
         }.getOrDefault(true)
-        evidence = evidence.copy(restrictedNow = restricted, restrictionSeq = if (restricted) ++seq else evidence.restrictionSeq)
+        evidence = evidence.copy(restrictedNow = restricted, restrictionSeq = if (restricted || changed) ++seq else evidence.restrictionSeq)
     }
 
     /** Under [lock]. */
