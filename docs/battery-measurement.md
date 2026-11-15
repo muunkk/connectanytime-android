@@ -47,8 +47,8 @@ Inside the app's control, ranked by expected impact. **These are hypotheses unti
    up to two worker threads per connection, `TetherProxy.kt:246,324`), then read from the tun by OpenConnect, encrypted by OpenSSL, and sent over TLS or DTLS. This **bypasses Android's tethering
    hardware offload** (kernel/IPA NAT forwarding, which costs almost no CPU), so CPU energy grows with the laptop's throughput.
    On top of that, if DTLS fails (`ocbridge.c:268,325` falls back to TLS only), TCP-over-TCP adds retransmissions and keeps the radio active longer.
-   *Hypothesis:* cost grows with throughput; magnitude unknown until measured. It is likely the largest lever the app has. The structural fix (a split PAC that sends only NYU destinations
-   through the VPN) is **the user's decision**: it changes which traffic NYU sees. Measure first.
+   *Hypothesis:* cost grows with throughput; magnitude unknown until measured. It is likely the largest cost the app has. All traffic stays on the VPN (a split PAC is ruled out), so the
+   lever is the per-byte cost of the proxy path itself (Q1). Measure first.
 2. **The proxy rescans every 2 s forever** (`TetherProxy.kt:91`); each rescan also publishes a `TetherUsage` (`:202,207`). An equal value doesn't emit, but while traffic flows the byte counts change, so it emits every 2 s and wakes the widget's `combine` (`ConnectWidget.kt:128`) and a visible SharingCard (`SharingCard.kt:59`). It also sweeps idle sessions (`:146`). Timer and Binder overhead happens on every rescan; emissions happen only with traffic. Each `reconcile` with sharing on enumerates every interface once
    (`TetherProxy.kt:106`; line 121 runs only for the unknown-hotspot fallback at :191), plus `allNetworks` and `getLinkProperties` binder calls (lines 99–103, 113),
    which also cost CPU in `system_server`, billed to the system rather than to this app. That's 43 k scans a day, while the same events arrive
@@ -342,7 +342,7 @@ The phone isn't attached now (`adb devices` is empty, and T3 device_list shows n
 
 | # | Change | Expected impact | Risk to VPN staying up |
 |---|---|---|---|
-| Q1 | Split PAC option: only NYU ranges and domains via the proxy, the rest DIRECT (tether offload) | Large at high laptop throughput | None (proxy only). Policy: non-NYU traffic no longer goes via NYU, so the user decides |
+| Q1 | Cheaper proxy copy path: larger buffers and fewer wakeups per byte, measured with the proxy CPU meter | Unknown until measured; scales with throughput | None to the VPN; moderate code risk in the proxy |
 | Q2 | Rescan event-driven (tether broadcast + network callback + prefs) with a 15–30 s fallback instead of every 2 s | Low–moderate | None; the proxy picks up an address change more slowly (`stillServes` still guards each client) |
 | Q3 | Cache the VPN `Network` and the phone's address set once per rescan instead of per connection | Low | None |
 | Q4 | Disable OpenConnect compression if the log shows it's negotiated | Unknown, low–moderate | Low, but it touches the handshake: test against NYU |
@@ -354,4 +354,4 @@ The phone isn't attached now (`adb devices` is empty, and T3 device_list shows n
 
 1. This recorder + report + export (this PR), plus thread naming.
 2. The user runs it for a day: an hour with the laptop on the proxy and an hour with it DIRECT, both screen off; then compares with `dumpsys batterystats`.
-3. Then Q2/Q3 (safe), and Q1 if the proxy-in-use situation costs much more than proxy-not-in-use.
+3. Then Q2/Q3 (safe), and Q1 if the proxy CPU share is a large part of the proxy-in-use cost. A split PAC is out of scope: all traffic stays on the VPN.
