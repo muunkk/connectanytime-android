@@ -1011,3 +1011,90 @@ Branch `proxy-pac`, stacked on `proxy-status`. Backend by GPT Sol, UI by Opus, b
 | 1 | 7 | 7 | Manual keeps accepting during a reconnect; trailing dots; full IPv6 parsing; no `isInNet`; Mac lookalike URLs, local SOCKS and failed Manual setups left alone; PAC only while connected; choice stacks at large fonts; overlap warning wording and position; Mac help text for Automatic; hedged copy; custom-domain caveat; checklist |
 | 2 | 8.5, ship | 9, ship | Nothing blocking. Taken: overlap wording for USB; the choice stacks from 115% and its labels never wrap; the Automatic Mac command sets the URL before turning Manual off; any loopback spelling counts as local; "set every device the same way"; clearer wording on when Automatic goes direct; Manual help; a test for switching back to Manual; README on the turn-off command |
 | 3 | 9, ship | 9, ship | Nothing blocking. A test comment corrected; two cosmetic notes left for later (the Manual screenshot's scroll, two small grey paragraphs in a row). |
+
+# Keep the session through reconnects; rejoin without Duo (2026-11-15)
+
+## Problem
+
+On the phone the VPN dropped within minutes and asked for Duo again. A short blip set off
+Dead Peer Detection, OpenConnect reconnected in-process ("Reconnected with the existing
+session"), and in the same second the service saw different tunnel settings, sent
+OC_CMD_DETACH to rebuild the interface ("Software caused connection abort") and rejoined
+from the saved session on a new vpninfo. The server answered 401: session over. Every
+rejoin from the saved session in that log got 401 (11 of 11, including one 130 s after
+login), and every in-process reconnect worked (20 of 20).
+
+## Cause
+
+- **Rejoins.** The session cookie carries OpenConnect's STRAP private key
+  (`openconnect_strapkey=`, auth.c). Every CONNECT on a live vpninfo, including the
+  first one after login (`vpninfo->cookies` is still set, so `strap_rekey = 1`), signs
+  with the old key and hands the server a new one (`append_strap_verify`). But
+  `vpninfo->cookie` is never rebuilt, so the cookie saved at login presents a key the
+  server no longer holds. That the ASA enforces this is the leading hypothesis; it
+  fits every 401 in the log, but only the phone can confirm it.
+- **The drop.** The settings comparison was exact on every field. The log has no
+  "Reconnect gave a new Legacy IP address" line, so the address didn't change;
+  something the interface doesn't need did (most likely the MTU, recalculated per
+  transport). The service then threw away a live session to rebuild it.
+
+## Fix
+
+- `openconnect-strap-cookie.patch`: after each successful CONNECT, put the key the
+  server just accepted back into the cookie. Also wipes and frees the DER copy of the
+  key that `append_strap_privkey` leaked on every call. Logs only at debug level, which
+  the bridge drops.
+- Bridge: copies url, cookie, DNS name and IP on OpenConnect's thread after
+  connect, resume and every reconnect, under a mutex. `saved()` reads that copy and
+  wipes it, instead of reading `vpninfo` while the mainloop may be replacing it.
+- Service: saves the session again after every in-process reconnect (same encrypted
+  Store), so a force-stop or update rejoins with the current key.
+- A reconnect with new settings keeps the session and its connection:
+  - `TunnelConfig.needsNewInterface` ignores what the interface doesn't use (server
+    address, split DNS), compares routes as sets, and accepts a larger MTU. DNS servers
+    and search domains stay ordered (priority). A smaller MTU or a new address,
+    netmask, IPv6 address, DNS, search domains or route set still needs a new interface.
+  - When it does: establish the new interface while the old one is open, then
+    `NativeBridge.SWITCH_TUN` writes `OC_CMD_STATS` to the command pipe. Its handler
+    runs on OpenConnect's thread between packets, asks `nextTun()` for the fd and calls
+    `openconnect_setup_tun_fd` (unregisters the old fd, never closes it). Then
+    `OCB_TUN_SWITCHED` lets the service close the old descriptor. There's no reconnect
+    and no rejoin. `TunHandoff` tracks which fd OpenConnect owns.
+  - `openconnect-switch-tun.patch`: if vhost-net were in use, drop it before setting
+    up the new fd rather than leak it. (This phone can't open /dev/vhost-net.)
+  - DETACH and rejoin remain only for when Android refuses the new interface.
+- The log names the changed fields, never their values except the MTU:
+  "The reconnect brought new tunnel settings (MTU 1390 → 1406); the VPN interface still fits".
+
+## Checks
+
+- `./gradlew assembleDebug assembleRelease testDebugUnitTest lintDebug lintRelease`:
+  BUILD SUCCESSFUL. 207 tests, 0 failures. Lint 0 errors (47 warnings, none in changed
+  files). Both ABIs' dependencies were rebuilt by `build-deps.sh`; all seven patches
+  apply to the 9.21 tarball without fuzz or warnings.
+- `python3 scripts/verify-release.py`: PASS, version 0.1.4 (5), all 11 native methods
+  and all five callbacks (now including `nextTun()I`) after R8.
+- `scripts/verify-native.sh`: PASS for arm64-v8a and x86_64.
+- LogicTest covers which changes need a new interface (MTU up, gateway, split DNS and
+  route order don't; DNS order and MTU down do), the change log naming fields without
+  values, and the handoff: an old fd stays open until the switch is reported, a second
+  change before the switch replaces the first, a run that ends before switching
+  leaves the newest interface for the rejoin, and stopping closes everything.
+
+## Device checklist (0.1.4 (5))
+
+- [ ] Connect, then cause a short blip (airplane mode for ~5 s, or walk out of Wi‑Fi
+      range): the VPN shows Reconnecting… then Connected; no Duo. The log shows
+      "Reconnected with the existing session" and no "rejoining the session".
+- [ ] Switch Wi‑Fi ↔ mobile data a few times: the VPN stays up. If the log shows
+      "moving to a new VPN interface", it's followed by "Moved to the new VPN interface",
+      and traffic (a web page, a hotspot client) keeps working.
+- [ ] Force-stop the app (Settings → Apps), then let Stay Connected or Always-on start
+      it, or tap Connect: it rejoins without Duo. Log: no 401.
+- [ ] Update the app over this build (the next release, or `adb install -r`): it rejoins
+      without Duo.
+- [ ] After a blip and an in-process reconnect, force-stop again: it still rejoins
+      without Duo (the re-saved key).
+- [ ] Note: the session saved by 0.1.3 carries the stale key, so the first start of
+      0.1.4 may need one Duo login. Expected once.
+- [ ] Disconnect still logs out, and Connect needs Duo afterwards.
