@@ -126,6 +126,19 @@ class ProxyProtocolTest {
         for (size in listOf("+1", "-0", "xyz", "fffffffffffffffff"))
             assertThrows(ProxyFailure::class.java) { ProxyProtocol.body(input("$size\r\na\r\n0\r\n\r\n"), ByteArrayOutputStream(), h) }
     }
+    @Test fun chunkSizeTrailingWhitespaceIsAccepted() {
+        val h = ProxyProtocol.Head("POST / HTTP/1.1", listOf("Transfer-Encoding" to "chunked"))
+        for (size in listOf("3 ;x", "3 ", "3\t", "3\t;x", "3 \t ;x=y")) {
+            val out = ByteArrayOutputStream()
+            ProxyProtocol.body(input("$size\r\nabc\r\n0\r\n\r\n"), out, h)
+            assertEquals(size, "3\r\nabc\r\n0\r\n\r\n", out.toString())
+        }
+    }
+    @Test fun chunkSizeLeadingOrInnerWhitespaceStillRejected() {
+        val h = ProxyProtocol.Head("POST / HTTP/1.1", listOf("Transfer-Encoding" to "chunked"))
+        for (size in listOf(" 3", "\t3", "", " ", " ;x", "3 3", "0x3", "3 x"))
+            assertThrows(size, ProxyFailure::class.java) { ProxyProtocol.body(input("$size\r\nabc\r\n0\r\n\r\n"), ByteArrayOutputStream(), h) }
+    }
     @Test fun malformedAndUnsupportedHttp() {
         for (target in listOf("/path", "https://example.org/", "http://u:p@example.org/", "http://example.org/#fragment"))
             assertThrows(ProxyFailure::class.java) { http("GET $target HTTP/1.1\r\n\r\n") }

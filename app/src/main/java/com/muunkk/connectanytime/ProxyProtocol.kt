@@ -195,7 +195,8 @@ internal object ProxyProtocol {
         if (!head.chunked()) { copyCount(input, output, head.length() ?: 0); return }
         while (true) {
             val chunk = line(input)
-            val digits = chunk.substringBefore(';')
+            // RFC 9112 §7.1.1 allows BWS before ';', and some servers pad the size with trailing spaces.
+            val digits = chunk.substringBefore(';').trimEnd(' ', '\t')
             if (!digits.matches(Regex("[0-9a-fA-F]+"))) throw ProxyFailure()
             val size = digits.toLongOrNull(16) ?: throw ProxyFailure()
             if (size < 0) throw ProxyFailure()
