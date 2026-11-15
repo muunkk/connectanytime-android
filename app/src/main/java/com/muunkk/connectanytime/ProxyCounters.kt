@@ -21,14 +21,11 @@ internal object ProxyCounters {
     val usbUp = LongAdder(); val usbDown = LongAdder()
     val forwardingCpuNs = LongAdder()
     @Volatile var gen = 0L
-    private val task = ThreadLocal<CpuMeter>()
-    fun before(meter: CpuMeter = CpuMeter()) { task.set(meter) }
-    fun after() { try { task.get()?.flush() } finally { task.remove() } }
     fun traffic(link: TetherLink, up: Boolean, bytes: Int, now: Long) {
         if (gen == 0L) return
         val total = if (link == TetherLink.Hotspot) { if (up) hotUp else hotDown } else { if (up) usbUp else usbDown }
         total.add(bytes.toLong())
-        task.get()?.tick(now)
+        (Thread.currentThread() as? ProxyWorker)?.tick(now)
     }
 }
 
@@ -55,10 +52,23 @@ internal class CpuMeter(private val cpu: () -> Long = Debug::threadCpuTimeNanos,
     }
 }
 
-internal class ProxyWorkers : ThreadPoolExecutor(0, 512, 30, TimeUnit.SECONDS, SynchronousQueue(),
-    { runnable -> Thread(runnable, BatteryThreads.WORKER) }) {
-    override fun beforeExecute(thread: Thread, runnable: Runnable) { super.beforeExecute(thread, runnable); runCatching { ProxyCounters.before() } }
+/** Worker-local state avoids ThreadLocal access for unmetered tasks, including task cleanup. */
+internal class ProxyWorker(runnable: Runnable, private val createMeter: () -> CpuMeter) : Thread(runnable, BatteryThreads.WORKER) {
+    var meter: CpuMeter? = null
+        private set
+    fun tick(now: Long) {
+        val current = meter ?: createMeter().also { meter = it }
+        current.tick(now)
+    }
+    fun finishTask() {
+        val current = meter ?: return
+        try { current.flush() } finally { meter = null }
+    }
+}
+
+internal class ProxyWorkers(createMeter: () -> CpuMeter = { CpuMeter() }) : ThreadPoolExecutor(0, 512, 30, TimeUnit.SECONDS, SynchronousQueue(),
+    { runnable -> ProxyWorker(runnable, createMeter) }) {
     override fun afterExecute(runnable: Runnable, error: Throwable?) {
-        try { runCatching { ProxyCounters.after() } } finally { super.afterExecute(runnable, error) }
+        try { runCatching { (Thread.currentThread() as ProxyWorker).finishTask() } } finally { super.afterExecute(runnable, error) }
     }
 }

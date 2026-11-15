@@ -35,7 +35,8 @@ data class BatteryReport(
     val situations: List<BatterySituationRate> = emptyList(), val otherOrShort: BatteryRate = BatteryRate(),
     val transport: BatteryTransportShares = BatteryTransportShares(), val reconnects: Long = 0,
     val reconnectsPerHour: Double? = null, val warmestThermal: BatteryThermal? = null, val droppedCoverageMs: Long = 0,
-    val anySituationReady: Boolean = false, val connectedMs: Long = 0
+    val anySituationReady: Boolean = false, val connectedMs: Long = 0,
+    val compareInUse: BatteryRate? = null, val compareBaseline: BatteryRate? = null, val compareUplink: Uplink? = null
 ) {
     /** The rounded duration is suitable for the subtitle after ten counted minutes. */
     val subtitleReady: Boolean get() = countedMs >= 600_000
@@ -110,7 +111,7 @@ internal object BatteryMath {
                 if (a.chargeUah != null && b.chargeUah != null) (a.chargeUah - b.chargeUah) * 100.0 / checkNotNull(capacity) else null
             } else if (a.points != null && b.points != null) a.points!! - b.points!! else null
             if (a.boot != b.boot || a.rec != b.rec || a.kind == BatteryKind.gap || b.kind == BatteryKind.gap ||
-                a.plugged != 0 || b.plugged != 0 || a.status != 3 || b.status != 3 || a.pgen != b.pgen ||
+                a.plugged != 0 || b.plugged != 0 || a.status !in 3..5 || b.status !in 3..5 || a.pgen != b.pgen ||
                 a.vpn == BatteryVpn.off || b.vpn == BatteryVpn.off || ms !in 1..7_200_000 || amount == null || amount < 0) {
                 close(); inUse = false; lowMs = 0; continue
             }
@@ -197,7 +198,17 @@ internal object BatteryMath {
                 if (!bothReady) null else if (!visible) BatteryDifference.None else if (d > 0) BatteryDifference.More else BatteryDifference.Less,
                 if (bothReady) abs(d) else null)
         }
-        val heroKey = chosen ?: grouped.keys.filter { active(it) && grouped.getValue(it).ready }.maxByOrNull { grouped.getValue(it).hours }
+        val heroKey = chosen?.takeIf { grouped.getValue(it).ready }
+            ?: grouped.keys.filter { active(it) && grouped.getValue(it).ready }.maxByOrNull { grouped.getValue(it).hours }
+        // Progress includes short windows and situations outside the three display rows.
+        val retained = windows.filter { it.situation != null }.groupBy { it.situation!! }.mapValues { rate(it.value) }
+        val pairs = retained.keys.filter(::active).filter { key -> retained.keys.any { baseline(it) && it.uplink == key.uplink } }
+        val compareKey = heroKey ?: chosen ?: pairs.maxByOrNull { key -> minOf(retained.getValue(key).hours,
+            retained.entries.first { baseline(it.key) && it.key.uplink == key.uplink }.value.hours) }
+            ?: retained.keys.filter(::active).maxByOrNull { retained.getValue(it).hours }
+            ?: retained.keys.filter(::baseline).maxByOrNull { retained.getValue(it).hours }
+        val compareInUse = compareKey?.let { key -> retained.entries.firstOrNull { active(it.key) && it.key.uplink == key.uplink }?.value }
+        val compareBaseline = compareKey?.let { key -> retained.entries.firstOrNull { baseline(it.key) && it.key.uplink == key.uplink }?.value }
         val top = grouped.entries.sortedByDescending { it.value.hours }.take(3)
         val highest = grouped.entries.filter { it.value.ready }.maxByOrNull { it.value.percentPerHour!! }?.key
         val topKeys = top.map { it.key }.toSet()
@@ -224,6 +235,7 @@ internal object BatteryMath {
             top.map { BatterySituationRate(it.key, it.value, it.key == highest) }.toList(), rate(other),
             BatteryTransportShares(share(BatteryTransport.dtls), share(BatteryTransport.tls), share(BatteryTransport.unknown)),
             reconnects, if (all.hours > 0) reconnects / all.hours else null,
-            warmest?.let { BatteryThermal.entries[it.coerceIn(0, 3)] }, dropped, grouped.values.any { it.ready }, connectedMs)
+            warmest?.let { BatteryThermal.entries[it.coerceIn(0, 3)] }, dropped, grouped.values.any { it.ready }, connectedMs,
+            compareInUse, compareBaseline, compareKey?.uplink)
     }
 }

@@ -1,6 +1,9 @@
 package com.muunkk.connectanytime
 
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.SharedPreferences
+import android.os.BatteryManager
 import android.os.Handler
 import android.os.Looper
 import kotlinx.coroutines.CoroutineScope
@@ -66,9 +69,14 @@ class BatteryControl internal constructor(private val app: ConnectApp,
         if (state.prefs.enabled && state.busy && !clearPending) {
             if (recorder == null && !stopping && !startFailed) {
                 runCatching {
-                    recorder = BatteryRecorder(app, disk, readings(), { onMain { autoStop() } }, { plugged.value = it },
-                        failed = { onMain { startFailed = true; stopRecorder(); reconcile() } })
-                    recorder!!.start()
+                    val sticky = app.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+                    plugged.value = (sticky?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
+                    lateinit var next: BatteryRecorder
+                    next = BatteryRecorder(app, disk, readings(), { onMain { autoStop() } }, { charging ->
+                        onMain { if (recorder === next) plugged.value = charging }
+                    }, failed = { onMain { startFailed = true; stopRecorder(); reconcile() } })
+                    recorder = next
+                    next.start()
                 }.onFailure { startFailed = true; stopRecorder() }
             }
         } else { stopRecorder() }
@@ -76,7 +84,7 @@ class BatteryControl internal constructor(private val app: ConnectApp,
             !state.prefs.enabled -> if (state.prefs.autoStopped) BatteryStatus.AutoStopped else BatteryStatus.Off
             state.failed || startFailed -> BatteryStatus.CouldNotSave
             !state.busy -> BatteryStatus.PausedVpnOff
-            state.charging -> BatteryStatus.PausedCharging
+            plugged.value -> BatteryStatus.PausedCharging
             else -> BatteryStatus.Measuring
         }
     }
@@ -108,7 +116,7 @@ class BatteryControl internal constructor(private val app: ConnectApp,
     }
     private fun stopRecorder() {
         val old = recorder ?: return
-        recorder = null; stopping = true
+        recorder = null; plugged.value = false; stopping = true
         old.stop {
             stopping = false
             if (clearPending) erase() else reconcile()
@@ -132,7 +140,7 @@ class BatteryControl internal constructor(private val app: ConnectApp,
         stopRecorder()
         if (!stopping) erase()
     }
-    internal fun close() { scope.cancel(); recorder?.stop(); recorder = null }
+    internal fun close() { scope.cancel(); recorder?.stop(); recorder = null; plugged.value = false }
     fun retrySave() = onMain { startFailed = false; disk.retrySave(); reconcile() }
     fun refresh() { disk.refresh() }
     fun export(callback: (File?) -> Unit) { disk.export(callback) }

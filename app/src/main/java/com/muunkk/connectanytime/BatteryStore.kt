@@ -49,7 +49,6 @@ internal class BatteryStore(private val context: Context, private val prefs: Sto
         ioCpuUs.addAndGet(((cpu() - start) / 1000).coerceAtLeast(0))
     }
     private fun execute(block: () -> Unit) { io.execute(task(block)) }
-    init { execute { pruneExports() } }
     fun add(row: BatteryRow) = execute {
         buffer.addLast(row)
         if (buffer.size > 120) {
@@ -90,7 +89,7 @@ internal class BatteryStore(private val context: Context, private val prefs: Sto
     }
     private fun after(id: Pair<Long, Long>, last: Pair<Long, Long>) = id.first > last.first || (id.first == last.first && id.second > last.second)
     internal fun flushNow(): Boolean {
-        try {
+        val saved = try {
             file.parentFile!!.mkdirs()
             truncateTail()
             val last = lastId()
@@ -100,17 +99,18 @@ internal class BatteryStore(private val context: Context, private val prefs: Sto
             buffer.clear()
             rotate()
             failures = 0; retry?.cancel(false); retry = null; mutableFailed.value = false
-            if (mutableReport.subscriptionCount.value > 0) rebuild()
-            return true
+            true
         } catch (_: Throwable) {
             mutableFailed.value = true
             if (retry == null) {
                 val minutes = minOf(30L, 1L shl minOf(failures++, 5))
                 retry = io.schedule(task { retry = null; flushNow() }, minutes, TimeUnit.MINUTES)
             }
-            if (mutableReport.subscriptionCount.value > 0) rebuild()
-            return false
+            false
         }
+        // A report read can fail after a successful append or during write recovery.
+        if (mutableReport.subscriptionCount.value > 0) runCatching { rebuild() }.onFailure { mutableFailed.value = true }
+        return saved
     }
     private fun rotate() {
         if (file.length() <= maxBytes) return
@@ -148,7 +148,9 @@ internal class BatteryStore(private val context: Context, private val prefs: Sto
         exports.listFiles()?.filter { it.lastModified() < cutoff }?.forEach { it.delete() }
     }
     fun refresh() = execute { pruneExports(); truncateTail(); rebuild() }
-    fun flush(callback: (() -> Unit)? = null) = execute { flushNow(); callback?.let { main.post(it) } }
+    fun flush(callback: (() -> Unit)? = null) = execute {
+        try { flushNow() } finally { callback?.let { main.post(it) } }
+    }
     fun retrySave() = execute { retry?.cancel(false); retry = null; flushNow() }
     fun export(callback: (File?) -> Unit) = execute {
         val snapshot = runCatching {

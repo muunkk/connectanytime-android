@@ -7,18 +7,20 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
-import java.util.concurrent.Executors
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 @RunWith(RobolectricTestRunner::class)
 @Config(application = ConnectApp::class, sdk = [35])
 class ProxyCountersTest {
+    private val cpuDelta = ThreadLocal.withInitial { 0L }
     @Before fun reset() { ProxyCounters.gen = 0; listOf(ProxyCounters.hotUp, ProxyCounters.hotDown, ProxyCounters.usbUp, ProxyCounters.usbDown, ProxyCounters.forwardingCpuNs).forEach { it.reset() } }
     @After fun stop() { ProxyCounters.gen = 0 }
     @Test fun disabledMeterReadsNeitherClock() {
         val fail = { error("clock read while disabled") }
         val meter = CpuMeter(fail, fail)
         meter.tick(Long.MAX_VALUE); meter.flush()
-        ProxyCounters.before(); ProxyCounters.after()
         ProxyCounters.traffic(TetherLink.Hotspot, true, 100, 0)
         ProxyCounters.traffic(TetherLink.Usb, false, 200, 0)
         assertEquals(0L, ProxyCounters.hotUp.sum())
@@ -35,25 +37,79 @@ class ProxyCountersTest {
         cpu = 240; meter.flush()
         assertEquals(50L, ProxyCounters.forwardingCpuNs.sum())
     }
+    @Test fun unmeteredTasksAndReadsNeverAllocateCpuMeters() {
+        val allocations = AtomicInteger()
+        val pool = ProxyWorkers { allocations.incrementAndGet(); error("allocated without a metered read") }
+        try {
+            repeat(20) { index ->
+                ProxyCounters.gen = 0
+                pool.submit {
+                    repeat(10) { ProxyCounters.traffic(TetherLink.Hotspot, true, 100, 0) }
+                    assertNull((Thread.currentThread() as ProxyWorker).meter)
+                }.get()
+                // Even enabled tasks without traffic should have no meter.
+                ProxyCounters.gen = index + 1L
+                pool.submit { assertNull((Thread.currentThread() as ProxyWorker).meter) }.get()
+            }
+        } finally { pool.shutdown(); assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS)) }
+        assertEquals(0, allocations.get())
+        assertEquals(0L, ProxyCounters.hotUp.sum())
+    }
     @Test fun twoThreadHandoffUsesTaskLocalCpuBaselines() {
         ProxyCounters.gen = 1
-        val pool = Executors.newFixedThreadPool(2)
+        val started = CountDownLatch(2)
+        val baselined = CountDownLatch(2)
+        val pool = ProxyWorkers { CpuMeter({ cpuDelta.get()!! }, { 0 }) }
         try {
-            val first = pool.submit {
-                var cpu = 100L
-                ProxyCounters.before(CpuMeter({ cpu }, { 0 }))
-                ProxyCounters.traffic(TetherLink.Hotspot, true, 100, 1_000_000_000)
-                cpu = 160; ProxyCounters.after()
+            val tasks = listOf(60L, 90L).map { delta ->
+                pool.submit {
+                    cpuDelta.set(if (delta == 60L) 100 else 500)
+                    started.countDown(); check(started.await(5, TimeUnit.SECONDS))
+                    ProxyCounters.traffic(TetherLink.Hotspot, delta == 60L, 100, 0)
+                    baselined.countDown(); check(baselined.await(5, TimeUnit.SECONDS))
+                    cpuDelta.set(cpuDelta.get()!! + delta)
+                }
             }
-            val second = pool.submit {
-                var cpu = 500L
-                ProxyCounters.before(CpuMeter({ cpu }, { 0 }))
-                ProxyCounters.traffic(TetherLink.Hotspot, false, 200, 1_000_000_000)
-                cpu = 590; ProxyCounters.after()
-            }
-            first.get(); second.get()
-            assertEquals(150L, ProxyCounters.forwardingCpuNs.sum())
-        } finally { pool.shutdownNow() }
+            tasks.forEach { it.get() }
+        } finally { pool.shutdown(); assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS)) }
+        assertEquals(150L, ProxyCounters.forwardingCpuNs.sum())
+    }
+    @Test fun firstReadAfterEnablingInsideAnExistingTaskStartsItsCpuBaseline() {
+        var cpu = 10L
+        var allocations = 0
+        val pool = ProxyWorkers { allocations++; CpuMeter({ cpu }, { 0 }) }
+        var worker: ProxyWorker? = null
+        try {
+            pool.submit {
+                worker = Thread.currentThread() as ProxyWorker
+                ProxyCounters.traffic(TetherLink.Hotspot, true, 100, 0)
+                assertEquals(0, allocations)
+                cpu = 500; ProxyCounters.gen = 7
+                ProxyCounters.traffic(TetherLink.Hotspot, true, 200, 0)
+                assertEquals(1, allocations)
+                cpu = 550
+            }.get()
+        } finally { pool.shutdown(); assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS)) }
+        assertEquals(200L, ProxyCounters.hotUp.sum())
+        assertEquals(50L, ProxyCounters.forwardingCpuNs.sum())
+        assertNull(worker!!.meter)
+    }
+    @Test fun disablingDuringATaskStillClearsItsMeterWithoutReadingCpu() {
+        var reads = 0
+        val pool = ProxyWorkers { CpuMeter({ reads++; 100 }, { 0 }) }
+        var worker: ProxyWorker? = null
+        try {
+            ProxyCounters.gen = 1
+            pool.submit {
+                worker = Thread.currentThread() as ProxyWorker
+                ProxyCounters.traffic(TetherLink.Hotspot, true, 100, 0)
+                assertNotNull(worker!!.meter)
+                ProxyCounters.gen = 0
+            }.get()
+        } finally { pool.shutdown(); assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS)) }
+        assertEquals(1, reads)
+        assertNull(worker!!.meter)
+        assertEquals(0L, ProxyCounters.forwardingCpuNs.sum())
     }
     @Test fun offToOnDiscardsUnmeasuredCpuAndTicksFlushOnlyEverySecond() {
         var cpu = 0L; var reads = 0
@@ -68,23 +124,22 @@ class ProxyCountersTest {
     }
     @Test fun concurrentTrafficRetainsEveryDirectionalByteAndCpuTotal() {
         ProxyCounters.gen = 1
-        val pool = Executors.newFixedThreadPool(8)
+        val pool = ProxyWorkers { CpuMeter({ cpuDelta.get()!! }, { 0 }) }
         try {
             val tasks = (1..8).map {
                 pool.submit {
-                    var cpu = 0L
-                    ProxyCounters.before(CpuMeter({ cpu }, { 0 }))
+                    cpuDelta.set(0)
                     repeat(3000) {
                         ProxyCounters.traffic(TetherLink.Hotspot, true, 1, 0)
                         ProxyCounters.traffic(TetherLink.Hotspot, false, 2, 0)
                         ProxyCounters.traffic(TetherLink.Usb, true, 3, 0)
                         ProxyCounters.traffic(TetherLink.Usb, false, 4, 0)
-                        cpu += 10
+                        cpuDelta.set(cpuDelta.get()!! + 10)
                     }
-                    ProxyCounters.after()
                 }
             }
             tasks.forEach { it.get() }
+            pool.shutdown(); assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS))
             assertEquals(24_000L, ProxyCounters.hotUp.sum())
             assertEquals(48_000L, ProxyCounters.hotDown.sum())
             assertEquals(72_000L, ProxyCounters.usbUp.sum())

@@ -19,6 +19,9 @@ import java.nio.file.Files
 import java.time.Duration
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 
 @RunWith(RobolectricTestRunner::class)
@@ -97,6 +100,60 @@ class BatteryRecorderTest {
         c.setEnabled(true); drain(c)
         assertEquals(BatteryStatus.Measuring, c.status.value)
         assertTrue(app.store.batteryRec > first + 1)
+    }
+    @Test fun vpnResumeReadsStickyPowerBeforePublishingStatusAndIgnoresStoppedSamples() {
+        fun power(on: Boolean) {
+            plugged = on
+            @Suppress("DEPRECATION")
+            app.sendStickyBroadcast(Intent(Intent.ACTION_BATTERY_CHANGED)
+                .putExtra(BatteryManager.EXTRA_PLUGGED, if (on) BatteryManager.BATTERY_PLUGGED_USB else 0))
+            shadowOf(Looper.getMainLooper()).idle()
+        }
+        val c = control()
+        val statuses = mutableListOf<BatteryStatus>()
+        val collector = CoroutineScope(Dispatchers.Unconfined).launch { c.status.collect { statuses += it } }
+        try {
+            power(true); busy(); c.setEnabled(true)
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(BatteryStatus.PausedCharging, c.status.value)
+            drain(c)
+            assertFalse(statuses.contains(BatteryStatus.Measuring))
+            ConnectApp.mutableState.value = VpnState(); drain(c)
+            val cachedPower = BatteryControl::class.java.getDeclaredField("plugged").apply { isAccessible = true }.get(c) as MutableStateFlow<*>
+            assertEquals(false, cachedPower.value)
+            power(false)
+            statuses.clear()
+            busy(); shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(BatteryStatus.Measuring, c.status.value)
+            drain(c)
+            assertFalse(statuses.contains(BatteryStatus.PausedCharging))
+            ConnectApp.mutableState.value = VpnState(); drain(c)
+            power(true)
+            statuses.clear()
+            busy(); shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(BatteryStatus.PausedCharging, c.status.value)
+            drain(c)
+            assertFalse(statuses.contains(BatteryStatus.Measuring))
+        } finally { collector.cancel(); power(false) }
+    }
+    @Test fun csvReadFailureDuringStopStillAllowsRetryRestartAndClear() {
+        val c = control(); busy(); c.setEnabled(true); drain(c)
+        val first = app.store.batteryRec
+        val collector = CoroutineScope(Dispatchers.Unconfined).launch { c.report.collect {} }
+        try {
+            c.disk.flush(); c.disk.awaitIdle()
+            assertTrue(c.disk.file.delete()); assertTrue(c.disk.file.mkdir())
+            ConnectApp.mutableState.value = VpnState(); drain(c)
+            assertTrue(c.disk.failed.value)
+            assertTrue(c.disk.file.delete())
+            c.retrySave(); drain(c)
+            busy(); drain(c)
+            assertTrue(app.store.batteryRec > first)
+            assertEquals(BatteryStatus.Measuring, c.status.value)
+            c.clear(); drain(c)
+            assertFalse(c.clearing.value)
+            assertEquals(BatteryStatus.Measuring, c.status.value)
+        } finally { collector.cancel() }
     }
     @Test fun deadlineStopsWhileChargingIndependentlyOfPeriodicSampling() {
         val c = control(); plugged = true; busy(); c.setEnabled(true); drain(c)

@@ -106,6 +106,56 @@ class BatteryStoreTest {
         d.refresh(); d.awaitIdle()
         assertEquals(15, d.report.value!!.rowCount)
     }
+    @Test fun unreadableCsvStillCompletesStopFlushAndRecoversThroughRetryAndClear() {
+        val d = disk()
+        val collector = CoroutineScope(Dispatchers.Unconfined).launch { d.report.collect {} }
+        try {
+            batteryTrace().take(2).forEach(d::add)
+            d.awaitIdle()
+            d.file.mkdirs() // A directory fails both the write and the report read.
+            var completions = 0
+            d.flush { assertEquals(Looper.getMainLooper(), Looper.myLooper()); completions++ }
+            d.awaitIdle(); shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(1, completions)
+            assertTrue(d.failed.value)
+            assertEquals(2, d.bufferedRows().size)
+            assertTrue(d.file.delete())
+            d.retrySave(); d.awaitIdle()
+            assertFalse(d.failed.value)
+            assertEquals(2, d.report.value!!.rowCount)
+            var cleared = false
+            assertTrue(d.clear { cleared = true })
+            d.awaitIdle(); shadowOf(Looper.getMainLooper()).idle()
+            assertTrue(cleared)
+            assertEquals(0, d.report.value!!.rowCount)
+        } finally { collector.cancel() }
+    }
+    @Test fun reportRebuildFailureDoesNotTurnSuccessfulFlushIntoAWriteRetry() {
+        val saved = File(app.filesDir, "saved.csv")
+        val d = BatteryStore(app, app.store, append = { file, text ->
+            file.appendText(text)
+            if (!text.startsWith("#")) {
+                // Make the CSV unreadable after the append succeeds.
+                check(file.renameTo(saved)); check(file.mkdir())
+            }
+        }).also { stores += it }
+        val collector = CoroutineScope(Dispatchers.Unconfined).launch { d.report.collect {} }
+        try {
+            d.add(batteryTrace().first()); d.awaitIdle()
+            var completed = false
+            d.flush { completed = true }
+            d.awaitIdle(); shadowOf(Looper.getMainLooper()).idle()
+            assertTrue(completed)
+            assertTrue(d.failed.value)
+            assertTrue(d.bufferedRows().isEmpty())
+            assertEquals(1, saved.readLines().mapNotNull(BatteryCsv::parse).size)
+            val retry = BatteryStore::class.java.getDeclaredField("retry").apply { isAccessible = true }.get(d)
+            assertNull(retry)
+            assertTrue(d.file.delete()); assertTrue(saved.renameTo(d.file))
+            d.refresh(); d.awaitIdle()
+            assertEquals(1, d.report.value!!.rowCount)
+        } finally { collector.cancel(); saved.delete() }
+    }
     @Test fun failedFlushRetainsIdsAndDedupsCompleteRowsAfterRestart() {
         var fail = true
         val d = disk({ fail })
@@ -207,17 +257,21 @@ class BatteryStoreTest {
         val info = app.packageManager.resolveContentProvider(BATTERY_AUTHORITY, 0)!!
         assertFalse(info.exported); assertTrue(info.grantUriPermissions)
     }
-    @Test fun constructionAndRefreshPruneExpiredExports() {
+    @Test fun constructionKeepsIoLazyAndRefreshPrunesExpiredExports() {
         val directory = File(app.cacheDir, "battery-export").apply { mkdirs() }
         val old = File(directory, "old.csv").apply { writeText("old"); setLastModified(1) }
         val recent = File(directory, "recent.csv").apply { writeText("new"); setLastModified(9_999_999) }
         val boundary = File(directory, "boundary.csv").apply { writeText("boundary"); setLastModified(6_400_000) }
-        val d = disk(); d.awaitIdle()
-        assertFalse("Construction retained an expired export", old.exists())
+        val d = disk()
+        val executor = BatteryStore::class.java.getDeclaredField("io").apply { isAccessible = true }.get(d) as java.util.concurrent.ScheduledThreadPoolExecutor
+        assertEquals(0, executor.poolSize)
+        assertEquals(0L, executor.taskCount)
+        assertTrue("Construction pruned an export", old.exists())
         assertTrue(recent.exists()); assertTrue(boundary.exists())
         val expired = File(directory, "expired.csv").apply { writeText("expired"); setLastModified(6_399_999) }
         d.refresh(); d.awaitIdle()
         assertFalse("Refresh retained an expired export", expired.exists())
+        assertFalse(old.exists())
         assertTrue(recent.exists()); assertTrue(boundary.exists())
     }
     @Test fun observerCanThrowThrowableAndLogStillStoresAndReturns() {
