@@ -563,3 +563,39 @@ USB peer or hotspot guest. Over USB the Mac's proxy settings belong to the phone
 service, and the iPhone's to the hotspot network, so other networks are unaffected; a
 Mac on the hotspot is the exception above. While tethered with sharing off, apps using the proxy can't connect:
 turn the proxies off on the Mac, or sharing back on.
+
+## Battery drain measurement
+
+The **Battery drain** row on the home screen (under Activity) opens a switch for a recorder that checks the battery about once a
+minute while the VPN is on and the phone is unplugged (it turns itself off after 7
+days). It records counts only: battery charge, voltage, temperature, screen and power
+state, network type, the app's processor time, and proxy and cellular byte totals. It
+records no sites, addresses, or names of connected devices. The Battery drain screen
+shows whole-phone drain for screen-off sharing, a sharing-in-use vs off (or idle)
+comparison, the app's processor use, and a CSV export. The design, accuracy limits
+and drain suspects are in [docs/battery-measurement.md](docs/battery-measurement.md).
+
+### Ground truth steps
+
+CSV headers point here for an adb cross-check. Use wireless debugging on Android 11+
+so the phone can stay unplugged during measurement. Pair and connect with the addresses
+and ports shown in the phone's Wireless debugging settings.
+
+```sh
+adb pair <pairing-address>:<pairing-port>
+adb connect <debugging-address>:<debugging-port>
+adb shell dumpsys batterystats --reset
+```
+
+Run the measurement unplugged, then collect Android's totals. These commands use the
+debug package. For a release installation, use `com.muunkk.connectanytime`.
+
+```sh
+adb shell dumpsys batterystats --charged com.muunkk.connectanytime.debug
+adb shell dumpsys batterystats --checkin
+```
+
+Compare discharge, UID CPU time and mobile traffic over the same period. Android's
+BatteryStats and the recorder read the same fuel gauge, so this is a cross-check.
+With USB debugging, reset the stats before unplugging and dump them as soon as the
+cable is reconnected. Exclude the charging time from the comparison.

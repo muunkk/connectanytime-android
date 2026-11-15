@@ -17,6 +17,10 @@
         android:allowBackup="false" android:fullBackupContent="false"
         android:dataExtractionRules="@xml/data_extraction_rules" android:supportsRtl="true"
         android:usesCleartextTraffic="false">
+        <provider android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.battery" android:exported="false" android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/battery_paths" />
+        </provider>
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

@@ -5,7 +5,6 @@ package com.muunkk.connectanytime
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
@@ -74,7 +73,7 @@ fun ActivityScreen(log: ActivityLog, onBack: () -> Unit, onShare: (List<String>)
     var confirmClear by rememberSaveable { mutableStateOf(false) }
     val groups = remember(lines) { groupLogLines(lines) }
     val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
-    Scaffold(modifier = Modifier.nestedScroll(scroll.nestedScrollConnection), topBar = {
+    Scaffold(modifier = Modifier.nestedScroll(scroll.nestedScrollConnection), topBar = { ReadableTopBar { insets ->
         MediumFlexibleTopAppBar(
             title = { Text(stringResource(R.string.activity)) },
             subtitle = if (lines.isEmpty()) null else { { Text(pluralStringResource(R.plurals.activity_count, lines.size, lines.size)) } },
@@ -91,16 +90,17 @@ fun ActivityScreen(log: ActivityLog, onBack: () -> Unit, onShare: (List<String>)
                     Icon(painterResource(R.drawable.ic_delete), contentDescription = stringResource(R.string.clear_activity))
                 }
             },
+            windowInsets = insets,
             scrollBehavior = scroll,
         )
-    }) { padding ->
+    } }) { padding ->
         if (lines.isEmpty()) {
             Empty(Modifier.fillMaxSize().padding(padding))
             return@Scaffold
         }
         // At large font sizes the time sits above its line instead of in a column.
         val stacked = LocalDensity.current.fontScale >= 1.5f
-        LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp)) {
+        ReadableLazyColumn(padding) {
             groups.forEachIndexed { g, (day, entries) ->
                 if (day != null) item(key = "day$g") {
                     Text(dayLabel(day), style = MaterialTheme.typography.titleSmallEmphasized, color = MaterialTheme.colorScheme.primary,

@@ -44,6 +44,8 @@ android {
     buildTypes {
         debug {
             applicationIdSuffix = ".debug"
+            // en-XA and ar-XB, for checking long text and RTL (the RTL screenshots use ar-XB).
+            isPseudoLocalesEnabled = true
         }
         release {
             isMinifyEnabled = true

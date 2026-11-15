@@ -136,6 +136,9 @@ class ConnectVpnService : VpnService() {
     }
 
     private fun state(status: String, connected: Boolean = false, error: String? = null) {
+        val prev = ConnectApp.lastStatus.getAndSet(status)
+        if (prev != status) ConnectApp.vpnTransitions.incrementAndGet()
+        if (status == "Reconnecting…" && prev == "Connected") ConnectApp.reconnectEpisodes.incrementAndGet()
         if (tetherProxy == null && connected) tetherProxy = TetherProxy(this, app)
         tetherProxy?.state(connected && !stopping, status == "Reconnecting…" && !stopping)
         ConnectApp.mutableState.value = VpnState(status, status != "Not connected", connected, error)
@@ -339,7 +342,7 @@ class ConnectVpnService : VpnService() {
                     scheduleRejoin()
                 }
             }
-        }, "connectanytime.openconnect").start()
+        }, BatteryThreads.VPN).start()
     }
     private fun scheduleRejoin(delay: Long? = null) {
         if (stopping) return finish(null)

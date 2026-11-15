@@ -3,11 +3,13 @@
 package com.muunkk.connectanytime
 
 import android.Manifest
+import android.content.ClipData
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -32,8 +34,12 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.core.content.FileProvider
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import java.io.File
+
+enum class Screen { Home, Activity, Battery }
 
 class MainActivity : ComponentActivity() {
     private val consent = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
@@ -89,6 +95,16 @@ class MainActivity : ComponentActivity() {
         super.onSaveInstanceState(outState)
         outState.putBoolean(Controls.EXTRA_CONFIRM_HOTSPOT, confirmHotspot)
     }
+    /** The exported CSV through the FileProvider, with the summary lines as the text. */
+    private fun shareBattery(file: File, summary: String) {
+        runCatching {
+            val uri = FileProvider.getUriForFile(this, BATTERY_AUTHORITY, file)
+            val send = Intent(Intent.ACTION_SEND).setType("text/csv").putExtra(Intent.EXTRA_STREAM, uri)
+                .putExtra(Intent.EXTRA_TEXT, summary).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            send.clipData = ClipData.newRawUri(null, uri)
+            startActivity(Intent.createChooser(send, getString(R.string.battery_share)))
+        }.onFailure { Toast.makeText(this, R.string.battery_share_failed, Toast.LENGTH_SHORT).show() }
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
@@ -106,27 +122,32 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(confirm) {
                     app.updater.takeConfirmation()?.let { runCatching { startActivity(it) } }
                 }
-                var activity by rememberSaveable { mutableStateOf(false) }
-                BackHandler(enabled = activity) { activity = false }
+                var screen by rememberSaveable { mutableStateOf(Screen.Home) }
+                BackHandler(enabled = screen != Screen.Home) { screen = Screen.Home }
+                val battery by app.battery.status.collectAsStateWithLifecycle()
+                val batteryProblem by app.battery.problem.collectAsStateWithLifecycle()
                 val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
                 val spatial = MaterialTheme.motionScheme.defaultSpatialSpec<IntOffset>()
                 val effects = MaterialTheme.motionScheme.defaultEffectsSpec<Float>()
-                // Activity slides in from the end edge and back out, with the theme's motion.
-                AnimatedContent(activity, Modifier.background(MaterialTheme.colorScheme.surface), transitionSpec = {
-                    val direction = (if (targetState) 1 else -1) * (if (rtl) -1 else 1)
+                // Activity and Battery slide in from the end edge and back out, with the theme's motion.
+                AnimatedContent(screen, Modifier.background(MaterialTheme.colorScheme.surface), transitionSpec = {
+                    val direction = (if (targetState != Screen.Home) 1 else -1) * (if (rtl) -1 else 1)
                     (slideInHorizontally(spatial) { direction * it / 4 } + fadeIn(effects))
                         .togetherWith(slideOutHorizontally(spatial) { -direction * it / 4 } + fadeOut(effects))
-                }, label = "screen") { showActivity ->
-                    if (showActivity) {
-                        ActivityScreen(app.log, onBack = { activity = false }, onShare = { lines ->
+                }, label = "screen") { shown ->
+                    when (shown) {
+                        Screen.Activity -> ActivityScreen(app.log, onBack = { screen = Screen.Home }, onShare = { lines ->
                             startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain")
                                 .putExtra(Intent.EXTRA_TEXT, (listOf(BuildConfig.BUILD_DESCRIPTION) + lines).joinToString("\n")), getString(R.string.share_activity)))
                         })
-                    } else HomeScreen(app.store, state, notificationDenied, onConnect = ::connect,
-                        onDisconnect = { Controls.disconnect(this@MainActivity) }, onActivity = { activity = true },
-                        onStayChanged = {
-                            if (state.busy) startService(Intent(this@MainActivity, ConnectVpnService::class.java).setAction(ConnectVpnService.ARM))
-                        }, update = update, onCheckUpdate = app.updater::check, onInstallUpdate = app.updater::install)
+                        Screen.Battery -> BatteryScreen(app, onBack = { screen = Screen.Home }, onShare = ::shareBattery)
+                        Screen.Home -> HomeScreen(app.store, state, notificationDenied, onConnect = ::connect,
+                            onDisconnect = { Controls.disconnect(this@MainActivity) }, onActivity = { screen = Screen.Activity },
+                            onStayChanged = {
+                                if (state.busy) startService(Intent(this@MainActivity, ConnectVpnService::class.java).setAction(ConnectVpnService.ARM))
+                            }, update = update, onCheckUpdate = app.updater::check, onInstallUpdate = app.updater::install,
+                            battery = battery, onBattery = { screen = Screen.Battery }, batteryProblem = batteryProblem)
+                    }
                 }
                 // Only while it's off: it may have been turned on elsewhere meanwhile.
                 if (confirmHotspot && !app.store.shareOverHotspot) HotspotConfirm(onDismiss = { confirmHotspot = false }, onConfirm = {

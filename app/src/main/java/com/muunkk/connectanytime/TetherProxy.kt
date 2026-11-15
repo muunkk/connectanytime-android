@@ -20,8 +20,6 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
-import java.util.concurrent.SynchronousQueue
-import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -48,8 +46,8 @@ sealed interface TetherShare {
 /** One controller per service, serialized reconciliation; accepted sockets belong to a binding. */
 internal class TetherProxy(private val service: ConnectVpnService, private val app: ConnectApp, private val port: Int = 1080,
     private val bindingSource: (() -> Set<Binding>)? = null) : AutoCloseable {
-    private val timer = Executors.newSingleThreadScheduledExecutor()
-    private val workers = ThreadPoolExecutor(0, 512, 30, TimeUnit.SECONDS, SynchronousQueue())
+    private val timer = Executors.newSingleThreadScheduledExecutor { Thread(it, BatteryThreads.TIMER) }
+    private val workers = ProxyWorkers()
     private val listeners = mutableMapOf<Binding, Listener>()
     private val sessions = java.util.concurrent.ConcurrentHashMap.newKeySet<Session>()
     private val closed = AtomicBoolean()
@@ -247,7 +245,7 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
                     }
                 }
             }
-        }, "Tether proxy accept")
+        }, BatteryThreads.ACCEPT)
         fun start() = thread.start()
         fun pause() {
             server.close()
@@ -292,7 +290,7 @@ internal class TetherProxy(private val service: ConnectVpnService, private val a
         @Synchronized fun register(socket: Socket) { if (ended) { socket.close(); throw ProxyFailure() }; sockets.add(socket) }
         /** Counts what's read: from the client is upload, from the remote end download. */
         private fun input(socket: Socket, up: Boolean): InputStream = object : FilterInputStream(socket.getInputStream()) {
-            private fun count(n: Int) { val now = System.nanoTime(); activity = now; meter.traffic(link, device, up, n, now) }
+            private fun count(n: Int) { val now = System.nanoTime(); activity = now; meter.traffic(link, device, up, n, now); ProxyCounters.traffic(link, up, n, now) }
             override fun read(): Int = super.read().also { if (it >= 0) count(1) }
             override fun read(b: ByteArray, off: Int, len: Int): Int = `in`.read(b, off, len).also { if (it > 0) count(it) }
         }
