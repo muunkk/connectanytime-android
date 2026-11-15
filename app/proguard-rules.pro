@@ -8,12 +8,14 @@
     void onEvent(int, java.lang.String[]);
     boolean verify(byte[][], java.lang.String);
     boolean protectSocket(int);
+    int nextTun();
 }
 -keepclassmembers class * implements com.muunkk.connectanytime.NativeBridge$Callbacks {
     void onLog(byte[]);
     void onEvent(int, java.lang.String[]);
     boolean verify(byte[][], java.lang.String);
     boolean protectSocket(int);
+    int nextTun();
 }
 # FindClass only uses java/lang/String and [B (platform types); no GetFieldID,
 # app class lookup or app constructors occur in jni.c. No further keeps needed.

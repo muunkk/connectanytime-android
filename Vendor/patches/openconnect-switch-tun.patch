@@ -1,0 +1,38 @@
+diff --git a/tun.c b/tun.c
+index 234f980..7e93115 100644
+--- a/tun.c
++++ b/tun.c
+@@ -440,10 +440,24 @@ intptr_t os_setup_tun(struct openconnect_info *vpninfo)
+ 
+ int openconnect_setup_tun_fd(struct openconnect_info *vpninfo, int tun_fd)
+ {
++#ifdef HAVE_VHOST
++	/* Switching a live session to a new tun: only try vhost-net again if the old tun
++	 * used it, rather than log the same failure on every switch. */
++	int try_vhost = vpninfo->tun_fd < 0 || vpninfo->vhost_fd >= 0;
++#endif
++
+ 	set_fd_cloexec(tun_fd);
+ 
+ 	if (vpninfo->tun_fd >= 0)
+ 		unmonitor_fd(vpninfo, tun);
++#ifdef HAVE_VHOST
++	/* vhost-net is bound to the old tun. Drop it rather than leak it. */
++	if (vpninfo->vhost_fd >= 0) {
++		if (vpninfo->vhost_call_fd >= 0)
++			unmonitor_fd(vpninfo, vhost_call);
++		shutdown_vhost(vpninfo);
++	}
++#endif
+ 
+ 	vpninfo->tun_fd = tun_fd;
+ 
+@@ -454,7 +468,7 @@ int openconnect_setup_tun_fd(struct openconnect_info *vpninfo, int tun_fd)
+ 	}
+ 
+ #ifdef HAVE_VHOST
+-	if (!setup_vhost(vpninfo, tun_fd))
++	if (try_vhost && !setup_vhost(vpninfo, tun_fd))
+ 		return 0;
+ #endif
+ 

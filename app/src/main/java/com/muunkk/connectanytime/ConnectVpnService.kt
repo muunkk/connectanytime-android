@@ -22,7 +22,7 @@ class ConnectVpnService : VpnService() {
     private val deadlines = Executors.newSingleThreadScheduledExecutor()
     private val sessionLock = Any()
     private var session = 0L
-    private var generation = 0
+    @Volatile private var generation = 0 // written under sessionLock; nextTun reads it on OpenConnect's thread
     @Volatile private var stopping = false
     @Volatile private var logout = false
     @Volatile private var manualRequested = false
@@ -31,8 +31,12 @@ class ConnectVpnService : VpnService() {
     private val app get() = application as ConnectApp
     private val store get() = app.store
     private fun log(s: String) = app.log.add(s)
-    private var tun: ParcelFileDescriptor? = null
+    /** The VPN interfaces: the one OpenConnect uses, and one it is switching to. */
+    private val tuns = TunHandoff<ParcelFileDescriptor> { runCatching { it.close() } }
+    /** Settings of the newest established interface. */
     private var installed: TunnelConfig? = null
+    /** The server's latest settings, to log what a reconnect changed. */
+    private var serverConfig: TunnelConfig? = null
     @Volatile private var tetherAddress: String? = null
     @Volatile private var tetherProxy: TetherProxy? = null
     internal fun tetherVpnInterface(): String? = tetherAddress?.let { address ->
@@ -64,8 +68,9 @@ class ConnectVpnService : VpnService() {
     private var givingUp = false
     private var server = ""
     private var user = ""
-    private var replacingConfig = false
     private var foreground = false
+    /** Why the service itself ended the current run, to log instead of OpenConnect's errno. */
+    private var endedOnPurpose: String? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         latestStartId = startId
@@ -153,20 +158,25 @@ class ConnectVpnService : VpnService() {
             log(getString(R.string.connecting_server, server, if (manual) "manual" else "auto"))
             state("Connecting… approve Duo on your phone")
             var saved = savedSession()
+            var refused = false
             if (saved != null) {
                 for (attempt in 1..4) {
                     refreshNetwork()
                     val result = resume(checkNotNull(saved))
                     if (result == 0) break
                     checkNotStopping()
-                    if (result == NativeBridge.SESSION_ENDED) { store.clearSession(); saved = null; break }
+                    if (result == NativeBridge.SESSION_ENDED) { store.clearSession(); saved = null; refused = true; break }
                     if (manual || manualRequested) break
                     if (attempt == 4) error(getString(R.string.unreachable))
                     pause(attempt * 5_000L)
                 }
             }
             if (session == 0L) {
-                check(StartRule.mayLogin(manual || manualRequested, store.disconnected)) { StartRule.REFUSAL }
+                val mayLogin = StartRule.mayLogin(manual || manualRequested, store.disconnected)
+                // An automatic start (after an update, a restart, Always-on) whose session was
+                // refused: say so, as a rejoin does, rather than leave the VPN quietly off.
+                if (StartRule.noticeEnded(refused, mayLogin)) Notices.ended(this)
+                check(mayLogin) { StartRule.REFUSAL }
                 val password = store.password() ?: error(getString(R.string.save_account))
                 for (attempt in 1..3) {
                     checkNotStopping()
@@ -234,7 +244,7 @@ class ConnectVpnService : VpnService() {
         if (logout || store.disconnected) { store.clearSession(); return@synchronized }
         val values = native.saved(session)
         check(values[0].isNotBlank() && values[1].isNotBlank()) { getString(R.string.no_session) }
-        store.saveSession(SavedSession(server, user, values[0], values[1], previous?.dnsName ?: values[2], previous?.ip ?: values[3]))
+        store.saveSession(SavedSession(server, user, values[0], values[1], previous?.dnsName ?: values[2], previous?.ip ?: values[3], values[4]))
     }
     private fun newSession(password: String): Long = synchronized(sessionLock) {
         checkNotStopping()
@@ -246,23 +256,18 @@ class ConnectVpnService : VpnService() {
                 val cfg = config?.let(TunnelConfig::from)
                 queue.execute {
                     if (token != generation || stopping) return@execute
-                    if (event == 2) {
-                        lastKick = SystemClock.uptimeMillis()
-                        if (cfg != null && cfg.changedFrom(installed)) {
-                            // Builder can't mutate an established interface. Detach this
-                            // connection, then rejoin and establish its newest config.
-                            // Keep the old fd until the new interface is established:
-                            // queued traffic must wait, never bypass during reconnect.
-                            replacingConfig = true
+                    when (event) {
+                        NativeBridge.RECONNECTED -> reconnected(cfg)
+                        NativeBridge.TUN_SWITCHED -> switchedTun()
+                        else -> {
                             reconnecting()
-                            command(NativeBridge.DETACH)
-                        } else connected()
-                    } else {
-                        reconnecting()
-                        if (event == 1) lastKick = SystemClock.uptimeMillis()
+                            if (event == NativeBridge.ATTEMPT) lastKick = SystemClock.uptimeMillis()
+                        }
                     }
                 }
             }
+            // OpenConnect's thread, between packets. Only the run of this session asks.
+            override fun nextTun(): Int = if (token != generation) -1 else tuns.take()?.fd ?: -1
             override fun verify(chain: Array<ByteArray>, hostname: String) = PlatformTrust.verify(chain, hostname)
             override fun protectSocket(fd: Int) = protect(fd)
         }
@@ -285,29 +290,53 @@ class ConnectVpnService : VpnService() {
         checkNotStopping()
     }
     private fun resume(saved: SavedSession): Int {
+        var (result, error) = resumeWith(saved.native())
+        if (result == NativeBridge.SESSION_ENDED && saved.candidate.isNotEmpty()) {
+            // A reconnect sent the server a newer key and never heard back: it may hold
+            // that one. One more CONNECT, no password and no Duo.
+            log(getString(R.string.rejoin_candidate))
+            resumeWith(saved.candidateNative()).let { result = it.first; error = it.second }
+        }
+        if (result != 0) log(getString(R.string.rejoin_error, error))
+        return result
+    }
+    /** One CONNECT with a saved cookie; on failure, the native error and no session. */
+    private fun resumeWith(values: Array<String>): Pair<Int, String> {
         val s = newSession("")
         val token = generation
         val timer = deadlines.scheduleWithFixedDelay({
             synchronized(sessionLock) { if (session == s && generation == token) native.command(s, NativeBridge.DETACH) }
         }, 30, 1, TimeUnit.SECONDS)
-        val result = try { native.resume(s, saved.native()) } finally { timer.cancel(false) }
-        if (result != 0) { log(getString(R.string.rejoin_error, native.error(s))); freeSession() }
-        return result
+        val result = try { native.resume(s, values) } finally { timer.cancel(false) }
+        if (result == 0) return result to ""
+        val error = native.error(s)
+        freeSession()
+        return result to error
     }
     private fun run() {
         val s = session
-        val fd = checkNotNull(tun).fd
+        val fd = checkNotNull(tuns.current()).fd
+        endedOnPurpose = null
         Thread({
             val result = native.run(s, fd)
             queue.execute {
+                // Before the native state goes, however the run ended: the server may hold a
+                // key newer than the saved one (a reconnect got its 200, then failed), and
+                // errno can't tell a detach from a logout. saveSession clears the session
+                // after logout or Disconnect; one the server ended gets a 401 on the next
+                // rejoin, which clears it.
+                if (s != 0L && session == s) {
+                    try { saveSession(store.session()) } catch (e: Exception) { log(getString(R.string.save_session_failed, safeMessage(e))) }
+                }
                 freeSession()
                 if (stopping) finish(null)
                 else if (givingUp) finish(getString(R.string.long_unreachable))
                 else {
                     // OpenConnect returns -errno; say what it means rather than a bare number.
-                    log(getString(R.string.connection_ended, if (result < 0) android.system.Os.strerror(-result) else "closed by the server"))
-                    scheduleRejoin(if (replacingConfig) 0 else null)
-                    replacingConfig = false
+                    // Not when the service ended it: a detach mid-reconnect reads as EINTR.
+                    log(endedOnPurpose ?: getString(R.string.connection_ended, if (result < 0) android.system.Os.strerror(-result) else "closed by the server"))
+                    endedOnPurpose = null
+                    scheduleRejoin()
                 }
             }
         }, "connectanytime.openconnect").start()
@@ -345,6 +374,43 @@ class ConnectVpnService : VpnService() {
         Notices.ended(this)
         finish(StartRule.REFUSAL)
     }
+    /** OpenConnect reconnected in-process with the existing session (on the queue). */
+    private fun reconnected(cfg: TunnelConfig?) {
+        lastKick = SystemClock.uptimeMillis()
+        if (cfg != null) {
+            val previous = serverConfig
+            serverConfig = cfg
+            val switch = cfg.needsNewInterface(installed)
+            val changes = previous?.let(cfg::changes).orEmpty()
+            if (changes.isNotEmpty()) log(getString(if (switch) R.string.settings_changed_switch else R.string.settings_changed_keep, changes.joinToString(", ")))
+            // Keep the session and its connection: establish the new interface now, so
+            // traffic moves to it rather than bypassing the VPN, and let OpenConnect switch
+            // to it between packets. "Reconnecting…" until it has.
+            if (switch) try {
+                tuns.offer(establish(cfg))
+                command(NativeBridge.SWITCH_TUN)
+            } catch (e: Exception) {
+                // Only if Android refused the interface. End this run (it saves the session
+                // as it ends); rejoining builds a new interface.
+                log(getString(R.string.switch_failed, safeMessage(e)))
+                endedOnPurpose = getString(R.string.ended_for_interface)
+                command(NativeBridge.DETACH)
+                return
+            }
+        }
+        // Also waits for an interface offered before a newer reconnect overtook it.
+        if (!tuns.awaitPending()) connected()
+        // This CONNECT gave the server a new STRAP key, now in the cookie too: save it, or
+        // rejoining after a restart or update would present the old key and get a 401.
+        // After the switch: the Keystore write mustn't hold it up.
+        try { saveSession(store.session()) } catch (e: Exception) { log(getString(R.string.save_session_failed, safeMessage(e))) }
+    }
+    private fun switchedTun() {
+        val up = tuns.switched()
+        log(getString(R.string.switched_interface))
+        // Not if a newer reconnect started meanwhile: it's still running.
+        if (up) connected()
+    }
     private fun connected() {
         if (stopping) return
         if (down) log(getString(R.string.back_up))
@@ -352,6 +418,7 @@ class ConnectVpnService : VpnService() {
         state("Connected", true)
     }
     private fun reconnecting() {
+        tuns.reconnecting() // a switch reported from now on doesn't mean the VPN is up
         if (!down) { down = true; downOnline = 0; lastCheck = SystemClock.uptimeMillis(); lastKick = lastCheck }
         state("Reconnecting…")
     }
@@ -424,8 +491,15 @@ class ConnectVpnService : VpnService() {
         } == true
         return active?.takeIf(::physical) ?: cm.allNetworks.firstOrNull(::physical)
     }
+    /** Before a run (none is using an interface): keep the current one if it can
+     *  carry [cfg], otherwise establish a new one. */
     private fun applyConfig(cfg: TunnelConfig) {
-        if (!cfg.changedFrom(installed)) return
+        serverConfig = cfg
+        val current = tuns.idle()
+        if (current != null && !cfg.needsNewInterface(installed)) return
+        tuns.install(establish(cfg))
+    }
+    private fun establish(cfg: TunnelConfig): ParcelFileDescriptor {
         val builder = Builder().setSession(getString(R.string.app_name)).setBlocking(false).setMetered(false)
         val addr = Prefix.parse("${cfg.address}/${cfg.mask}")
         builder.addAddress(cfg.address, addr.bits)
@@ -453,14 +527,12 @@ class ConnectVpnService : VpnService() {
             underlying = physicalNetwork(getSystemService(ConnectivityManager::class.java))
         }
         builder.setUnderlyingNetworks(underlying?.let { arrayOf(it) } ?: emptyArray())
-        // Never allowBypass. Establish the replacement before closing the old fd.
+        // Never allowBypass. The caller closes the old fd only after this one is up.
         val replacement = builder.establish() ?: error(getString(R.string.need_consent))
-        val old = tun
-        tun = replacement
         installed = cfg
         tetherAddress = cfg.address
-        old?.close()
         log(getString(R.string.applied_settings))
+        return replacement
     }
     private fun requestStop(logOut: Boolean) {
         synchronized(sessionLock) {
@@ -490,15 +562,15 @@ class ConnectVpnService : VpnService() {
         }
         runCatching { tetherProxy?.close() }; tetherProxy = null
         tetherAddress = null
-        tun?.close(); tun = null
+        tuns.closeAll()
         if (error != null) log(getString(R.string.failed, error)) else log(if (logout) getString(R.string.disconnected) else getString(R.string.stopped_session))
         app.log.flush()
         foreground = false
         state("Not connected", error = error)
         stopForeground(STOP_FOREGROUND_REMOVE)
         // Leave nothing from this run for a restart in the same instance.
-        installed = null; networkBaseline = NetworkBaseline(); online = false; underlying = null
-        down = false; downOnline = 0; givingUp = false; replacingConfig = false
+        installed = null; serverConfig = null; networkBaseline = NetworkBaseline(); online = false; underlying = null
+        down = false; downOnline = 0; givingUp = false; endedOnPurpose = null
         backoff.reset()
         main.post {
             val pending = pendingConnect

@@ -19,8 +19,22 @@ import javax.crypto.spec.GCMParameterSpec
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-data class SavedSession(val server: String, val user: String, val url: String, val cookie: String, val dnsName: String, val ip: String) {
+/** [cookie] carries the STRAP key the server last accepted. [candidate] ("" if none)
+ *  carries a newer key a reconnect presented without hearing back: try it only when
+ *  [cookie] is refused. */
+data class SavedSession(val server: String, val user: String, val url: String, val cookie: String, val dnsName: String, val ip: String,
+                        val candidate: String = "") {
     fun native() = arrayOf(url, cookie, dnsName, ip)
+    fun candidateNative() = arrayOf(url, candidate, dnsName, ip)
+    fun json(): String = JSONObject().put("server", server).put("user", user).put("url", url).put("cookie", cookie)
+        .put("dnsName", dnsName).put("ip", ip).put("candidate", candidate).toString()
+    companion object {
+        /** Sessions saved before 0.1.4 have no candidate. */
+        fun fromJson(text: String) = JSONObject(text).let { j ->
+            SavedSession(j.getString("server"), j.getString("user"), j.getString("url"), j.getString("cookie"),
+                j.getString("dnsName"), j.getString("ip"), j.optString("candidate", ""))
+        }
+    }
     // Deliberately no credential-bearing toString (including crash diagnostics).
     override fun toString() = "SavedSession([private])"
 }
@@ -171,14 +185,8 @@ class Store(private val context: Context) {
         KeyStore.getInstance("AndroidKeyStore").apply { load(null); deleteEntry("connectanytime") }
         write("password", value)
     }
-    fun session(): SavedSession? = recover("session") {
-        val j = JSONObject(it)
-        SavedSession(j.getString("server"), j.getString("user"), j.getString("url"), j.getString("cookie"), j.getString("dnsName"), j.getString("ip"))
-    }
-    fun saveSession(s: SavedSession) {
-        val j = JSONObject().put("server", s.server).put("user", s.user).put("url", s.url).put("cookie", s.cookie).put("dnsName", s.dnsName).put("ip", s.ip)
-        write("session", j.toString())
-    }
+    fun session(): SavedSession? = recover("session") { SavedSession.fromJson(it) }
+    fun saveSession(s: SavedSession) = write("session", s.json())
     fun clearSession() { check(prefs.edit().remove("session").commit()) }
 }
 

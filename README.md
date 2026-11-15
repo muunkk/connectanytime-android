@@ -6,7 +6,7 @@ Save your NetID and password once. Tap Connect and approve Duo on your phone.
 This is a standalone Kotlin / Jetpack Compose port of ConnectAnytime for iOS.
 Release package: `com.muunkk.connectanytime`. Debug package: `com.muunkk.connectanytime.debug`.
 Android 10 (API 29) or later.
-Current build: **ConnectAnytime 0.1.0 (build 1)**.
+Current build: **ConnectAnytime 0.1.4 (build 5)**.
 
 ## The app
 
@@ -81,8 +81,9 @@ SANs. Wildcards match one whole leftmost label; there is no CN or IP fallback.
 
 The login answers username, password and second password (`push`) at most once.
 A wrong password fails instead of retrying, so it cannot repeatedly count against
-your account. The five patches in `Vendor/patches` also prevent replaying a login
-POST, handle truncated HTTP bodies and make reconnects survive changed addresses.
+your account. The seven patches in `Vendor/patches` also prevent replaying a login
+POST, handle truncated HTTP bodies, make reconnects survive changed addresses, keep
+the saved session's STRAP key current and let a live session switch tun interfaces.
 
 Before sending the password, a 20-second deadline aborts an unreachable attempt.
 Only this kind of failure can retry, at most three attempts with 3/6-second waits.
@@ -94,6 +95,25 @@ A successful login saves the session. Later starts try to **rejoin** it without 
 password or another Duo push. The original DNS name and IP are retained, preferring
 that IP when it is usable on the current network, with normal DNS answers as
 fallback. A rejoin returning 401/EPERM clears the session and waits for Connect.
+
+The session cookie carries OpenConnect's STRAP key. Every CONNECT on a live session,
+including the first after login, replaces that key on the server, but OpenConnect
+9.21 never updates the cookie, so a cookie saved at login could never be rejoined
+(the server answered 401). `openconnect-strap-cookie.patch` writes the key back into
+the cookie as soon as the server's 200 arrives, even if the rest of the response then
+fails. The bridge copies the cookie on OpenConnect's thread after every connect,
+resume and reconnect, and when a run ends. The service saves it after every
+in-process reconnect and whenever a run ends, in the same encrypted store (cleared
+instead after logout or Disconnect). It is never logged.
+
+A CONNECT can also send a new key and get no reply: the server may or may not hold
+that key. Until a 200 settles it, every further CONNECT presents that same key
+rather than a newer one, so the server always holds one of two keys. The saved
+session keeps both, the accepted key and that candidate. A rejoin tries the accepted
+one, and only if it gets 401, the candidate: one more CONNECT at most, never a
+password or a Duo push. `scripts/test-strap-cookie.sh`
+builds the patched OpenConnect for the Mac and runs `Vendor/tests/strap-cookie-test.c`,
+which drives the real CONNECT code over an in-memory TLS session to check both cases.
 
 Only the app button, unlocked Quick Settings tile, launcher Connect shortcut or the
 widget's power button can authorize a login. Boot, app updates, process restarts and Android Always-on
@@ -128,9 +148,18 @@ During an established session:
 - The existing interface stays open while reconnecting: traffic waits in the VPN.
   No bypass is allowed. Thirty minutes unreachable on a working network stops the
   tunnel but retains its session. Offline and deep-sleep time do not count.
-- Changed server settings replace the interface. Android cannot mutate an
-  established VpnService.Builder, so the service detaches, rejoins, establishes the
-  newest settings, then closes the old descriptor and runs on the new one.
+- A reconnect that brings different settings keeps the session and its connection.
+  The log names the fields that changed (values only for the MTU). If the current
+  interface still fits (only the server address, split DNS, route order or a larger
+  MTU changed), it stays. Otherwise the service establishes a new interface while
+  the old one is still open, and the bridge sends OpenConnect an `OC_CMD_STATS`
+  command. Its handler runs on OpenConnect's own thread between packets, takes the
+  new fd and calls `openconnect_setup_tun_fd`, which unregisters the old one. Only
+  then does the service close the old descriptor. No reconnect, no rejoin. The status
+  says Connected once OpenConnect has switched, unless a newer reconnect started in
+  the meantime. If Android refuses the new interface, the service detaches and rejoins
+  the saved session instead. After a switch, OpenConnect only tries vhost-net again if
+  the old interface used it.
 - Disconnect sends OC_CMD_CANCEL to the live connection, clears the saved session
   and pauses automatic starts until Connect. An OS stop sends OC_CMD_DETACH and
   retains the session. A server logout cannot be guaranteed on an unreachable
@@ -189,7 +218,8 @@ VPN addresses and server diagnostics, so review them before sharing.
   taking over. Use Disconnect in the app, notification, tile or shortcut to log out
   and pause automatic starts.
 - **Tunnel changes require replacement.** The old ParcelFileDescriptor stays open
-  through rejoin and until the new interface is established. OpenConnect 9.21
+  until OpenConnect has switched to the new interface (or, on a rejoin, until the new
+  interface is established). OpenConnect 9.21
   `library.c` initializes vpnc_script to NULL; `tun.c` borrows a supplied fd and
   only closes it when vpnc_script is set; vpninfo_free does not close it. This app
   never sets a script. Kotlin owns and closes the descriptor after native use ends.
@@ -384,9 +414,11 @@ verify, then attach `ConnectAnytime-<versionName>-<versionCode>.apk` to a new ta
   PackageInstaller session and its status receiver, and their UI.
 - `app/src/main/AndroidManifest.xml`, `res/`: permissions, Android components,
   icons, shortcuts and backup exclusions.
-- `Vendor/`, `gradle/`, root Gradle files: pinned builds and the five patches.
+- `Vendor/`, `gradle/`, root Gradle files: pinned builds and the seven patches.
 - `scripts/verify-native.sh`: both ABIs' exported JNI symbols, dynamic dependency
   allowlist and APK alignment.
+- `scripts/test-strap-cookie.sh`, `Vendor/tests/strap-cookie-test.c`: the STRAP
+  cookie patch against the real CONNECT code, on the Mac.
 
 ## Verification limits
 

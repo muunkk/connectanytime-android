@@ -72,6 +72,20 @@ class StoreTest {
         assertFalse(CredentialFailure.isPermanent(java.security.ProviderException()))
     }
 
+    @Test fun aSessionKeepsItsCandidateKeyAndOlderSessionsHaveNone() {
+        val saved = SavedSession("vpn.example.edu", "ab123", "https://vpn.example.edu/", "openconnect_strapkey=A; webvpn=x",
+            "vpn.example.edu", "192.0.2.1", "openconnect_strapkey=B; webvpn=x")
+        val read = SavedSession.fromJson(saved.json())
+        assertEquals(saved, read)
+        assertArrayEquals(arrayOf(saved.url, saved.cookie, saved.dnsName, saved.ip), read.native())
+        assertArrayEquals(arrayOf(saved.url, saved.candidate, saved.dnsName, saved.ip), read.candidateNative())
+        // As 0.1.3 saved it: no candidate field.
+        val legacy = org.json.JSONObject().put("server", saved.server).put("user", saved.user).put("url", saved.url)
+            .put("cookie", saved.cookie).put("dnsName", saved.dnsName).put("ip", saved.ip).toString()
+        assertEquals(saved.copy(candidate = ""), SavedSession.fromJson(legacy))
+        assertFalse(saved.toString().contains("strapkey"))
+    }
+
     @Test fun aTruncatedValueIsDiscardedNotThrown() {
         val store = ApplicationProvider.getApplicationContext<ConnectApp>().store
         store.prefs.edit().putString("session", android.util.Base64.encodeToString(ByteArray(5), android.util.Base64.NO_WRAP)).commit()

@@ -1011,3 +1011,186 @@ Branch `proxy-pac`, stacked on `proxy-status`. Backend by GPT Sol, UI by Opus, b
 | 1 | 7 | 7 | Manual keeps accepting during a reconnect; trailing dots; full IPv6 parsing; no `isInNet`; Mac lookalike URLs, local SOCKS and failed Manual setups left alone; PAC only while connected; choice stacks at large fonts; overlap warning wording and position; Mac help text for Automatic; hedged copy; custom-domain caveat; checklist |
 | 2 | 8.5, ship | 9, ship | Nothing blocking. Taken: overlap wording for USB; the choice stacks from 115% and its labels never wrap; the Automatic Mac command sets the URL before turning Manual off; any loopback spelling counts as local; "set every device the same way"; clearer wording on when Automatic goes direct; Manual help; a test for switching back to Manual; README on the turn-off command |
 | 3 | 9, ship | 9, ship | Nothing blocking. A test comment corrected; two cosmetic notes left for later (the Manual screenshot's scroll, two small grey paragraphs in a row). |
+
+# Keep the session through reconnects; rejoin without Duo (2026-11-15)
+
+## Problem
+
+On the phone the VPN dropped within minutes and asked for Duo again. A short blip set off
+Dead Peer Detection, OpenConnect reconnected in-process ("Reconnected with the existing
+session"), and in the same second the service saw different tunnel settings, sent
+OC_CMD_DETACH to rebuild the interface ("Software caused connection abort") and rejoined
+from the saved session on a new vpninfo. The server answered 401: session over. Every
+rejoin from the saved session in that log got 401 (11 of 11, including one 130 s after
+login), and every in-process reconnect worked (20 of 20).
+
+## Cause
+
+- **Rejoins.** The session cookie carries OpenConnect's STRAP private key
+  (`openconnect_strapkey=`, auth.c). Every CONNECT on a live vpninfo, including the
+  first one after login (`vpninfo->cookies` is still set, so `strap_rekey = 1`), signs
+  with the old key and hands the server a new one (`append_strap_verify`). But
+  `vpninfo->cookie` is never rebuilt, so the cookie saved at login presents a key the
+  server no longer holds. That the ASA enforces this is the leading hypothesis; it
+  fits every 401 in the log, but only the phone can confirm it.
+- **The drop.** The settings comparison was exact on every field. The log has no
+  "Reconnect gave a new Legacy IP address" line, so the address didn't change;
+  something the interface doesn't need did (most likely the MTU, recalculated per
+  transport). The service then threw away a live session to rebuild it.
+
+## Fix
+
+- `openconnect-strap-cookie.patch`: after each successful CONNECT, put the key the
+  server just accepted back into the cookie. Also wipes and frees the DER copy of the
+  key that `append_strap_privkey` leaked on every call. Logs only at debug level, which
+  the bridge drops.
+- Bridge: copies url, cookie, DNS name and IP on OpenConnect's thread after
+  connect, resume and every reconnect, under a mutex. `saved()` reads that copy and
+  wipes it, instead of reading `vpninfo` while the mainloop may be replacing it.
+- Service: saves the session again after every in-process reconnect (same encrypted
+  Store), so a force-stop or update rejoins with the current key.
+- A reconnect with new settings keeps the session and its connection:
+  - `TunnelConfig.needsNewInterface` ignores what the interface doesn't use (server
+    address, split DNS), compares routes as sets, and accepts a larger MTU. DNS servers
+    and search domains stay ordered (priority). A smaller MTU or a new address,
+    netmask, IPv6 address, DNS, search domains or route set still needs a new interface.
+  - When it does: establish the new interface while the old one is open, then
+    `NativeBridge.SWITCH_TUN` writes `OC_CMD_STATS` to the command pipe. Its handler
+    runs on OpenConnect's thread between packets, asks `nextTun()` for the fd and calls
+    `openconnect_setup_tun_fd` (unregisters the old fd, never closes it). Then
+    `OCB_TUN_SWITCHED` lets the service close the old descriptor. There's no reconnect
+    and no rejoin. `TunHandoff` tracks which fd OpenConnect owns.
+  - `openconnect-switch-tun.patch`: if vhost-net were in use, drop it before setting
+    up the new fd rather than leak it. (This phone can't open /dev/vhost-net.)
+  - DETACH and rejoin remain only for when Android refuses the new interface.
+- The log names the changed fields, never their values except the MTU:
+  "The reconnect brought new tunnel settings (MTU 1390 → 1406); the VPN interface still fits".
+
+## Checks
+
+- `./gradlew assembleDebug assembleRelease testDebugUnitTest lintDebug lintRelease`:
+  BUILD SUCCESSFUL. 207 tests, 0 failures. Lint 0 errors (47 warnings, none in changed
+  files). Both ABIs' dependencies were rebuilt by `build-deps.sh`; all seven patches
+  apply to the 9.21 tarball without fuzz or warnings.
+- `python3 scripts/verify-release.py`: PASS, version 0.1.4 (5), all 11 native methods
+  and all five callbacks (now including `nextTun()I`) after R8.
+- `scripts/verify-native.sh`: PASS for arm64-v8a and x86_64.
+- LogicTest covers which changes need a new interface (MTU up, gateway, split DNS and
+  route order don't; DNS order and MTU down do), the change log naming fields without
+  values, and the handoff: an old fd stays open until the switch is reported, a second
+  change before the switch replaces the first, a run that ends before switching
+  leaves the newest interface for the rejoin, and stopping closes everything.
+
+## Council round 1 fixes
+
+Opus 8/10 ship, GPT Sol 7/10 don't ship. Fixed:
+
+- **An accepted rekey could be lost** (Sol, blocking). OpenConnect can get the 200,
+  so the server holds the new key, and then fail on the rest of the headers. The
+  cookie is now refreshed right after the 200 is parsed. The bridge also snapshots
+  when `ocb_run` ends, and the service saves that snapshot before freeing the native
+  state, except after a 401, a logout or server termination (`RunEnd.keepsSession`).
+  `saveSession` still clears the session after logout or Disconnect.
+- **A CONNECT that sent a new key and heard nothing.** Implemented Sol's option:
+  `openconnect_strap_candidate_cookie` (patched in) gives the cookie with the key in
+  memory. The saved session keeps it as `candidate` when it differs from the accepted
+  one. A rejoin that gets 401 with the accepted key tries the candidate once. That's
+  one extra CONNECT at most, only in this case, and never a password or Duo.
+  Sessions saved before 0.1.4 have no candidate.
+- `ocb_run` returns -EIO, not -1, if it can't set up the tun at the start: -1 is -EPERM,
+  which now means "session over, don't save".
+- Opus:
+  1. A switch reported during a newer reconnect no longer says Connected.
+     `TunHandoff.reconnecting()` clears the wait, so `down`, the 60 s kick and the
+     30-minute give-up keep running. A reconnect that overtakes an offer that hasn't
+     been taken yet waits for it.
+  2. The interface switch happens before the Keystore save.
+  3. No `OCB_TUN_SWITCHED` when `setup_tun_fd` fails; the run detaches and the rejoin
+     closes both fds.
+  4. `buf_alloc()` returning NULL is handled.
+  5. The lock comment now says a close can hold the kernel's network configuration
+     lock for a few milliseconds.
+  6. After a switch, vhost-net is only tried again if the old tun used it, so the
+     error-level "Failed to open /dev/vhost-net" line appears once per session, not
+     on every switch.
+  7. Tests: below.
+
+### Round 1 checks
+
+- `scripts/test-strap-cookie.sh`: builds patched OpenConnect 9.21 for macOS against
+  Homebrew OpenSSL 3.5.9 (the version Android uses) and runs
+  `Vendor/tests/strap-cookie-test.c`. It runs the real `start_cstp_connection` over an
+  in-memory TLS 1.3 session (STRAP signs its exporter), with scripted replies:
+  - 200 then truncated headers: the cookie carries the key the 200 accepted;
+  - a rejoin from that cookie (fresh vpninfo: set cookie, split, ingest) presents
+    exactly that key;
+  - no reply: the cookie keeps the accepted key, and the candidate carries the new
+    one;
+  - a cookie without a STRAP key is left alone.
+
+  11 checks pass. Negative control: without the early refresh, 4 of them fail.
+- LogicTest, new cases:
+  - SWITCHED after a newer RECONNECTING doesn't bring the VPN up;
+  - a reconnect overtaking an untaken offer waits for it;
+  - a stop while a switch is offered closes it;
+  - a SWITCHED from a run that already ended changes nothing;
+  - which run endings keep the session.
+- StoreTest: the candidate survives the session's JSON, and 0.1.3's format reads
+  with none. Robolectric has no AndroidKeyStore, so encryption isn't covered.
+
+## Council round 2 fixes
+
+Opus 8/10 ship, GPT Sol 7/10 don't ship. Fixed:
+
+- **Save on every run exit** (Sol P1 #2, Opus 1). errno can't tell the cases apart.
+  A DETACH during a reconnect's sleep or a blocking read returns -EINTR, and the
+  30-minute give-up always lands mid-reconnect. `install_vpn_opts` returns -EPERM after
+  a 200 when a netmask goes missing. So the errno exclusion (`RunEnd`) is gone: every
+  run exit saves its snapshot through `saveSession`, which clears the session instead
+  after logout or Disconnect. A session the server ended gets a 401 on the next
+  rejoin, which clears it. The save is guarded by `session == s`. The failure message
+  is now "Couldn't save the session".
+- After a failed in-place switch, the run end logs "Ended the connection to set up the
+  VPN interface again; rejoining the session", not "The connection ended (Interrupted
+  system call)".
+- **No unresolved key falls out of the saved pair** (Sol P1 #1, Opus 6). With accepted
+  key A, a CONNECT presents B and its 200 is lost. OpenConnect's own retries used to
+  rekey to C, so if C never arrived the app saved {A, C} while the server held B.
+  The patch now sets `strap_unresolved` when it sends a rekeying CONNECT and clears it
+  on a 200. While it's set, CONNECTs don't rekey: they sign with B and present B. If
+  the server holds B, that succeeds and B becomes accepted. If it holds A, it gets a
+  401, the run ends, and the saved {A, B} rejoins with A.
+- **First start after updating from 0.1.3** (Opus 2). The automatic start's 401 left
+  the VPN quietly off. Now a start whose saved session is refused, and that can't log
+  in, posts the same "VPN session ended" notice as a rejoin (`StartRule.noticeEnded`).
+  When automatic starts may log in is unchanged.
+
+### Round 2 checks
+
+- `scripts/test-strap-cookie.sh`: 17 checks pass. New: after an unanswered CONNECT,
+  two more attempts present the same unresolved key, and the saved pair stays
+  {accepted, unresolved}. A 200 on the retry makes it the accepted key with no
+  candidate, and the next CONNECT rekeys. Negative control: letting retries rekey
+  again fails 4 checks.
+
+## Device checklist (0.1.4 (5))
+
+- [ ] **After installing 0.1.4, open the app and approve Duo once.** The session saved by
+      0.1.3 carries a stale key; if Stay Connected starts first, it now shows "VPN
+      session ended" instead of staying quietly off.
+
+- [ ] Connect, then cause a short blip (airplane mode for ~5 s, or walk out of Wi‑Fi
+      range): the VPN shows Reconnecting… then Connected; no Duo. The log shows
+      "Reconnected with the existing session" and no "rejoining the session".
+- [ ] Switch Wi‑Fi ↔ mobile data a few times: the VPN stays up. If the log shows
+      "moving to a new VPN interface", it's followed by "Moved to the new VPN interface",
+      and traffic (a web page, a hotspot client) keeps working.
+- [ ] Force-stop the app (Settings → Apps), then let Stay Connected or Always-on start
+      it, or tap Connect: it rejoins without Duo. Log: no 401.
+- [ ] Update the app over this build (the next release, or `adb install -r`): it rejoins
+      without Duo.
+- [ ] After a blip and an in-process reconnect, force-stop again: it still rejoins
+      without Duo (the re-saved key).
+- [ ] Disconnect still logs out, and Connect needs Duo afterwards.
+- [ ] Rarely seen, so check only if it happens: "The saved session key was refused;
+      trying the newer one" followed by a successful rejoin.
