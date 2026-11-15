@@ -199,7 +199,50 @@ int main(void)
 	}
 	free(candidate);
 
-	/* 4. A cookie without a STRAP key (server without STRAP, or an older format) is
+	/* 4. That key's 200 was lost, so the server holds it, or it never arrived and the
+	 *    server still holds the accepted one. OpenConnect retries (its own reopen, then
+	 *    ssl_reconnect): each retry must present the same unresolved key, not a newer
+	 *    one, or the saved pair would hold neither key the server might have. */
+	for (int attempt = 1; attempt <= 2; attempt++) {
+		connect_via(vpninfo, NULL, 0);
+		start_cstp_connection(vpninfo, 1);
+		char *presented = sent_pubkey();
+		CHECK(presented && !strcmp(presented, unanswered),
+		      attempt == 1 ? "a retry presents the unresolved key again" : "and so does the next");
+		free(presented);
+	}
+	{
+		char *saved = resume_pubkey(vpninfo->cookie, NULL);
+		char *cand = openconnect_strap_candidate_cookie(vpninfo);
+		char *next = cand ? resume_pubkey(cand, NULL) : NULL;
+		CHECK(saved && !strcmp(saved, accepted) && next && !strcmp(next, unanswered),
+		      "the saved pair is still {accepted, unresolved}: whichever the server holds");
+		free(saved); free(cand); free(next);
+	}
+
+	/* 5. The server held the unresolved key: the retry gets its 200. That key is now
+	 *    the accepted one, and the CONNECT after it rekeys again. */
+	connect_via(vpninfo, ok_then_truncated, 1);
+	start_cstp_connection(vpninfo, 1);
+	{
+		char *presented = sent_pubkey();
+		char *saved = resume_pubkey(vpninfo->cookie, NULL);
+		CHECK(presented && !strcmp(presented, unanswered) && saved && !strcmp(saved, unanswered),
+		      "a 200 on the retry makes the unresolved key the accepted one");
+		free(presented); free(saved);
+	}
+	candidate = openconnect_strap_candidate_cookie(vpninfo);
+	CHECK(candidate && !strcmp(candidate, vpninfo->cookie), "and leaves no candidate");
+	free(candidate);
+	connect_via(vpninfo, ok_then_truncated, 1);
+	start_cstp_connection(vpninfo, 1);
+	{
+		char *presented = sent_pubkey();
+		CHECK(presented && strcmp(presented, unanswered), "after a 200, the next CONNECT rekeys");
+		free(presented);
+	}
+
+	/* 6. A cookie without a STRAP key (server without STRAP, or an older format) is
 	 *    left alone. */
 	free(vpninfo->cookie);
 	vpninfo->cookie = strdup("webvpn=SESSION");
