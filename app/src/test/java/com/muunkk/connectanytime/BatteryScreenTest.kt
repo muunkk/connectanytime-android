@@ -10,11 +10,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.ListItemDefaults
+import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
@@ -23,7 +28,9 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -472,7 +479,7 @@ class BatteryScreenTest {
             reconnects = 1, reconnectsPerHour = 0.03); show()
         scrollTo(hasTestTag("battery-more"))
         compose.onNodeWithTag("battery-more").performSemanticsAction(SemanticsActions.Expand); compose.waitForIdle()
-        for (text in listOf("VPN: at least a trace (under 0.1% of one core recorded)", "Forwarding: under 0.1% of one core", "Other: about 0% of one core",
+        for (text in listOf("VPN: at least a trace of one core", "Forwarding: under 0.1% of one core", "Other: about 0% of one core",
             "VPN reconnects: 1 (less than 0.1 an hour)")) {
             scrollTo(hasText(text)); compose.onNodeWithText(text).assertExists()
         }
@@ -511,7 +518,7 @@ class BatteryScreenTest {
     @Test fun aFailedFirstLoadSaysSoWithTryAgainAndClearStaysEnabled() {
         status = BatteryStatus.Measuring; report = null; loadFailed = true; show()
         compose.onNodeWithContentDescription("Loading battery data").assertDoesNotExist()
-        compose.onNodeWithText("Couldn’t read saved measurements.").assertIsDisplayed()
+        compose.onNodeWithText("Couldn’t read saved measurements").assertIsDisplayed()
             .assert(hasContentDescription("Couldn’t read saved measurements. The Try again button is below."))
         val retry = compose.onNodeWithTag("battery-reload").assertTextEquals("Try again").assertHeightIsAtLeast(48.dp)
         retry.performClick()
@@ -533,9 +540,9 @@ class BatteryScreenTest {
         compose.onNodeWithText("Clear battery data?").assertExists()
         val f = BatteryFormat(app)
         fun dates(r: BatteryReport, spoken: Boolean = false) = f.dates(r.firstWallMinute!!, r.lastWallMinute!!, spoken)
-        compose.onNodeWithText("This removes battery measurements recorded ${dates(report!!)} from this device. Measuring continues.")
+        compose.onNodeWithText("This removes the battery measurements from ${dates(report!!)} saved on this device. Measuring continues.")
             .assertExists()
-            .assert(hasContentDescription("This removes battery measurements recorded ${dates(report!!, spoken = true)} from this device. Measuring continues."))
+            .assert(hasContentDescription("This removes the battery measurements from ${dates(report!!, spoken = true)} saved on this device. Measuring continues."))
         compose.onNodeWithText("Cancel").performClick()
         compose.onNodeWithText("Clear battery data?").assertDoesNotExist()
         // Counted time spread over six days: the dialog names the same dates as the subtitle.
@@ -543,7 +550,7 @@ class BatteryScreenTest {
         val subtitle = batterySubtitle(app, f, status, report)!!.first
         assertTrue(subtitle, subtitle.endsWith(dates(report!!)))
         compose.onNodeWithContentDescription("Clear battery data").performClick()
-        compose.onNodeWithText("This removes battery measurements recorded ${dates(report!!)} from this device. Measuring continues.").assertExists()
+        compose.onNodeWithText("This removes the battery measurements from ${dates(report!!)} saved on this device. Measuring continues.").assertExists()
     }
     @Test fun comparedRowsAreTheComparisonsSides() {
         app.store.proxySetup = ProxySetup.Automatic
@@ -589,6 +596,68 @@ class BatteryScreenTest {
         val help = compose.onNodeWithText(app.getString(R.string.battery_cpu_help), useUnmergedTree = true).getBoundsInRoot()
         val value = compose.onNodeWithText("of one core", substring = true, useUnmergedTree = true).getBoundsInRoot()
         assertTrue("$value under $help", value.top >= help.bottom)
+    }
+    @Test fun aLaterReadFailureKeepsTheReportWithTryAgainAboveIt() {
+        status = BatteryStatus.Measuring; report = BatteryFakes.notReady(); loadFailed = true; show()
+        val stale = compose.onNodeWithTag("battery-stale").assertIsDisplayed()
+        compose.onNodeWithText("Couldn’t read the latest measurements").assert(hasContentDescription(
+            "Couldn’t read the latest measurements. The figures below are from the last successful read. The Try again button is below."))
+        compose.onNodeWithTag("battery-load-failed").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Loading battery data").assertDoesNotExist()
+        // The report is still there, under the row, and can still be shared.
+        val panel = compose.onNodeWithText("Keep measuring").assertExists().getBoundsInRoot()
+        assertTrue("row above the report", stale.getBoundsInRoot().bottom <= panel.top)
+        compose.onNodeWithContentDescription("Share battery data").assertIsEnabled()
+        compose.onNodeWithTag("battery-reload").assertTextEquals("Try again").assertHeightIsAtLeast(48.dp).performClick()
+        assertEquals(1, reloaded)
+        // A rebuild that reads clears it.
+        loadFailed = false; compose.waitForIdle()
+        compose.onNodeWithTag("battery-stale").assertDoesNotExist()
+        compose.onNodeWithText("Keep measuring").assertExists()
+    }
+    @Test fun panelTitlesAreHeadings() {
+        status = BatteryStatus.Off; report = BatteryReport(); show()
+        compose.onNode(isHeading() and hasText("Not measuring yet")).assertExists()
+        status = BatteryStatus.Measuring; report = BatteryFakes.notReady(); compose.waitForIdle()
+        compose.onNode(isHeading() and hasText("Keep measuring")).assertExists()
+    }
+    @Test fun collapsedBarShowsTheSubtitleOnOneLine() {
+        status = BatteryStatus.AutoStopped; report = BatteryFakes.compared()
+        compose.setContent { ConnectTheme {
+            val density = LocalDensity.current
+            CompositionLocalProvider(LocalDensity provides Density(density.density, 2f)) {
+                BatteryContent(false, app.store.proxySetup, status, report, false, {}, {}, {}, {}, {})
+            }
+        } }
+        compose.waitForIdle()
+        val subtitle = batterySubtitle(app, BatteryFormat(app), status, report)!!.second
+        val expanded = compose.onAllNodesWithContentDescription(subtitle).fetchSemanticsNodes().map { it.boundsInRoot.height }
+        compose.onNode(hasScrollToNodeAction()).performTouchInput { swipeUp() }
+        compose.waitForIdle()
+        val heights = compose.onAllNodesWithContentDescription(subtitle).fetchSemanticsNodes().map { it.boundsInRoot.height }
+        val line = with(Density(app.resources.displayMetrics.density, 2f)) { 20.sp.toPx() * 1.5f }
+        assertTrue("expanded $expanded, collapsed $heights", heights.isNotEmpty() && heights.all { it < line })
+    }
+    @Test fun topBarClearsASideCutoutLikeTheList() {
+        val side = WindowInsets(left = 32.dp)
+        var edge = 0.dp
+        compose.setContent { CompositionLocalProvider(LocalCutoutInsets provides side) {
+            ReadableTopBar { insets ->
+                val density = LocalDensity.current
+                edge = with(density) { insets.getLeft(density, LocalLayoutDirection.current).toDp() }
+            }
+        } }
+        compose.waitForIdle()
+        assertEquals(32.dp, edge)
+    }
+    @Test fun homeFailureKeepsTheBatteryIconsNormalTint() {
+        var tint = Color.Unspecified; var normal = Color.Unspecified; var error = Color.Unspecified
+        compose.setContent { ConnectTheme {
+            tint = batteryHomeIconTint(BatteryStatus.CouldNotSave); normal = LocalContentColor.current; error = MaterialTheme.colorScheme.error
+        } }
+        compose.waitForIdle()
+        assertEquals(normal, tint)
+        assertTrue(tint != error)
     }
     @Test fun sideCutoutPaddingIsAppliedOnce() {
         val side = WindowInsets(left = 24.dp)

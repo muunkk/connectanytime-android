@@ -334,11 +334,11 @@ class ScreenshotTest(private val dark: Boolean) {
 
     // ---- Battery drain ----
     private fun battery(status: BatteryStatus, report: BatteryReport?, fontScale: Float? = null, cutout: WindowInsets? = null,
-        problem: BatteryProblem? = null) {
+        problem: BatteryProblem? = null, loadFailed: Boolean = false) {
         compose.setContent { ConnectTheme(dark = dark, dynamicColor = false) {
             val density = LocalDensity.current
             CompositionLocalProvider(LocalDensity provides Density(density.density, fontScale ?: density.fontScale), LocalCutoutInsets provides cutout) {
-                BatteryContent(app.store.shareOverHotspot, app.store.proxySetup, status, report, false, {}, {}, {}, {}, {}, problem)
+                BatteryContent(app.store.shareOverHotspot, app.store.proxySetup, status, report, false, {}, {}, {}, {}, {}, problem, loadFailed)
             }
         } }
         compose.waitForIdle()
@@ -358,6 +358,15 @@ class ScreenshotTest(private val dark: Boolean) {
         } }
         compose.waitForIdle()
         save("battery-load-failed")
+    }
+    @Test fun batteryStaleReadFailed() {
+        battery(BatteryStatus.Measuring, BatteryFakes.notReady(), loadFailed = true); save("battery-stale-read-failed")
+    }
+    // The bar collapsed to its small row at 200%: the subtitle is one ellipsized line.
+    @Test fun batteryCollapsed200() {
+        battery(BatteryStatus.AutoStopped, BatteryFakes.compared(), fontScale = 2f)
+        compose.onNode(hasScrollToNodeAction()).performTouchInput { swipeUp() }
+        save("battery-collapsed-200pct")
     }
     @Test fun batteryOff() { battery(BatteryStatus.Off, BatteryReport()); save("battery-off") }
     @Test fun batteryMeasuringNotReady() {

@@ -271,7 +271,9 @@ private fun readableSide(maxWidth: Dp) = max(16.dp, (maxWidth - 640.dp) / 2)
  *  [ReadableLazyColumn]'s capped column. On a phone the extra is zero. */
 @Composable
 internal fun ReadableTopBar(bar: @Composable (WindowInsets) -> Unit) {
-    val system = TopAppBarDefaults.windowInsets
+    // The side cutout too, as the list clears it: in landscape the bar's edges line up with the column.
+    val cutout = (LocalCutoutInsets.current ?: WindowInsets.displayCutout).only(WindowInsetsSides.Horizontal)
+    val system = TopAppBarDefaults.windowInsets.union(cutout)
     BoxWithConstraints {
         val density = LocalDensity.current
         val direction = LocalLayoutDirection.current
@@ -313,8 +315,10 @@ internal fun BatteryContent(sharing: Boolean, setup: ProxySetup, status: Battery
     val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     Scaffold(modifier = Modifier.nestedScroll(scroll.nestedScrollConnection), topBar = { ReadableTopBar { insets ->
         val subtitle = batterySubtitle(context, f, status, report)
-        // Three lines at large text, so "Stopped after 7 days · … measured · dates" isn't cut off.
-        val lines = if (LocalDensity.current.fontScale >= 1.5f) 3 else 2
+        // Three lines at large text, so "Stopped after 7 days · … measured · dates" isn't cut off;
+        // one, ellipsized, once the bar has collapsed to its small row, which has room for no more.
+        val collapsed by remember { derivedStateOf { scroll.state.collapsedFraction > 0.5f } }
+        val lines = if (collapsed) 1 else if (LocalDensity.current.fontScale >= 1.5f) 3 else 2
         MediumFlexibleTopAppBar(
             title = { Text(stringResource(R.string.battery_title)) },
             subtitle = subtitle?.let { (shown, spoken) -> { Text(shown, maxLines = lines, overflow = TextOverflow.Ellipsis,
@@ -346,6 +350,8 @@ internal fun BatteryContent(sharing: Boolean, setup: ProxySetup, status: Battery
             // appears already live.
             item(key = "status") { StatusLine(status, problem, current, settled) }
             if (status == BatteryStatus.CouldNotSave) item(key = "retry") { ProblemRow(problem, onRetry) }
+            // A later read failed: the last report stays, with why and Try again above it.
+            if (report != null && loadFailed) item(key = "stale") { LoadFailedRow(onReload, stale = true) }
             if (report == null) {
                 if (loadFailed) item(key = "load-failed") { LoadFailedRow(onReload) }
                 else item(key = "loading") {
@@ -531,23 +537,28 @@ private fun ProblemRow(problem: BatteryProblem?, onRetry: () -> Unit) {
     }
 }
 
-/** In place of the loader when the saved measurements couldn't be read: why, and Try again under it. */
+/** When the saved measurements couldn't be read: why, and Try again under it. In place of the
+ *  loader when nothing was ever read; above the last report when only a later read failed ([stale]). */
 @Composable
-private fun LoadFailedRow(onReload: () -> Unit) {
-    val spoken = stringResource(R.string.battery_load_failed_spoken)
+private fun LoadFailedRow(onReload: () -> Unit, stale: Boolean = false) {
+    val spoken = stringResource(if (stale) R.string.battery_stale_failed_spoken else R.string.battery_load_failed_spoken)
     Column(Modifier.padding(top = 8.dp)) {
         Group(1) {
             FieldSegment(0, 1, padded = false, shape = standaloneShapes().shape) {
-                ListItem(modifier = Modifier.testTag("battery-load-failed"),
-                    headlineContent = { Text(stringResource(R.string.battery_load_failed), color = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.semantics { contentDescription = spoken }) },
+                ListItem(modifier = Modifier.testTag(if (stale) "battery-stale" else "battery-load-failed"),
+                    headlineContent = { Text(stringResource(if (stale) R.string.battery_stale_failed else R.string.battery_load_failed),
+                        color = MaterialTheme.colorScheme.error, modifier = Modifier.semantics { contentDescription = spoken }) },
                     leadingContent = { Icon(painterResource(R.drawable.ic_error), contentDescription = null, tint = MaterialTheme.colorScheme.error) },
                     supportingContent = {
-                        val inset = ButtonDefaults.TextButtonContentPadding
-                        TextButton(onClick = onReload, shapes = ButtonDefaults.shapes(), contentPadding = inset,
-                            modifier = Modifier.offset(x = -inset.calculateStartPadding(LocalLayoutDirection.current))
-                                .heightIn(min = 48.dp).testTag("battery-reload")) {
-                            Text(stringResource(R.string.battery_load_retry))
+                        // The help is in the headline's spoken form, so it's read once.
+                        Column(horizontalAlignment = Alignment.Start) {
+                            if (stale) Text(stringResource(R.string.battery_stale_failed_help), modifier = Modifier.clearAndSetSemantics { })
+                            val inset = ButtonDefaults.TextButtonContentPadding
+                            TextButton(onClick = onReload, shapes = ButtonDefaults.shapes(), contentPadding = inset,
+                                modifier = Modifier.offset(x = -inset.calculateStartPadding(LocalLayoutDirection.current))
+                                    .heightIn(min = 48.dp).testTag("battery-reload")) {
+                                Text(stringResource(R.string.battery_load_retry))
+                            }
                         }
                     },
                     colors = ListItemDefaults.colors(containerColor = Color.Transparent))
@@ -565,7 +576,7 @@ private fun Panel(title: String?, body: String, more: String? = null) {
             if (title != null) Icon(painterResource(R.drawable.ic_battery), contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp))
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (title != null) Text(title, style = MaterialTheme.typography.titleMedium)
+                if (title != null) Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
                 // A second paragraph is its own Text, a fixed gap under the first.
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(body, style = MaterialTheme.typography.bodyMedium)
@@ -844,10 +855,12 @@ private fun MoreDetail(f: BatteryFormat, report: BatteryReport) {
 /** A More detail row; [spoken] when the shown text uses "·" or symbols that read badly. */
 private data class DetailRow(val headline: String, val supporting: List<String> = emptyList(), val spoken: String? = null)
 
-/** "at least" and "about" can't wrap "less than 0.1%": a [tiny] value takes its "under" form. */
+/** "at least" and "about" can't wrap "less than 0.1%": a [tiny] value takes its "under" form
+ *  (VPN's, a lower bound, is "at least a trace" and takes no figure). */
 @Composable
 private fun cpuRow(f: BatteryFormat, value: Double, id: Int, tiny: Int) =
-    DetailRow(if (f.tiny(value)) stringResource(tiny, f.tenthPercent()) else stringResource(id, f.percent(value)))
+    DetailRow(if (!f.tiny(value)) stringResource(id, f.percent(value))
+        else if (tiny == R.string.battery_d_vpn_tiny) stringResource(tiny) else stringResource(tiny, f.tenthPercent()))
 
 @Composable
 private fun detailRows(f: BatteryFormat, report: BatteryReport): List<DetailRow> = buildList {

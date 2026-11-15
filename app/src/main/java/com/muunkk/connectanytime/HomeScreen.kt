@@ -412,13 +412,10 @@ private fun BatteryRow(status: BatteryStatus, problem: BatteryProblem?, onClick:
             role = Role.Button
             onClick(label = open) { onClick(); true }
         },
-        // The primary tint while measuring and the error tint on a failure are decoration; the text says the same.
+        // The primary tint while measuring is decoration; the text says the same. A failure keeps
+        // the normal tint (spec 3.11): the inline error icon and text carry it.
         leadingContent = { Icon(painterResource(R.drawable.ic_battery), contentDescription = null,
-            tint = when {
-                failed -> MaterialTheme.colorScheme.error
-                status == BatteryStatus.Measuring -> MaterialTheme.colorScheme.primary
-                else -> LocalContentColor.current
-            }) },
+            tint = batteryHomeIconTint(status)) },
         trailingContent = { Icon(painterResource(R.drawable.ic_chevron_right), contentDescription = null) },
         supportingContent = {
             if (failed) Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -429,6 +426,11 @@ private fun BatteryRow(status: BatteryStatus, problem: BatteryProblem?, onClick:
             } else Text(stringResource(batteryStatusText(status)))
         }) { Text(title) }
 }
+
+/** Home's battery icon: primary while measuring, otherwise the row's normal content color, a failure included. */
+@Composable
+internal fun batteryHomeIconTint(status: BatteryStatus): Color =
+    if (status == BatteryStatus.Measuring) MaterialTheme.colorScheme.primary else LocalContentColor.current
 
 // Segments sit on surfaceContainer so each group reads as one block on the background.
 @Composable

@@ -344,17 +344,21 @@
     <string name="battery_less_than_percent_spoken">less than %1$s percent</string>
     <string name="battery_loading">Loading battery data</string>
     <!-- In place of the loader when the saved measurements couldn't be read. -->
-    <string name="battery_load_failed">Couldn’t read saved measurements.</string>
+    <string name="battery_load_failed">Couldn’t read saved measurements</string>
     <string name="battery_load_failed_spoken">Couldn’t read saved measurements. The Try again button is below.</string>
     <string name="battery_load_retry">Try again</string>
+    <!-- Above the report when a later read failed: what's shown is from the last read that worked. -->
+    <string name="battery_stale_failed">Couldn’t read the latest measurements</string>
+    <string name="battery_stale_failed_help">The figures below are from the last successful read.</string>
+    <string name="battery_stale_failed_spoken">Couldn’t read the latest measurements. The figures below are from the last successful read. The Try again button is below.</string>
     <string name="battery_share">Share battery data</string>
     <string name="battery_clear">Clear battery data</string>
     <string name="battery_share_failed">Couldn’t export the battery data.</string>
     <string name="battery_share_note">Includes the phone’s model and Android version. No sites or device names.</string>
     <string name="battery_clear_title">Clear battery data?</string>
     <!-- %1$s = the date range, such as Nov 8 – 14, 2026. -->
-    <string name="battery_clear_body">This removes battery measurements recorded %1$s from this device.</string>
-    <string name="battery_clear_body_on">This removes battery measurements recorded %1$s from this device. Measuring continues.</string>
+    <string name="battery_clear_body">This removes the battery measurements from %1$s saved on this device.</string>
+    <string name="battery_clear_body_on">This removes the battery measurements from %1$s saved on this device. Measuring continues.</string>
     <!-- When the saved measurements couldn't be read, so there are no dates to name. -->
     <string name="battery_clear_body_unread">This removes the battery measurements saved on this device.</string>
     <string name="battery_clear_body_unread_on">This removes the battery measurements saved on this device. Measuring continues.</string>
@@ -427,7 +431,7 @@
     <string name="battery_cpu_total_spoken">%1$s of one processor core</string>
     <!-- By situation. -->
     <string name="battery_situations">By situation</string>
-    <string name="battery_other_short">Other or short (includes mixed time)</string>
+    <string name="battery_other_short">Other or short (includes time when the situation changed)</string>
     <!-- Screen · sharing · network, then the hotspot only when it isn't on. -->
     <string name="battery_situation">%1$s · %2$s · %3$s</string>
     <string name="battery_situation_hotspot">%1$s · %2$s · %3$s · %4$s</string>
@@ -462,8 +466,8 @@
     <string name="battery_d_fwd">Forwarding: about %1$s of one core</string>
     <string name="battery_d_other">Other: about %1$s of one core</string>
     <!-- Above zero but under what rounds to 0.1%: %1$s = 0.1%, formatted in code. The VPN figure
-         is a lower bound (its threads may be counted elsewhere), so its tiny form keeps "at least". -->
-    <string name="battery_d_vpn_tiny">VPN: at least a trace (under %1$s of one core recorded)</string>
+         is a lower bound (its threads may be counted elsewhere), so its tiny form says only "at least a trace". -->
+    <string name="battery_d_vpn_tiny">VPN: at least a trace of one core</string>
     <string name="battery_d_fwd_tiny">Forwarding: under %1$s of one core</string>
     <string name="battery_d_other_tiny">Other: under %1$s of one core</string>
     <!-- %1$d = the number of reconnects, %2$s = reconnects an hour (a decimal). The one and other
