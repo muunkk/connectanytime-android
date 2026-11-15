@@ -69,6 +69,8 @@ class ConnectVpnService : VpnService() {
     private var server = ""
     private var user = ""
     private var foreground = false
+    /** Why the service itself ended the current run, to log instead of OpenConnect's errno. */
+    private var endedOnPurpose: String? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         latestStartId = startId
@@ -156,20 +158,25 @@ class ConnectVpnService : VpnService() {
             log(getString(R.string.connecting_server, server, if (manual) "manual" else "auto"))
             state("Connecting… approve Duo on your phone")
             var saved = savedSession()
+            var refused = false
             if (saved != null) {
                 for (attempt in 1..4) {
                     refreshNetwork()
                     val result = resume(checkNotNull(saved))
                     if (result == 0) break
                     checkNotStopping()
-                    if (result == NativeBridge.SESSION_ENDED) { store.clearSession(); saved = null; break }
+                    if (result == NativeBridge.SESSION_ENDED) { store.clearSession(); saved = null; refused = true; break }
                     if (manual || manualRequested) break
                     if (attempt == 4) error(getString(R.string.unreachable))
                     pause(attempt * 5_000L)
                 }
             }
             if (session == 0L) {
-                check(StartRule.mayLogin(manual || manualRequested, store.disconnected)) { StartRule.REFUSAL }
+                val mayLogin = StartRule.mayLogin(manual || manualRequested, store.disconnected)
+                // An automatic start (after an update, a restart, Always-on) whose session was
+                // refused: say so, as a rejoin does, rather than leave the VPN quietly off.
+                if (StartRule.noticeEnded(refused, mayLogin)) Notices.ended(this)
+                check(mayLogin) { StartRule.REFUSAL }
                 val password = store.password() ?: error(getString(R.string.save_account))
                 for (attempt in 1..3) {
                     checkNotStopping()
@@ -309,13 +316,16 @@ class ConnectVpnService : VpnService() {
     private fun run() {
         val s = session
         val fd = checkNotNull(tuns.current()).fd
+        endedOnPurpose = null
         Thread({
             val result = native.run(s, fd)
             queue.execute {
-                // Before the native state goes: the server may hold a key newer than the
-                // saved one (a reconnect got its 200, then failed). saveSession still
-                // clears it after logout or Disconnect.
-                if (RunEnd.keepsSession(result)) {
+                // Before the native state goes, however the run ended: the server may hold a
+                // key newer than the saved one (a reconnect got its 200, then failed), and
+                // errno can't tell a detach from a logout. saveSession clears the session
+                // after logout or Disconnect; one the server ended gets a 401 on the next
+                // rejoin, which clears it.
+                if (s != 0L && session == s) {
                     try { saveSession(store.session()) } catch (e: Exception) { log(getString(R.string.save_session_failed, safeMessage(e))) }
                 }
                 freeSession()
@@ -323,7 +333,9 @@ class ConnectVpnService : VpnService() {
                 else if (givingUp) finish(getString(R.string.long_unreachable))
                 else {
                     // OpenConnect returns -errno; say what it means rather than a bare number.
-                    log(getString(R.string.connection_ended, if (result < 0) android.system.Os.strerror(-result) else "closed by the server"))
+                    // Not when the service ended it: a detach mid-reconnect reads as EINTR.
+                    log(endedOnPurpose ?: getString(R.string.connection_ended, if (result < 0) android.system.Os.strerror(-result) else "closed by the server"))
+                    endedOnPurpose = null
                     scheduleRejoin()
                 }
             }
@@ -381,6 +393,7 @@ class ConnectVpnService : VpnService() {
                 // Only if Android refused the interface. End this run (it saves the session
                 // as it ends); rejoining builds a new interface.
                 log(getString(R.string.switch_failed, safeMessage(e)))
+                endedOnPurpose = getString(R.string.ended_for_interface)
                 command(NativeBridge.DETACH)
                 return
             }
@@ -557,7 +570,7 @@ class ConnectVpnService : VpnService() {
         stopForeground(STOP_FOREGROUND_REMOVE)
         // Leave nothing from this run for a restart in the same instance.
         installed = null; serverConfig = null; networkBaseline = NetworkBaseline(); online = false; underlying = null
-        down = false; downOnline = 0; givingUp = false
+        down = false; downOnline = 0; givingUp = false; endedOnPurpose = null
         backoff.reset()
         main.post {
             val pending = pendingConnect

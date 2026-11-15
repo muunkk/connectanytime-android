@@ -101,6 +101,9 @@ object RunStamp {
 object StartRule {
     const val REFUSAL = "The VPN session has ended. Tap Connect in ConnectAnytime to log in again."
     fun mayLogin(manual: Boolean, disconnected: Boolean) = manual && !disconnected
+    /** A start whose saved session the server refused, and that can't log in instead:
+     *  post "VPN session ended", as a rejoin does. */
+    fun noticeEnded(refused: Boolean, mayLogin: Boolean) = refused && !mayLogin
     fun refusal(manual: Boolean, hasSession: Boolean, disconnected: Boolean): String? =
         if ((!manual && disconnected) || (!hasSession && !mayLogin(manual, disconnected))) REFUSAL else null
 }
@@ -253,14 +256,4 @@ class TunHandoff<T : Any>(private val close: (T) -> Unit) {
     }
 
     private fun closeRetired() { retired.forEach(close); retired.clear() }
-}
-
-/** How an OpenConnect run ended (its -errno), as the service handles it. */
-object RunEnd {
-    // Linux errno values; OpenConnect's mainloop returns them negated.
-    private const val EPERM = 1 // 401: the server ended the session
-    private const val EINTR = 4 // OC_CMD_CANCEL: logged out
-    private const val EPIPE = 32 // the server terminated the session
-    /** Whether the session may still be rejoined, so what the run last held is worth saving. */
-    fun keepsSession(result: Int) = result != -EPERM && result != -EINTR && result != -EPIPE
 }

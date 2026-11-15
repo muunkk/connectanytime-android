@@ -211,14 +211,13 @@ class LogicTest {
         assertEquals(emptyList<String>(), closed) // ...nor closes anything in use
         assertEquals("e", tuns.current())
     }
-    @Test fun onlyAnEndedSessionIsntSavedWhenARunEnds() {
-        assertFalse(RunEnd.keepsSession(-1 * 1)) // EPERM: 401
-        assertFalse(RunEnd.keepsSession(-4)) // EINTR: logged out
-        assertFalse(RunEnd.keepsSession(-32)) // EPIPE: the server terminated it
-        assertTrue(RunEnd.keepsSession(-103)) // ECONNABORTED: detached (OS stop, give-up)
-        assertTrue(RunEnd.keepsSession(-110)) // ETIMEDOUT
-        assertTrue(RunEnd.keepsSession(-1 * 5)) // EIO
-        assertTrue(RunEnd.keepsSession(-22)) // EINVAL
+    @Test fun anAutomaticStartWhoseSessionWasRefusedSaysSo() {
+        // 0.1.3's saved session after updating: refused, and an automatic start can't log in.
+        assertTrue(StartRule.noticeEnded(refused = true, mayLogin = StartRule.mayLogin(manual = false, disconnected = false)))
+        // Tapping Connect logs in instead, so no notice.
+        assertFalse(StartRule.noticeEnded(refused = true, mayLogin = StartRule.mayLogin(manual = true, disconnected = false)))
+        // No saved session to refuse: onStartCommand's refusal counting handles that.
+        assertFalse(StartRule.noticeEnded(refused = false, mayLogin = false))
     }
     @Test fun aRunThatEndsBeforeSwitchingLeavesTheNewestInterface() {
         val closed = mutableListOf<String>()
