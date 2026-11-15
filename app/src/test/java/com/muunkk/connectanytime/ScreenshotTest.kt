@@ -333,11 +333,12 @@ class ScreenshotTest(private val dark: Boolean) {
     }
 
     // ---- Battery drain ----
-    private fun battery(status: BatteryStatus, report: BatteryReport?, fontScale: Float? = null, cutout: WindowInsets? = null) {
+    private fun battery(status: BatteryStatus, report: BatteryReport?, fontScale: Float? = null, cutout: WindowInsets? = null,
+        problem: BatteryProblem? = null) {
         compose.setContent { ConnectTheme(dark = dark, dynamicColor = false) {
             val density = LocalDensity.current
             CompositionLocalProvider(LocalDensity provides Density(density.density, fontScale ?: density.fontScale), LocalCutoutInsets provides cutout) {
-                BatteryContent(app.store, status, report, false, {}, {}, {}, {}, {})
+                BatteryContent(app.store, status, report, false, {}, {}, {}, {}, {}, problem)
             }
         } }
         compose.waitForIdle()
@@ -366,6 +367,9 @@ class ScreenshotTest(private val dark: Boolean) {
         battery(BatteryStatus.Measuring, BatteryFakes.oneSide()); scrollTo("battery-side-baseline"); save("battery-one-side")
     }
     @Test fun batteryCouldNotSave() { battery(BatteryStatus.CouldNotSave, BatteryFakes.notReady()); save("battery-could-not-save") }
+    @Test fun batteryStartFailed() {
+        battery(BatteryStatus.CouldNotSave, BatteryFakes.notReady(), problem = BatteryProblem.StartFailed); save("battery-start-failed")
+    }
     @Test fun batteryPausedCharging() { battery(BatteryStatus.PausedCharging, BatteryFakes.compared()); save("battery-paused-charging") }
     @Test fun homeBatteryCouldNotSave() {
         account(); compose.setContent { ConnectTheme(dark = dark, dynamicColor = false) {
@@ -373,6 +377,21 @@ class ScreenshotTest(private val dark: Boolean) {
         } }
         compose.onNodeWithTag("battery-row").performScrollTo()
         save("home-battery-could-not-save")
+    }
+    @Test fun homeBatteryStartFailed() {
+        account(); compose.setContent { ConnectTheme(dark = dark, dynamicColor = false) {
+            HomeScreen(app.store, VpnState("Connected", busy = true, connected = true), false, {}, {}, {}, {},
+                battery = BatteryStatus.CouldNotSave, batteryProblem = BatteryProblem.StartFailed)
+        } }
+        compose.onNodeWithTag("battery-row").performScrollTo()
+        save("home-battery-start-failed")
+    }
+    @Test fun homeBatteryOff() {
+        account(); compose.setContent { ConnectTheme(dark = dark, dynamicColor = false) {
+            HomeScreen(app.store, VpnState(), false, {}, {}, {}, {})
+        } }
+        compose.onNodeWithTag("battery-row").performScrollTo()
+        save("home-battery-off")
     }
     @Test @Config(qualifiers = "w891dp-h411dp-xhdpi") fun homeBatteryCouldNotSaveWide() {
         account(); compose.setContent { ConnectTheme(dark = dark, dynamicColor = false) {

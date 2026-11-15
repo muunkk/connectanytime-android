@@ -309,20 +309,24 @@
     <string name="battery_status_save_failed_home">Couldn’t save measurements. Open to retry</string>
     <string name="battery_status_problem">Couldn’t save</string>
     <string name="battery_status_problem_spoken">Couldn’t save measurements. The Try saving again button is below.</string>
+    <string name="battery_status_start_failed_home">Couldn’t start measuring. Open to retry</string>
+    <string name="battery_status_start_problem">Couldn’t start</string>
+    <string name="battery_status_start_problem_spoken">Couldn’t start measuring. The Try again button is below.</string>
     <string name="battery_status_auto">Stopped after 7 days</string>
     <string name="battery_state_off">Off</string>
     <string name="battery_state_measuring">On, measuring</string>
     <string name="battery_state_paused_vpn">On, paused: the VPN is off</string>
     <string name="battery_state_paused_charging">On, paused while charging</string>
     <string name="battery_state_save_failed">On, couldn’t save</string>
+    <string name="battery_state_start_failed">On, couldn’t start</string>
     <string name="battery_state_auto">Off, stopped after 7 days</string>
     <!-- Home row, spoken as one: "Battery drain, measuring". -->
     <string name="battery_home_spoken">%1$s, %2$s</string>
-    <string name="battery_home_spoken_off">off</string>
     <string name="battery_home_spoken_measuring">measuring</string>
     <string name="battery_home_spoken_paused_vpn">paused: the VPN is off</string>
     <string name="battery_home_spoken_paused_charging">paused while charging</string>
     <string name="battery_home_spoken_save_failed">on, couldn’t save</string>
+    <string name="battery_home_spoken_start_failed">on, couldn’t start</string>
     <string name="battery_home_spoken_auto">stopped after 7 days</string>
     <!-- Subtitle: %1$s = measured time, %2$s = the date range. -->
     <string name="battery_subtitle_on">%1$s measured · %2$s</string>
@@ -348,6 +352,9 @@
     <string name="battery_save_failed">Couldn’t save measurements</string>
     <string name="battery_save_failed_help">Recent measurements are kept in memory for now. Older ones may be lost.</string>
     <string name="battery_retry">Try saving again</string>
+    <string name="battery_start_failed">Couldn’t start measuring</string>
+    <string name="battery_start_failed_help">Something on this phone stopped the measurement from starting.</string>
+    <string name="battery_start_retry">Try again</string>
     <!-- State panel. -->
     <string name="battery_off_title">Not measuring yet</string>
     <string name="battery_off_help">Turn this on, then use the phone as usual with the VPN on. It records battery charge, temperature, screen on or off, the network type, the app’s processor time and traffic totals. No sites, addresses or names of connected devices. Exports include your phone’s model and Android version.</string>

@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -65,13 +66,14 @@ class BatteryScreenTest {
     }
     private var status by mutableStateOf(BatteryStatus.Off)
     private var report by mutableStateOf<BatteryReport?>(BatteryReport())
+    private var problem by mutableStateOf<BatteryProblem?>(null)
     private var retried = 0
     /** False: the toggle goes nowhere (the status doesn't change). */
     private var toggleTakes = true
     private fun show() {
         compose.setContent { ConnectTheme { BatteryContent(app.store, status, report, false, {}, onToggle = { on ->
             if (toggleTakes) status = if (on) BatteryStatus.PausedVpnOff else BatteryStatus.Off
-        }, onClear = {}, onRetry = { retried++ }, onShare = {}) } }
+        }, onClear = {}, onRetry = { retried++ }, onShare = {}, problem = problem) } }
         compose.waitForIdle()
     }
     private val switch get() = compose.onNodeWithTag("battery-switch")
@@ -100,13 +102,16 @@ class BatteryScreenTest {
         status = BatteryStatus.PausedCharging; compose.waitForIdle()
         line.assert(polite).assert(says("Paused while charging"))
         line.assertIsDisplayed().assertHeightIsAtLeast(48.dp)
-        // The user's own toggle is announced by the switch: the line empties, and stays empty.
+        // The user's own toggle is announced by the switch: that change drops the live region,
+        // but the line still says what it shows.
         switch.performClick(); compose.waitForIdle()
         assertEquals(BatteryStatus.Off, status)
-        line.assert(polite).assert(says(""))
+        line.assert(noLiveRegion).assert(says(""))
         switch.performClick(); compose.waitForIdle()
         assertEquals(BatteryStatus.PausedVpnOff, status)
-        line.assert(polite).assert(says(""))
+        line.assert(noLiveRegion).assert(says("Paused: the VPN is off"))
+        compose.onNodeWithText("Paused: the VPN is off", useUnmergedTree = true).assertIsDisplayed()
+        // The next change the phone makes is announced again.
         status = BatteryStatus.CouldNotSave; compose.waitForIdle()
         line.assert(polite).assert(says("Couldn’t save measurements. The Try saving again button is below."))
         // The same node throughout: its content changed, it never reappeared.
@@ -244,10 +249,47 @@ class BatteryScreenTest {
         compose.onNodeWithText("Couldn’t save measurements").assertExists()
         val retry = compose.onNodeWithTag("battery-retry").assertHasClickAction()
         retry.assertHeightIsAtLeast(48.dp)
+        retry.assertTextEquals("Try saving again")
+        // The spoken status says the button "is below": it sits under the text.
+        val help = compose.onNodeWithText(app.getString(R.string.battery_save_failed_help), useUnmergedTree = true).getBoundsInRoot()
+        assertTrue("${retry.getBoundsInRoot()} under $help", retry.getBoundsInRoot().top >= help.bottom)
         retry.performClick()
         assertEquals(1, retried)
         switch.assertIsOn()
         assertTrue(compose.onAllNodesWithText("Problem", substring = true).fetchSemanticsNodes().isEmpty())
+    }
+    @Test fun startFailureSaysItCouldNotStartWithTryAgainBelow() {
+        status = BatteryStatus.CouldNotSave; problem = BatteryProblem.StartFailed; report = BatteryFakes.notReady(); show()
+        line.assert(polite).assert(says("Couldn’t start measuring. The Try again button is below."))
+        switch.assert(stateDescription("On, couldn’t start"))
+        compose.onNodeWithText("Couldn’t start measuring").assertExists()
+        compose.onNodeWithText("Couldn’t save measurements").assertDoesNotExist()
+        val help = compose.onNodeWithText("Something on this phone stopped the measurement from starting.", useUnmergedTree = true)
+            .assertExists().getBoundsInRoot()
+        val retry = compose.onNodeWithTag("battery-retry").assertTextEquals("Try again").assertHeightIsAtLeast(48.dp)
+        assertTrue("${retry.getBoundsInRoot()} under $help", retry.getBoundsInRoot().top >= help.bottom)
+        retry.performClick()
+        assertEquals(1, retried)
+        // The core's reason moves on to a save problem: the copy follows.
+        problem = BatteryProblem.SaveFailed; compose.waitForIdle()
+        line.assert(says("Couldn’t save measurements. The Try saving again button is below."))
+        compose.onNodeWithTag("battery-retry").assertTextEquals("Try saving again")
+    }
+    @OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
+    @Test fun moreDetailHeaderAndRowsAreOneGroup() {
+        status = BatteryStatus.Measuring; report = BatteryFakes.compared(); show()
+        scrollTo(hasTestTag("battery-more"))
+        val inGroup = hasAnyAncestor(hasTestTag("battery-more-group"))
+        compose.onNodeWithTag("battery-more").assert(inGroup)
+        compose.onNodeWithTag("battery-detail-0").assertDoesNotExist()
+        compose.onNodeWithTag("battery-more").performSemanticsAction(SemanticsActions.Expand); compose.waitForIdle()
+        scrollTo(hasTestTag("battery-detail-0"))
+        val header = compose.onNodeWithTag("battery-more").getBoundsInRoot()
+        val first = compose.onNodeWithTag("battery-detail-0").assert(inGroup).getBoundsInRoot()
+        // Right under the header, a segment gap apart, as the next segment of the same group.
+        assertEquals((header.bottom + ListItemDefaults.SegmentedGap).value, first.top.value, 1f)
+        compose.onNodeWithTag("battery-more").performSemanticsAction(SemanticsActions.Collapse); compose.waitForIdle()
+        compose.onNodeWithTag("battery-detail-0").assertDoesNotExist()
     }
     @Test fun heroLabelIsTheHeadingAndTheValueIsReadAsOne() {
         status = BatteryStatus.Measuring; report = BatteryFakes.compared(); show()
@@ -450,6 +492,18 @@ class BatteryScreenTest {
         compose.onNodeWithText("Couldn’t save measurements. Open to retry", useUnmergedTree = true).assertExists()
         row.performClick()
         assertEquals(1, opened)
+    }
+    @Test fun homeRowWhenOffSpeaksTitleAndHelp() {
+        compose.setContent { ConnectTheme { HomeScreen(app.store, VpnState(), false, {}, {}, {}, {}) } }
+        compose.onNodeWithTag("battery-row").performScrollTo()
+            .assert(hasContentDescription("Battery drain, How fast the phone’s battery drains while the VPN is on."))
+    }
+    @Test fun homeRowSaysAStartFailure() {
+        compose.setContent { ConnectTheme { HomeScreen(app.store, VpnState(), false, {}, {}, {}, {},
+            battery = BatteryStatus.CouldNotSave, batteryProblem = BatteryProblem.StartFailed) } }
+        compose.onNodeWithTag("battery-row").performScrollTo().assert(hasContentDescription("Battery drain, on, couldn’t start"))
+        compose.onNodeWithText("Couldn’t start measuring. Open to retry", useUnmergedTree = true).assertExists()
+        compose.onNodeWithText("Couldn’t save measurements. Open to retry", useUnmergedTree = true).assertDoesNotExist()
     }
 }
 

@@ -125,6 +125,7 @@ class MainActivity : ComponentActivity() {
                 var screen by rememberSaveable { mutableStateOf(Screen.Home) }
                 BackHandler(enabled = screen != Screen.Home) { screen = Screen.Home }
                 val battery by app.battery.status.collectAsStateWithLifecycle()
+                val batteryProblem by app.battery.problem.collectAsStateWithLifecycle()
                 val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
                 val spatial = MaterialTheme.motionScheme.defaultSpatialSpec<IntOffset>()
                 val effects = MaterialTheme.motionScheme.defaultEffectsSpec<Float>()
@@ -145,7 +146,7 @@ class MainActivity : ComponentActivity() {
                             onStayChanged = {
                                 if (state.busy) startService(Intent(this@MainActivity, ConnectVpnService::class.java).setAction(ConnectVpnService.ARM))
                             }, update = update, onCheckUpdate = app.updater::check, onInstallUpdate = app.updater::install,
-                            battery = battery, onBattery = { screen = Screen.Battery })
+                            battery = battery, onBattery = { screen = Screen.Battery }, batteryProblem = batteryProblem)
                     }
                 }
                 // Only while it's off: it may have been turned on elsewhere meanwhile.

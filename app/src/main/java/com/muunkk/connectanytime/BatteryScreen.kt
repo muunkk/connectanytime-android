@@ -12,6 +12,7 @@ import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.expandVertically
@@ -99,30 +100,37 @@ internal class BatteryFormat(private val context: Context, val locale: Locale = 
 
 internal fun uplinkTitle(uplink: Uplink?) = uplink?.let(::uplinkShortName) ?: R.string.battery_uplink_short_none
 
-internal fun batteryStatusText(status: BatteryStatus) = when (status) {
+/** CouldNotSave covers two problems; without a reason from the core it reads as a save failure. */
+private val BatteryProblem?.startFailed get() = this == BatteryProblem.StartFailed
+
+internal fun batteryStatusText(status: BatteryStatus, problem: BatteryProblem? = null) = when (status) {
     BatteryStatus.Off -> R.string.battery_home_help
     BatteryStatus.Measuring -> R.string.battery_status_measuring
     BatteryStatus.PausedVpnOff -> R.string.battery_status_paused_vpn
     BatteryStatus.PausedCharging -> R.string.battery_status_paused_charging
-    BatteryStatus.CouldNotSave -> R.string.battery_status_problem
+    BatteryStatus.CouldNotSave -> if (problem.startFailed) R.string.battery_status_start_problem else R.string.battery_status_problem
     BatteryStatus.AutoStopped -> R.string.battery_status_auto
 }
-private fun stateDescriptionOf(status: BatteryStatus) = when (status) {
+private fun stateDescriptionOf(status: BatteryStatus, problem: BatteryProblem?) = when (status) {
     BatteryStatus.Off -> R.string.battery_state_off
     BatteryStatus.Measuring -> R.string.battery_state_measuring
     BatteryStatus.PausedVpnOff -> R.string.battery_state_paused_vpn
     BatteryStatus.PausedCharging -> R.string.battery_state_paused_charging
-    BatteryStatus.CouldNotSave -> R.string.battery_state_save_failed
+    BatteryStatus.CouldNotSave -> if (problem.startFailed) R.string.battery_state_start_failed else R.string.battery_state_save_failed
     BatteryStatus.AutoStopped -> R.string.battery_state_auto
 }
-internal fun batteryHomeSpoken(status: BatteryStatus) = when (status) {
-    BatteryStatus.Off -> R.string.battery_home_spoken_off
+/** Home's spoken status, after the title. Off reads the row's help, as it shows. */
+internal fun batteryHomeSpoken(status: BatteryStatus, problem: BatteryProblem? = null) = when (status) {
+    BatteryStatus.Off -> R.string.battery_home_help
     BatteryStatus.Measuring -> R.string.battery_home_spoken_measuring
     BatteryStatus.PausedVpnOff -> R.string.battery_home_spoken_paused_vpn
     BatteryStatus.PausedCharging -> R.string.battery_home_spoken_paused_charging
-    BatteryStatus.CouldNotSave -> R.string.battery_home_spoken_save_failed
+    BatteryStatus.CouldNotSave -> if (problem.startFailed) R.string.battery_home_spoken_start_failed else R.string.battery_home_spoken_save_failed
     BatteryStatus.AutoStopped -> R.string.battery_home_spoken_auto
 }
+/** Home's shown status when there is a problem. */
+internal fun batteryHomeProblem(problem: BatteryProblem?) =
+    if (problem.startFailed) R.string.battery_status_start_failed_home else R.string.battery_status_save_failed_home
 private fun statusGlyph(status: BatteryStatus) = when (status) {
     BatteryStatus.PausedCharging -> R.drawable.ic_charging
     BatteryStatus.PausedVpnOff -> R.drawable.ic_vpn
@@ -190,6 +198,7 @@ fun BatteryScreen(app: ConnectApp, onBack: () -> Unit, onShare: (File, String) -
     val report by battery.report.collectAsStateWithLifecycle()
     val autoStopped by battery.autoStopped.collectAsStateWithLifecycle()
     val clearing by battery.clearing.collectAsStateWithLifecycle()
+    val problem by battery.problem.collectAsStateWithLifecycle()
     val context = LocalContext.current
     // The auto-stop copy stays for the visit, even after the pref is cleared on leaving.
     var latched by rememberSaveable { mutableStateOf(false) }
@@ -197,7 +206,7 @@ fun BatteryScreen(app: ConnectApp, onBack: () -> Unit, onShare: (File, String) -
     LaunchedEffect(Unit) { battery.refresh() }
     DisposableEffect(Unit) { onDispose { if (app.store.batteryAutoStopped) app.store.batteryAutoStopped = false } }
     val shown = if (latched && !status.on) BatteryStatus.AutoStopped else status
-    BatteryContent(app.store, shown, report, clearing, onBack,
+    BatteryContent(app.store, shown, report, clearing, onBack, problem = problem,
         onToggle = { on -> if (on) latched = false; battery.setEnabled(on) },
         onClear = { latched = false; battery.clear() },
         onRetry = battery::retrySave,
@@ -248,7 +257,7 @@ internal fun ReadableTopBar(bar: @Composable (WindowInsets) -> Unit) {
 /** Stateless: everything comes in as values, so tests can drive any state. */
 @Composable
 internal fun BatteryContent(store: Store, status: BatteryStatus, report: BatteryReport?, clearing: Boolean, onBack: () -> Unit,
-    onToggle: (Boolean) -> Unit, onClear: () -> Unit, onRetry: () -> Unit, onShare: () -> Unit) {
+    onToggle: (Boolean) -> Unit, onClear: () -> Unit, onRetry: () -> Unit, onShare: () -> Unit, problem: BatteryProblem? = null) {
     val context = LocalContext.current
     val configuration = LocalConfiguration.current
     val f = remember(context, configuration) { BatteryFormat(context) }
@@ -292,13 +301,13 @@ internal fun BatteryContent(store: Store, status: BatteryStatus, report: Battery
         ReadableLazyColumn(padding) {
             item(key = "switch") {
                 Column(Modifier.padding(top = 8.dp)) {
-                    Group(1) { SwitchRow(status) { expectOn = !status.on; toggles++; onToggle(!status.on) } }
+                    Group(1) { SwitchRow(status, problem) { expectOn = !status.on; toggles++; onToggle(!status.on) } }
                 }
             }
             // Always there, even when Off (empty then), so the live region is never a node that
             // appears already live.
-            item(key = "status") { StatusLine(status, current) }
-            if (status == BatteryStatus.CouldNotSave) item(key = "retry") { SaveFailedRow(onRetry) }
+            item(key = "status") { StatusLine(status, problem, current) }
+            if (status == BatteryStatus.CouldNotSave) item(key = "retry") { ProblemRow(problem, onRetry) }
             if (report == null) {
                 item(key = "loading") {
                     Box(Modifier.fillMaxWidth().padding(vertical = 48.dp), contentAlignment = Alignment.Center) {
@@ -364,8 +373,9 @@ internal enum class StatusAnnounce { Quiet, Changed, Resumed }
 
 /** Who caused the latest status change, and how many changes so far. Immutable: [next] works
  *  out the following state. `expectOn` is the on/off state the user just toggled to; a change
- *  that lands on it is theirs, anything else is the system's. */
-internal data class StatusAnnouncement(val last: BatteryStatus, val announce: StatusAnnounce = StatusAnnounce.Quiet, val changes: Int = 0) {
+ *  that lands on it is theirs ([byUser]), anything else is the system's. */
+internal data class StatusAnnouncement(val last: BatteryStatus, val announce: StatusAnnounce = StatusAnnounce.Quiet, val changes: Int = 0,
+    val byUser: Boolean = false) {
     fun next(status: BatteryStatus, expectOn: Boolean?): StatusAnnouncement {
         if (status == last) return this
         val system = expectOn != status.on
@@ -375,24 +385,28 @@ internal data class StatusAnnouncement(val last: BatteryStatus, val announce: St
             status == BatteryStatus.Measuring -> if (paused) StatusAnnounce.Resumed else StatusAnnounce.Quiet
             else -> StatusAnnounce.Changed
         }
-        return StatusAnnouncement(status, announce, changes + 1)
+        return StatusAnnouncement(status, announce, changes + 1, byUser = !system)
     }
-    /** What the status line's live region holds, or null for nothing. It changes only when the
-     *  phone caused the change: the user's own toggle is said by the switch, and so is plain
-     *  Measuring, so those leave it empty rather than repeat the switch. */
-    val spoken: Int? get() = when {
-        last == BatteryStatus.Off -> null
-        last == BatteryStatus.Measuring -> if (announce == StatusAnnounce.Resumed) R.string.battery_status_resumed else null
-        changes > 0 && announce == StatusAnnounce.Quiet -> null
-        last == BatteryStatus.CouldNotSave -> R.string.battery_status_problem_spoken
+    /** Whether the line is a live region for this change. The user's own toggle is already said
+     *  by the switch, so that one change isn't announced again: the line drops its live region
+     *  (keeping its text) until the next change the phone makes. */
+    val live: Boolean get() = !byUser
+    /** What the status line says to TalkBack, or null for nothing: the status itself whenever
+     *  it's paused, a problem or auto-stopped. Plain Measuring and Off say nothing (the switch
+     *  says them), except Measuring again after a pause the phone ended. */
+    fun spoken(problem: BatteryProblem?): Int? = when (last) {
+        BatteryStatus.Off -> null
+        BatteryStatus.Measuring -> if (announce == StatusAnnounce.Resumed) R.string.battery_status_resumed else null
+        BatteryStatus.CouldNotSave ->
+            if (problem.startFailed) R.string.battery_status_start_problem_spoken else R.string.battery_status_problem_spoken
         else -> batteryStatusText(last)
     }
 }
 
 @Composable
-private fun SwitchRow(status: BatteryStatus, onClick: () -> Unit) {
-    val state = stringResource(stateDescriptionOf(status))
-    SegmentedListItem(colors = segmentColors(), onClick = onClick, shapes = segmentShapes(0, 1),
+private fun SwitchRow(status: BatteryStatus, problem: BatteryProblem?, onClick: () -> Unit) {
+    val state = stringResource(stateDescriptionOf(status, problem))
+    SegmentedListItem(colors = segmentColors(), onClick = onClick, shapes = standaloneShapes(),
         // A switch to TalkBack, with the whole row as its touch target; the state says why it's paused.
         modifier = Modifier.testTag("battery-switch").semantics {
             role = Role.Switch; toggleableState = ToggleableState(status.on); stateDescription = state
@@ -404,8 +418,9 @@ private fun SwitchRow(status: BatteryStatus, onClick: () -> Unit) {
 /** The only live region on the screen, and one stable node in every state, so TalkBack sees its
  *  content change rather than a node that appears already live. It never ticks. */
 @Composable
-private fun StatusLine(status: BatteryStatus, announcement: StatusAnnouncement) {
-    val spoken = announcement.spoken?.let { stringResource(it) } ?: ""
+private fun StatusLine(status: BatteryStatus, problem: BatteryProblem?, announcement: StatusAnnouncement) {
+    val spoken = announcement.spoken(problem)?.let { stringResource(it) } ?: ""
+    val live = announcement.live
     val error = status == BatteryStatus.CouldNotSave
     val color = if (error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
     // Lines that can be spoken get a full touch-exploration target.
@@ -417,35 +432,43 @@ private fun StatusLine(status: BatteryStatus, announcement: StatusAnnouncement) 
         else -> Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp)
     }
     Row(Modifier.fillMaxWidth().then(layout).testTag("battery-status")
-        .clearAndSetSemantics { contentDescription = spoken; liveRegion = LiveRegionMode.Polite },
+        .clearAndSetSemantics { contentDescription = spoken; if (live) liveRegion = LiveRegionMode.Polite },
         horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
         if (shown) {
             // Sized with the text so it scales with the font size.
             Icon(painterResource(statusGlyph(status)), contentDescription = null, tint = color,
                 modifier = Modifier.size(with(LocalDensity.current) { 18.sp.toDp() }))
-            Text(stringResource(batteryStatusText(status)), style = MaterialTheme.typography.bodyMedium, color = color)
+            Text(stringResource(batteryStatusText(status, problem)), style = MaterialTheme.typography.bodyMedium, color = color)
         }
     }
 }
 
+/** A row that stands alone as a message (the switch, the problem row): large corners all round,
+ *  where a list group's rows take segmentedShapes like Home's. */
 @Composable
-private fun SaveFailedRow(onRetry: () -> Unit) {
+private fun standaloneShapes(): ListItemShapes = ListItemDefaults.segmentedShapes(0, 1).copy(shape = MaterialTheme.shapes.large)
+
+/** The CouldNotSave row: why, and the retry button under the text (the spoken status says "below"). */
+@Composable
+private fun ProblemRow(problem: BatteryProblem?, onRetry: () -> Unit) {
+    val start = problem.startFailed
     Column(Modifier.padding(top = 8.dp)) {
         Group(1) {
-            FieldSegment(0, 1, padded = false, shape = segmentShape(0, 1)) {
+            FieldSegment(0, 1, padded = false, shape = standaloneShapes().shape) {
                 ListItem(modifier = Modifier.testTag("battery-save-failed"),
-                    headlineContent = { Text(stringResource(R.string.battery_save_failed), color = MaterialTheme.colorScheme.error) },
+                    headlineContent = { Text(stringResource(if (start) R.string.battery_start_failed else R.string.battery_save_failed),
+                        color = MaterialTheme.colorScheme.error) },
                     leadingContent = { Icon(painterResource(R.drawable.ic_error), contentDescription = null, tint = MaterialTheme.colorScheme.error) },
                     supportingContent = {
                         // Always under the text, starting where it starts (the button's own
                         // padding is pulled back so its label lines up).
                         Column(horizontalAlignment = Alignment.Start) {
-                            Text(stringResource(R.string.battery_save_failed_help))
+                            Text(stringResource(if (start) R.string.battery_start_failed_help else R.string.battery_save_failed_help))
                             val inset = ButtonDefaults.TextButtonContentPadding
                             TextButton(onClick = onRetry, shapes = ButtonDefaults.shapes(), contentPadding = inset,
                                 modifier = Modifier.offset(x = -inset.calculateLeftPadding(LayoutDirection.Ltr))
                                     .heightIn(min = 48.dp).testTag("battery-retry")) {
-                                Text(stringResource(R.string.battery_retry))
+                                Text(stringResource(if (start) R.string.battery_start_retry else R.string.battery_retry))
                             }
                         }
                     },
@@ -515,7 +538,7 @@ private fun Hero(f: BatteryFormat, report: BatteryReport) {
 private fun InfoRow(index: Int, count: Int, headline: String, supporting: List<String> = emptyList(), value: String? = null,
     spoken: String? = null, leading: Int? = null, tag: String? = null, stack: Boolean = false) {
     val stacked = stack || LocalDensity.current.fontScale >= 1.5f
-    FieldSegment(index, count, padded = false, shape = segmentShape(index, count)) {
+    FieldSegment(index, count, padded = false) {
         var modifier: Modifier = Modifier
         if (tag != null) modifier = modifier.testTag(tag)
         if (spoken != null) modifier = modifier.clearAndSetSemantics { contentDescription = spoken }
@@ -706,23 +729,26 @@ private fun MoreDetail(f: BatteryFormat, report: BatteryReport) {
     val target = if (expanded) (if (rtl) -90f else 90f) else 0f
     val angle by animateFloatAsState(target, if (reduced) snap() else MaterialTheme.motionScheme.defaultSpatialSpec(), label = "chevron")
     val state = stringResource(if (expanded) R.string.battery_expanded else R.string.battery_collapsed)
-    Column(Modifier.padding(top = 24.dp)) {
-        Group(1) {
-            SegmentedListItem(colors = segmentColors(), onClick = { expanded = !expanded }, shapes = segmentShapes(0, 1),
-                modifier = Modifier.heightIn(min = 56.dp).testTag("battery-more").semantics {
-                    role = Role.Button; stateDescription = state
-                    if (expanded) collapse { expanded = false; true } else expand { expanded = true; true }
-                },
-                trailingContent = { Icon(painterResource(R.drawable.ic_chevron_right), contentDescription = null, modifier = Modifier.rotate(angle)) }) {
-                Text(stringResource(R.string.battery_more))
-            }
+    val rows = detailRows(f, report)
+    // While the rows show at all (expanding, open or collapsing) the header is segment 0 of
+    // rows + 1 in one group with them; once they're gone it's a group of one.
+    val visibility = remember { MutableTransitionState(expanded) }
+    visibility.targetState = expanded
+    val count = if (visibility.currentState || visibility.targetState) rows.size + 1 else 1
+    Column(Modifier.padding(top = 24.dp).testTag("battery-more-group")) {
+        SegmentedListItem(colors = segmentColors(), onClick = { expanded = !expanded }, shapes = ListItemDefaults.segmentedShapes(0, count),
+            modifier = Modifier.heightIn(min = 56.dp).testTag("battery-more").semantics {
+                role = Role.Button; stateDescription = state
+                if (expanded) collapse { expanded = false; true } else expand { expanded = true; true }
+            },
+            trailingContent = { Icon(painterResource(R.drawable.ic_chevron_right), contentDescription = null, modifier = Modifier.rotate(angle)) }) {
+            Text(stringResource(R.string.battery_more))
         }
         val motion = MaterialTheme.motionScheme
-        AnimatedVisibility(expanded, enter = if (reduced) EnterTransition.None else expandVertically(motion.defaultSpatialSpec()),
+        AnimatedVisibility(visibility, enter = if (reduced) EnterTransition.None else expandVertically(motion.defaultSpatialSpec()),
             exit = if (reduced) ExitTransition.None else shrinkVertically(motion.fastSpatialSpec())) {
-            val rows = detailRows(f, report)
-            Column(Modifier.padding(top = ListItemDefaults.SegmentedGap)) {
-                Group(rows.size) { i -> val row = rows[i]; InfoRow(i, rows.size, row.headline, row.supporting, spoken = row.spoken) }
+            Column(Modifier.padding(top = ListItemDefaults.SegmentedGap), verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)) {
+                rows.forEachIndexed { i, row -> InfoRow(i + 1, rows.size + 1, row.headline, row.supporting, spoken = row.spoken, tag = "battery-detail-$i") }
             }
         }
     }
