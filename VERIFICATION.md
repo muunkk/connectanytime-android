@@ -1138,7 +1138,46 @@ Opus 8/10 ship, GPT Sol 7/10 don't ship. Fixed:
 - StoreTest: the candidate survives the session's JSON, and 0.1.3's format reads
   with none. Robolectric has no AndroidKeyStore, so encryption isn't covered.
 
+## Council round 2 fixes
+
+Opus 8/10 ship, GPT Sol 7/10 don't ship. Fixed:
+
+- **Save on every run exit** (Sol P1 #2, Opus 1). errno can't tell the cases apart.
+  A DETACH during a reconnect's sleep or a blocking read returns -EINTR, and the
+  30-minute give-up always lands mid-reconnect. `install_vpn_opts` returns -EPERM after
+  a 200 when a netmask goes missing. So the errno exclusion (`RunEnd`) is gone: every
+  run exit saves its snapshot through `saveSession`, which clears the session instead
+  after logout or Disconnect. A session the server ended gets a 401 on the next
+  rejoin, which clears it. The save is guarded by `session == s`. The failure message
+  is now "Couldn't save the session".
+- After a failed in-place switch, the run end logs "Ended the connection to set up the
+  VPN interface again; rejoining the session", not "The connection ended (Interrupted
+  system call)".
+- **No unresolved key falls out of the saved pair** (Sol P1 #1, Opus 6). With accepted
+  key A, a CONNECT presents B and its 200 is lost. OpenConnect's own retries used to
+  rekey to C, so if C never arrived the app saved {A, C} while the server held B.
+  The patch now sets `strap_unresolved` when it sends a rekeying CONNECT and clears it
+  on a 200. While it's set, CONNECTs don't rekey: they sign with B and present B. If
+  the server holds B, that succeeds and B becomes accepted. If it holds A, it gets a
+  401, the run ends, and the saved {A, B} rejoins with A.
+- **First start after updating from 0.1.3** (Opus 2). The automatic start's 401 left
+  the VPN quietly off. Now a start whose saved session is refused, and that can't log
+  in, posts the same "VPN session ended" notice as a rejoin (`StartRule.noticeEnded`).
+  When automatic starts may log in is unchanged.
+
+### Round 2 checks
+
+- `scripts/test-strap-cookie.sh`: 17 checks pass. New: after an unanswered CONNECT,
+  two more attempts present the same unresolved key, and the saved pair stays
+  {accepted, unresolved}. A 200 on the retry makes it the accepted key with no
+  candidate, and the next CONNECT rekeys. Negative control: letting retries rekey
+  again fails 4 checks.
+
 ## Device checklist (0.1.4 (5))
+
+- [ ] **After installing 0.1.4, open the app and approve Duo once.** The session saved by
+      0.1.3 carries a stale key; if Stay Connected starts first, it now shows "VPN
+      session ended" instead of staying quietly off.
 
 - [ ] Connect, then cause a short blip (airplane mode for ~5 s, or walk out of Wi‑Fi
       range): the VPN shows Reconnecting… then Connected; no Duo. The log shows
@@ -1152,8 +1191,6 @@ Opus 8/10 ship, GPT Sol 7/10 don't ship. Fixed:
       without Duo.
 - [ ] After a blip and an in-process reconnect, force-stop again: it still rejoins
       without Duo (the re-saved key).
-- [ ] Note: the session saved by 0.1.3 carries the stale key, so the first start of
-      0.1.4 may need one Duo login. Expected once.
 - [ ] Disconnect still logs out, and Connect needs Duo afterwards.
 - [ ] Rarely seen, so check only if it happens: "The saved session key was refused;
       trying the newer one" followed by a successful rejoin.

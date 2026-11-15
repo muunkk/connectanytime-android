@@ -103,13 +103,15 @@ including the first after login, replaces that key on the server, but OpenConnec
 the cookie as soon as the server's 200 arrives, even if the rest of the response then
 fails. The bridge copies the cookie on OpenConnect's thread after every connect,
 resume and reconnect, and when a run ends. The service saves it after every
-in-process reconnect and, unless the session is over (401, logout, server
-termination), when a run ends, in the same encrypted store. It is never logged.
+in-process reconnect and whenever a run ends, in the same encrypted store (cleared
+instead after logout or Disconnect). It is never logged.
 
 A CONNECT can also send a new key and get no reply: the server may or may not hold
-that key. The saved session then keeps both, the accepted key and that candidate.
-A rejoin tries the accepted one, and only if it gets 401, the candidate: one more
-CONNECT at most, never a password or a Duo push. `scripts/test-strap-cookie.sh`
+that key. Until a 200 settles it, every further CONNECT presents that same key
+rather than a newer one, so the server always holds one of two keys. The saved
+session keeps both, the accepted key and that candidate. A rejoin tries the accepted
+one, and only if it gets 401, the candidate: one more CONNECT at most, never a
+password or a Duo push. `scripts/test-strap-cookie.sh`
 builds the patched OpenConnect for the Mac and runs `Vendor/tests/strap-cookie-test.c`,
 which drives the real CONNECT code over an in-memory TLS session to check both cases.
 
