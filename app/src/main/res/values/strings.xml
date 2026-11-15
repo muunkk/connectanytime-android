@@ -223,6 +223,11 @@
     <string name="widget_link_ready">On</string>
     <string name="widget_link_problem">Error</string>
     <string name="widget_hotspot_settings">Open Android\'s hotspot settings</string>
+    <string name="widget_hotspot_settings_on">Android hotspot, on. Open Android\'s hotspot settings</string>
+    <string name="widget_hotspot_settings_off">Android hotspot, off. Open Android\'s hotspot settings</string>
+    <!-- %1$s: the hotspot share button's own description (widget_share_on/off), when the settings button isn't drawn. -->
+    <string name="widget_share_hotspot_state_on">%1$s. Android hotspot, on</string>
+    <string name="widget_share_hotspot_state_off">%1$s. Android hotspot, off</string>
     <string name="widget_link_using">%1$d using</string>
     <string name="widget_link_using_many">9+ using</string>
     <string name="widget_share_on">%1$s, on. %2$s</string>

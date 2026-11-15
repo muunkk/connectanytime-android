@@ -5,6 +5,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.view.View
 import android.widget.FrameLayout
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.glance.appwidget.compose
@@ -38,6 +39,7 @@ class WidgetTest {
         ConnectApp.mutableTetherShare.value = TetherShare.Off
         ConnectApp.mutableTetherUsage.value = TetherUsage()
         ConnectApp.mutableUplink.value = null
+        ConnectApp.mutableAndroidHotspot.value = AndroidHotspot.Unknown
     }
 
     @Test fun eachLinkSaysWhatItIsDoing() {
@@ -58,6 +60,65 @@ class WidgetTest {
         val waiting = widgetModel(connected, TetherShare.Active(1080, TetherShare.Link.Waiting, TetherShare.Link.Unknown), TetherUsage(), true, true, null)
         assertEquals(WidgetLink.Waiting, waiting.usb)
         assertEquals(WidgetLink.Problem, waiting.hotspot)
+    }
+
+    @Test fun theModelCarriesAndroidsHotspotAsTheWatchDecided() {
+        for (state in AndroidHotspot.entries)
+            assertEquals(state, widgetModel(connected, TetherShare.Off, TetherUsage(), false, false, null, state).androidHotspot)
+        // Not overridden by the proxy: sharing over the hotspot while the watch is neutral (the
+        // settings just opened, or a restriction) stays neutral.
+        val sharing = TetherShare.Active(1080, hotspot = TetherShare.Link.Sharing("10.84.137.1"))
+        assertEquals(AndroidHotspot.Unknown, widgetModel(connected, sharing, TetherUsage(), false, true, null, AndroidHotspot.Unknown).androidHotspot)
+    }
+
+    /** Puts Android's hotspot in [state] the way Android does, through HotspotWatch: the widget
+     *  reads the watch again before drawing, so setting the flow directly wouldn't last. */
+    private fun hotspot(state: AndroidHotspot) {
+        fun ap(apState: Int) = android.content.Intent(WIFI_AP_STATE_CHANGED).putExtra("wifi_state", apState)
+            .putExtra("android.net.wifi.extra.WIFI_AP_MODE", AP_MODE_TETHERED)
+        // In the order Android sends them: the radio first, then Tethering.
+        val intents = when (state) {
+            AndroidHotspot.On -> listOf(ap(AP_ENABLED), android.content.Intent(TETHER_STATE_CHANGED).putStringArrayListExtra("tetherArray", arrayListOf("wlan2")))
+            AndroidHotspot.Off -> listOf(ap(AP_DISABLED))
+            AndroidHotspot.Unknown -> listOf(ap(AP_DISABLING))
+        }
+        for (intent in intents) app.sendBroadcast(intent)
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        assertEquals(state, ConnectApp.androidHotspot.value)
+    }
+
+    /** Every content description in the laid-out widget. */
+    private fun descriptions(view: View): List<String> = listOfNotNull(view.contentDescription?.toString()) +
+        if (view is android.view.ViewGroup) (0 until view.childCount).flatMap { descriptions(view.getChildAt(it)) } else emptyList()
+
+    @Test fun theHotspotButtonSaysAndroidsHotspotStateToTalkBack() {
+        val expected = mapOf(AndroidHotspot.On to R.string.widget_hotspot_settings_on, AndroidHotspot.Off to R.string.widget_hotspot_settings_off,
+            AndroidHotspot.Unknown to R.string.widget_hotspot_settings)
+        for ((state, text) in expected) for (width in listOf(180, 280)) {
+            hotspot(state)
+            val said = descriptions(laidOut(DpSize(width.dp, 110.dp)))
+            assertTrue("$state at $width: $said", app.getString(text) in said)
+            // Unknown claims nothing anywhere.
+            if (state == AndroidHotspot.Unknown) assertTrue(said.none { "Android hotspot," in it })
+        }
+        // Compact at 130%+, where the settings button isn't drawn: the hotspot share button says it.
+        RuntimeEnvironment.setFontScale(1.5f)
+        hotspot(AndroidHotspot.On)
+        val said = descriptions(laidOut(DpSize(180.dp, 110.dp)))
+        assertTrue(said.toString(), app.getString(R.string.widget_hotspot_settings_on) !in said)
+        val share = app.getString(R.string.widget_share_off, app.getString(R.string.share_hotspot_switch), app.getString(R.string.sharing_link_off))
+        assertTrue(said.toString(), app.getString(R.string.widget_share_hotspot_state_on, share) in said)
+        hotspot(AndroidHotspot.Unknown)
+        assertTrue(descriptions(laidOut(DpSize(180.dp, 110.dp))).none { "Android hotspot," in it })
+    }
+
+    @Test fun theOnDotStandsOutFromTheButtonInTheBrandPalette() {
+        // The dot is a shape cue first, but it must also be visible on the button: 3:1 (WCAG non-text).
+        fun lum(c: androidx.compose.ui.graphics.Color) = c.luminance().toDouble()
+        fun contrast(a: androidx.compose.ui.graphics.Color, b: androidx.compose.ui.graphics.Color) =
+            (maxOf(lum(a), lum(b)) + 0.05) / (minOf(lum(a), lum(b)) + 0.05)
+        for (scheme in listOf(BrandLight, BrandDark)) for (fill in listOf(scheme.secondaryContainer, scheme.surfaceVariant))
+            assertTrue("${contrast(scheme.tertiary, fill)}", contrast(scheme.tertiary, fill) >= 3.0)
     }
 
     private fun tap(action: String) =
@@ -160,6 +221,7 @@ class WidgetTest {
         for (font in listOf(1.0f, 1.15f, 1.2f, 1.25f, 1.3f, 1.5f, 2.0f)) {
             RuntimeEnvironment.setFontScale(font)
             for ((name, vpn, share) in states) for (uplink in listOf(Uplink.MobileData, Uplink.Other)) {
+                hotspot(AndroidHotspot.entries[(name.length + uplink.ordinal) % 3])
                 ConnectApp.mutableState.value = vpn
                 ConnectApp.mutableTetherShare.value = share
                 ConnectApp.mutableUplink.value = uplink
@@ -199,5 +261,34 @@ class WidgetTest {
         ConnectApp.mutableUplink.value = Uplink.WiFi
         render("widget-wide-connected-dark", DpSize(300.dp, 120.dp))
         render("widget-compact-connected-dark", DpSize(180.dp, 110.dp))
+    }
+
+    private fun rendersHotspotStates(prefix: String) {
+        app.store.shareOverHotspot = false // the share button outlined (off) next to the settings button: the closest pairing
+        for (state in AndroidHotspot.entries) {
+            hotspot(state)
+            val name = state.name.lowercase()
+            ConnectApp.mutableState.value = VpnState()
+            render("$prefix-wide-hotspot-$name", DpSize(280.dp, 110.dp))
+            render("$prefix-compact-hotspot-$name", DpSize(180.dp, 110.dp))
+            ConnectApp.mutableState.value = connected
+            ConnectApp.mutableUplink.value = Uplink.MobileData
+            render("$prefix-wide-hotspot-$name-connected", DpSize(280.dp, 110.dp))
+            render("$prefix-compact-hotspot-$name-connected", DpSize(180.dp, 110.dp))
+        }
+    }
+
+    @Test fun rendersAndroidsHotspotStates() {
+        rendersHotspotStates("widget-light")
+        RuntimeEnvironment.setQualifiers("+night")
+        rendersHotspotStates("widget-dark")
+    }
+
+    /** Android 10: the brand palette (all blues) and square corners, where only shape tells the states apart. */
+    @Config(sdk = [29])
+    @Test fun rendersAndroidsHotspotStatesOnAndroid10() {
+        rendersHotspotStates("widget-sdk29-light")
+        RuntimeEnvironment.setQualifiers("+night")
+        rendersHotspotStates("widget-sdk29-dark")
     }
 }
