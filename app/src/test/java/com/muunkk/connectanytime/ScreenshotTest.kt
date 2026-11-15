@@ -352,6 +352,13 @@ class ScreenshotTest(private val dark: Boolean) {
         } }
         save("battery-loading-reduced-motion")
     }
+    @Test fun batteryLoadFailed() {
+        compose.setContent { ConnectTheme(dark = dark, dynamicColor = false) {
+            BatteryContent(app.store, BatteryStatus.Measuring, null, false, {}, {}, {}, {}, {}, loadFailed = true)
+        } }
+        compose.waitForIdle()
+        save("battery-load-failed")
+    }
     @Test fun batteryOff() { battery(BatteryStatus.Off, BatteryReport()); save("battery-off") }
     @Test fun batteryMeasuringNotReady() {
         app.store.shareOverHotspot = true

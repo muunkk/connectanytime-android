@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.ListItemDefaults
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -68,12 +69,17 @@ class BatteryScreenTest {
     private var report by mutableStateOf<BatteryReport?>(BatteryReport())
     private var problem by mutableStateOf<BatteryProblem?>(null)
     private var retried = 0
+    private var loadFailed by mutableStateOf(false)
+    private var reloaded = 0
+    private var reducedMotion = false
     /** False: the toggle goes nowhere (the status doesn't change). */
     private var toggleTakes = true
     private fun show() {
-        compose.setContent { ConnectTheme { BatteryContent(app.store, status, report, false, {}, onToggle = { on ->
-            if (toggleTakes) status = if (on) BatteryStatus.PausedVpnOff else BatteryStatus.Off
-        }, onClear = {}, onRetry = { retried++ }, onShare = {}, problem = problem) } }
+        compose.setContent { ConnectTheme { CompositionLocalProvider(LocalReducedMotion provides reducedMotion) {
+            BatteryContent(app.store, status, report, false, {}, onToggle = { on ->
+                if (toggleTakes) status = if (on) BatteryStatus.PausedVpnOff else BatteryStatus.Off
+            }, onClear = {}, onRetry = { retried++ }, onShare = {}, problem = problem, loadFailed = loadFailed, onReload = { reloaded++ })
+        } } }
         compose.waitForIdle()
     }
     private val switch get() = compose.onNodeWithTag("battery-switch")
@@ -107,16 +113,16 @@ class BatteryScreenTest {
         status = BatteryStatus.PausedCharging; compose.waitForIdle()
         line.assert(polite).assert(readable).assert(says("Paused while charging"))
         line.assertIsDisplayed().assertHeightIsAtLeast(48.dp)
-        // The user's own toggle is announced by the switch: still live, but its text doesn't
-        // change (nothing to announce), and the line is hidden until the phone changes something.
+        // The user's own toggle is announced by the switch: the line stops being live, so its new
+        // text isn't announced, but it's still there to read (Off has nothing to read).
         switch.performClick(); compose.waitForIdle()
         assertEquals(BatteryStatus.Off, status)
-        line.assert(polite).assert(hidden).assert(says("Paused while charging"))
+        line.assert(noLiveRegion).assert(hidden).assert(saysNothing)
         switch.performClick(); compose.waitForIdle()
         assertEquals(BatteryStatus.PausedVpnOff, status)
-        line.assert(polite).assert(hidden).assert(says("Paused while charging"))
+        line.assert(noLiveRegion).assert(readable).assert(says("Paused: the VPN is off"))
         compose.onNodeWithText("Paused: the VPN is off", useUnmergedTree = true).assertIsDisplayed()
-        // The next change the phone makes is announced again.
+        // The next change the phone makes is live, and announced, again.
         status = BatteryStatus.CouldNotSave; compose.waitForIdle()
         line.assert(polite).assert(readable).assert(says("Couldn’t save measurements. The Try saving again button is below."))
         // The same node throughout: its content changed, it never reappeared.
@@ -140,6 +146,19 @@ class BatteryScreenTest {
             line.assert(polite).assert(if (text == null) saysNothing else says(text)).assert(if (isHidden) hidden else readable)
             assertEquals("$next keeps the node", id, line.fetchSemanticsNode().id)
         }
+    }
+    @Test fun theUsersOwnToggleIntoAStoppedOrProblemStateStaysReadable() {
+        status = BatteryStatus.CouldNotSave; problem = BatteryProblem.StartFailed; report = BatteryFakes.notReady(); show()
+        toggleTakes = false
+        // The user turns it off and it lands on the auto-stop copy; then back on into a problem.
+        switch.performClick(); status = BatteryStatus.AutoStopped; compose.waitForIdle()
+        line.assert(noLiveRegion).assert(readable).assert(says("Stopped after 7 days"))
+        switch.performClick(); status = BatteryStatus.CouldNotSave; compose.waitForIdle()
+        line.assert(noLiveRegion).assert(readable).assert(says("Couldn’t start measuring. The Try again button is below."))
+        // The user's own Measuring stays hidden, as the switch says it.
+        switch.performClick(); status = BatteryStatus.Off; compose.waitForIdle()
+        switch.performClick(); status = BatteryStatus.Measuring; compose.waitForIdle()
+        line.assert(noLiveRegion).assert(hidden)
     }
     @Test fun aToggleThatChangesNothingDoesNotSilenceTheNextSystemChange() {
         status = BatteryStatus.Measuring; show()
@@ -410,6 +429,28 @@ class BatteryScreenTest {
         compose.onNode(hasContentDescription("Connection type", substring = true)).assertIsDisplayed()
         compose.onNodeWithText("VPN: at least 3.3% of one core").assertExists()
     }
+    @Test fun tinyProcessorSharesAndReconnectRatesSayUnderOneTenth() {
+        val r = BatteryFakes.compared()
+        status = BatteryStatus.Measuring
+        report = r.copy(cpu = r.cpu.copy(vpnPercent = 0.04, forwardingPercent = 0.01, otherPercent = 0.0),
+            reconnects = 1, reconnectsPerHour = 0.03); show()
+        scrollTo(hasTestTag("battery-more"))
+        compose.onNodeWithTag("battery-more").performSemanticsAction(SemanticsActions.Expand); compose.waitForIdle()
+        for (text in listOf("VPN: under 0.1% of one core", "Forwarding: under 0.1% of one core", "Other: about 0% of one core",
+            "VPN reconnects: 1 (less than 0.1 an hour)")) {
+            scrollTo(hasText(text)); compose.onNodeWithText(text).assertExists()
+        }
+        assertTrue(compose.onAllNodesWithText("less than 0.1%", substring = true).fetchSemanticsNodes().isEmpty())
+        assertTrue(compose.onAllNodesWithText("0.0 an hour", substring = true).fetchSemanticsNodes().isEmpty())
+        // At 0.05 the ordinary forms come back.
+        report = r.copy(cpu = r.cpu.copy(vpnPercent = 0.05), reconnects = 2, reconnectsPerHour = 0.05); compose.waitForIdle()
+        for (text in listOf("VPN: at least 0.1% of one core", "VPN reconnects: 2 (0.1 an hour)")) {
+            scrollTo(hasText(text)); compose.onNodeWithText(text).assertExists()
+        }
+        // None at all is "0 an hour", not "0.0".
+        report = r.copy(reconnects = 0, reconnectsPerHour = 0.0); compose.waitForIdle()
+        scrollTo(hasText("VPN reconnects: 0 (0 an hour)")); compose.onNodeWithText("VPN reconnects: 0 (0 an hour)").assertExists()
+    }
     @Test fun offWithoutRowsShowsOnlyTheSwitchPanelAndFootnotes() {
         status = BatteryStatus.Off; report = BatteryReport(); show()
         compose.onNodeWithText("Not measuring yet").assertExists()
@@ -425,6 +466,29 @@ class BatteryScreenTest {
         switch.assertExists(); line.assertExists()
         compose.onNodeWithContentDescription("Share battery data").assertIsNotEnabled()
     }
+    @Test fun reducedMotionLoaderReadsOnlyItsLabel() {
+        reducedMotion = true; status = BatteryStatus.Measuring; report = null; show()
+        compose.onNodeWithContentDescription("Loading battery data")
+            .assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.ProgressBarRangeInfo))
+            .assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.StateDescription))
+    }
+    @Test fun aFailedFirstLoadSaysSoWithTryAgainAndClearStaysEnabled() {
+        status = BatteryStatus.Measuring; report = null; loadFailed = true; show()
+        compose.onNodeWithContentDescription("Loading battery data").assertDoesNotExist()
+        compose.onNodeWithText("Couldn’t read saved measurements.").assertIsDisplayed()
+            .assert(hasContentDescription("Couldn’t read saved measurements. The Try again button is below."))
+        val retry = compose.onNodeWithTag("battery-reload").assertTextEquals("Try again").assertHeightIsAtLeast(48.dp)
+        retry.performClick()
+        assertEquals(1, reloaded)
+        compose.onNodeWithContentDescription("Share battery data").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("Clear battery data").assertIsEnabled().performClick()
+        compose.onNodeWithText("This removes the battery measurements saved on this device. Measuring continues.").assertExists()
+        compose.onNodeWithText("Cancel").performClick()
+        // A refresh that reads: the report replaces the message.
+        report = BatteryFakes.notReady(); loadFailed = false; compose.waitForIdle()
+        compose.onNodeWithTag("battery-load-failed").assertDoesNotExist()
+        compose.onNodeWithText("Keep measuring").assertExists()
+    }
     @Test fun clearDialogSaysHowMuchAndThatMeasuringContinues() {
         // 20 minutes of rows, 20 wall-clock minutes apart.
         status = BatteryStatus.Measuring
@@ -433,9 +497,9 @@ class BatteryScreenTest {
         compose.onNodeWithText("Clear battery data?").assertExists()
         val f = BatteryFormat(app)
         fun dates(r: BatteryReport, spoken: Boolean = false) = f.dates(r.firstWallMinute!!, r.lastWallMinute!!, spoken)
-        compose.onNodeWithText("This removes the battery measurements from ${dates(report!!)} saved on this device. Measuring continues.")
+        compose.onNodeWithText("This removes battery measurements recorded ${dates(report!!)} from this device. Measuring continues.")
             .assertExists()
-            .assert(hasContentDescription("This removes the battery measurements from ${dates(report!!, spoken = true)} saved on this device. Measuring continues."))
+            .assert(hasContentDescription("This removes battery measurements recorded ${dates(report!!, spoken = true)} from this device. Measuring continues."))
         compose.onNodeWithText("Cancel").performClick()
         compose.onNodeWithText("Clear battery data?").assertDoesNotExist()
         // Counted time spread over six days: the dialog names the same dates as the subtitle.
@@ -443,7 +507,7 @@ class BatteryScreenTest {
         val subtitle = batterySubtitle(app, f, status, report)!!.first
         assertTrue(subtitle, subtitle.endsWith(dates(report!!)))
         compose.onNodeWithContentDescription("Clear battery data").performClick()
-        compose.onNodeWithText("This removes the battery measurements from ${dates(report!!)} saved on this device. Measuring continues.").assertExists()
+        compose.onNodeWithText("This removes battery measurements recorded ${dates(report!!)} from this device. Measuring continues.").assertExists()
     }
     @Test fun comparedRowsAreTheComparisonsSides() {
         app.store.proxySetup = ProxySetup.Automatic
@@ -454,11 +518,11 @@ class BatteryScreenTest {
         compose.onNodeWithTag("battery-compare-uplink").assertTextEquals("Both sides on Mobile data")
         scrollTo(hasTestTag("battery-side-in-use"))
         compose.onNodeWithTag("battery-side-in-use").assert(hasContentDescription(
-            "Sharing in use. ${f.hours(c.inUse.hours, spoken = true)}.", substring = true))
+            "Sharing in use. ${f.hours(c.inUse.hours, spoken = true)} measured.", substring = true))
             .assert(hasContentDescription("${f.percent(c.inUse.percentPerHour!!)} an hour", substring = true))
         scrollTo(hasTestTag("battery-side-baseline"))
         compose.onNodeWithTag("battery-side-baseline").assert(hasContentDescription(
-            "Sharing off. ${f.hours(c.baseline.hours, spoken = true)}.", substring = true))
+            "Sharing off. ${f.hours(c.baseline.hours, spoken = true)} measured.", substring = true))
             .assert(hasContentDescription("${f.percent(c.baseline.percentPerHour!!)} an hour", substring = true))
         // The sentence goes with the rows: a side that isn't ready drops it, whatever the comparison says.
         report = r.copy(compareBaseline = c.baseline.copy(ready = false), compareBaselineProgressMs = 25 * 60_000L); compose.waitForIdle()

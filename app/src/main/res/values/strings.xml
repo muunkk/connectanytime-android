@@ -343,13 +343,21 @@
     <string name="battery_less_than_percent">less than %1$s</string>
     <string name="battery_less_than_percent_spoken">less than %1$s percent</string>
     <string name="battery_loading">Loading battery data</string>
+    <!-- In place of the loader when the saved measurements couldn't be read. -->
+    <string name="battery_load_failed">Couldn’t read saved measurements.</string>
+    <string name="battery_load_failed_spoken">Couldn’t read saved measurements. The Try again button is below.</string>
+    <string name="battery_load_retry">Try again</string>
     <string name="battery_share">Share battery data</string>
     <string name="battery_clear">Clear battery data</string>
     <string name="battery_share_failed">Couldn’t export the battery data.</string>
     <string name="battery_share_note">Includes the phone’s model and Android version. No sites or device names.</string>
     <string name="battery_clear_title">Clear battery data?</string>
-    <string name="battery_clear_body">This removes the battery measurements from %1$s saved on this device.</string>
-    <string name="battery_clear_body_on">This removes the battery measurements from %1$s saved on this device. Measuring continues.</string>
+    <!-- %1$s = the date range, such as Nov 8 – 14, 2026. -->
+    <string name="battery_clear_body">This removes battery measurements recorded %1$s from this device.</string>
+    <string name="battery_clear_body_on">This removes battery measurements recorded %1$s from this device. Measuring continues.</string>
+    <!-- When the saved measurements couldn't be read, so there are no dates to name. -->
+    <string name="battery_clear_body_unread">This removes the battery measurements saved on this device.</string>
+    <string name="battery_clear_body_unread_on">This removes the battery measurements saved on this device. Measuring continues.</string>
     <string name="battery_save_failed">Couldn’t save measurements</string>
     <string name="battery_save_failed_help">Recent measurements are kept in memory for now. Older ones may be lost.</string>
     <string name="battery_retry">Try saving again</string>
@@ -399,6 +407,8 @@
     <string name="battery_side_in_use">Sharing in use</string>
     <string name="battery_side_off">Sharing off</string>
     <string name="battery_side_idle">Sharing idle</string>
+    <!-- A ready side's time. %1$s = a duration, such as 1 hr, 20 min. -->
+    <string name="battery_side_measured">%1$s measured</string>
     <!-- %1$s = time so far, %2$s = time needed. -->
     <string name="battery_not_ready_short">%1$s so far, needs %2$s</string>
     <string name="battery_not_ready_coarse">Needs more battery use to be precise</string>
@@ -451,9 +461,22 @@
     <string name="battery_d_vpn">VPN: at least %1$s of one core</string>
     <string name="battery_d_fwd">Forwarding: about %1$s of one core</string>
     <string name="battery_d_other">Other: about %1$s of one core</string>
+    <!-- Above zero but under what rounds to 0.1%: %1$s = 0.1%, formatted in code. -->
+    <string name="battery_d_vpn_tiny">VPN: under %1$s of one core</string>
+    <string name="battery_d_fwd_tiny">Forwarding: under %1$s of one core</string>
+    <string name="battery_d_other_tiny">Other: under %1$s of one core</string>
+    <!-- %1$d = the number of reconnects, %2$s = reconnects an hour (a decimal). The one and other
+         forms are intentionally the same in English: "reconnects" is a heading, not a noun counted
+         by %1$d. Translate each form as your language needs. -->
     <plurals name="battery_d_reconnects">
         <item quantity="one">VPN reconnects: %1$d (%2$s an hour)</item>
         <item quantity="other">VPN reconnects: %1$d (%2$s an hour)</item>
+    </plurals>
+    <!-- The rate is above zero but under what rounds to 0.1: %2$s = 0.1, formatted in code. Same
+         forms on purpose, as above. -->
+    <plurals name="battery_d_reconnects_rare">
+        <item quantity="one">VPN reconnects: %1$d (less than %2$s an hour)</item>
+        <item quantity="other">VPN reconnects: %1$d (less than %2$s an hour)</item>
     </plurals>
     <string name="battery_transport_title">Connection type</string>
     <string name="battery_transport">Fast (DTLS) %1$s · backup (TLS) %2$s · unknown %3$s of connected time</string>
