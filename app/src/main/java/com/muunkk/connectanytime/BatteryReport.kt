@@ -228,19 +228,28 @@ internal object BatteryMath {
         val topKeys = top.map { it.key }.toSet()
         val other = windows.filter { it.situation !in topKeys || it.ms < 600_000 }
         val elapsed = intervals.sumOf { it.ms }
-        fun cpu(value: (BatteryRow) -> Long?): Double? {
+        fun cpuDelta(interval: BatteryInterval, value: (BatteryRow) -> Long?): Long? {
+            val first = value(interval.first) ?: return null
+            val last = value(interval.last) ?: return null
+            return (last - first).takeIf { last >= first }
+        }
+        // A split needs one denominator for every component, including the process total.
+        val commonCpu = intervals.filter {
+            cpuDelta(it) { r -> r.cpuProcMs } != null && cpuDelta(it) { r -> r.cpuVpnMs } != null &&
+                cpuDelta(it) { r -> r.cpuFwdMs } != null
+        }
+        fun cpu(samples: List<BatteryInterval>, value: (BatteryRow) -> Long?): Double? {
             var sampledMs = 0L
             var deltaMs = 0L
-            for (interval in intervals) {
-                val first = value(interval.first) ?: continue
-                val last = value(interval.last) ?: continue
-                if (last < first) continue
-                deltaMs += last - first
+            for (interval in samples) {
+                val delta = cpuDelta(interval, value) ?: continue
+                deltaMs += delta
                 sampledMs += interval.ms
             }
             return if (sampledMs == 0L) null else 100.0 * deltaMs / sampledMs
         }
-        val proc = cpu { it.cpuProcMs }; val vpn = cpu { it.cpuVpnMs }; val fwd = cpu { it.cpuFwdMs }
+        val proc = cpu(commonCpu.ifEmpty { intervals }) { it.cpuProcMs }
+        val vpn = cpu(commonCpu) { it.cpuVpnMs }; val fwd = cpu(commonCpu) { it.cpuFwdMs }
         val connected = intervals.filter { it.first.vpn == BatteryVpn.connected && it.last.vpn == BatteryVpn.connected }
         val connectedMs = connected.sumOf { it.ms }
         fun share(transport: BatteryTransport) = if (connectedMs == 0L) 0.0 else connected.filter {

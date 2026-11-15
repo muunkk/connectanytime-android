@@ -378,22 +378,61 @@ class BatteryReportTest {
             assertEquals(0L, r.compareBaselineProgressMs)
         }
     }
-    @Test fun cpuUsesOnlyIntervalsWithBothCountersAndTheirElapsedTime() {
+    @Test fun cpuSplitUsesOnlyCommonValidIntervalsAndTheirElapsedTime() {
         val rows = batteryTrace(10).filter { it.seq in listOf(0L, 1L, 3L, 6L, 10L) }.map {
             it.copy(cpuProcMs = when (it.seq) { 0L -> 0; 1L -> 6000; 3L -> null; 6L -> 90_000; else -> 210_000 },
                 cpuVpnMs = if (it.seq == 0L) null else it.elapsedMs / 5,
                 cpuFwdMs = it.elapsedMs / 20)
         }
         val cpu = report(rows).cpu
-        assertEquals(42.0, cpu.totalPercent!!, 1e-10)
+        assertEquals(50.0, cpu.totalPercent!!, 1e-10)
         assertEquals(20.0, cpu.vpnPercent!!, 1e-10)
         assertEquals(5.0, cpu.forwardingPercent!!, 1e-10)
-        assertEquals(17.0, cpu.otherPercent!!, 1e-10)
+        assertEquals(25.0, cpu.otherPercent!!, 1e-10)
         val missing = report(rows.map { it.copy(cpuProcMs = null) }).cpu
         assertNull(missing.totalPercent); assertNull(missing.otherPercent)
-        assertEquals(20.0, missing.vpnPercent!!, 1e-10)
+        assertNull(missing.vpnPercent); assertNull(missing.forwardingPercent)
         val reset = report(rows.take(2).mapIndexed { index, row -> row.copy(cpuProcMs = 10L - index) }).cpu
         assertNull(reset.totalPercent)
+    }
+    @Test fun missingProcessReadingsCannotMixHighVpnLoadIntoTheCpuSplit() {
+        val rows = batteryTrace(4).mapIndexed { index, row ->
+            row.copy(cpuProcMs = listOf(0L, 6000L, null, 18_000L, 54_000L)[index],
+                cpuVpnMs = listOf(0L, 1200L, 61_200L, 91_200L, 115_200L)[index],
+                cpuFwdMs = listOf(0L, 600L, 1200L, 1800L, 3000L)[index])
+        }
+        val cpu = report(rows).cpu
+        // Only minutes 0–1 and 3–4 have all three counters at both endpoints.
+        assertEquals(35.0, cpu.totalPercent!!, 1e-10)
+        assertEquals(21.0, cpu.vpnPercent!!, 1e-10)
+        assertEquals(1.5, cpu.forwardingPercent!!, 1e-10)
+        assertEquals(12.5, cpu.otherPercent!!, 1e-10)
+        assertEquals(cpu.totalPercent!!, cpu.vpnPercent!! + cpu.forwardingPercent!! + cpu.otherPercent!!, 1e-10)
+    }
+    @Test fun noCommonCpuIntervalsKeepsOnlyTheIndependentlyValidTotal() {
+        val rows = batteryTrace(3).mapIndexed { index, row ->
+            row.copy(cpuProcMs = if (index < 2) index * 6000L else null,
+                cpuVpnMs = if (index < 2) null else (index - 2) * 30_000L)
+        }
+        val cpu = report(rows).cpu
+        assertEquals(10.0, cpu.totalPercent!!, 1e-10)
+        assertNull(cpu.vpnPercent); assertNull(cpu.forwardingPercent); assertNull(cpu.otherPercent)
+    }
+    @Test fun cpuSplitExcludesMissingOrResetVpnAndForwardingCountersTogether() {
+        val base = batteryTrace(3)
+        val partial = base.mapIndexed { index, row -> row.copy(cpuFwdMs = if (index == 1) null else row.cpuFwdMs) }
+        val reset = base.mapIndexed { index, row -> row.copy(cpuVpnMs = listOf(10_000L, 9000L, 8000L, 7000L)[index]) }
+        for (rows in listOf(partial.map { it.copy(cpuVpnMs = null) }, reset,
+            base.map { it.copy(cpuFwdMs = 10_000L - it.seq) })) {
+            val cpu = report(rows).cpu
+            assertEquals(10.0, cpu.totalPercent!!, 1e-10)
+            assertNull(cpu.vpnPercent); assertNull(cpu.forwardingPercent); assertNull(cpu.otherPercent)
+        }
+        val cpu = report(partial).cpu
+        assertEquals(10.0, cpu.totalPercent!!, 1e-10)
+        assertEquals(10.0 / 3, cpu.vpnPercent!!, 1e-10)
+        assertEquals(5.0, cpu.forwardingPercent!!, 1e-10)
+        assertEquals(5.0 / 3, cpu.otherPercent!!, 1e-10)
     }
     @Test fun warmestThermalUsesOnlyValidIntervalEndpoints() {
         val valid = batteryTrace().map { it.copy(thermal = 1) }

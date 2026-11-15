@@ -304,7 +304,7 @@ internal class BatteryRecorder(private val app: ConnectApp, private val disk: Ba
             val state = ConnectApp.state.value
             val vpn = when {
                 state.connected -> BatteryVpn.connected
-                state.status == "Reconnecting…" -> BatteryVpn.reconnecting
+                state.status == ConnectApp.VPN_STATUS_RECONNECTING -> BatteryVpn.reconnecting
                 state.busy -> BatteryVpn.connecting
                 else -> BatteryVpn.off
             }

@@ -40,9 +40,11 @@ internal class BatteryStore(private val context: Context, private val prefs: Sto
     private var retry: java.util.concurrent.ScheduledFuture<*>? = null
     private val mutableReport = MutableStateFlow<BatteryReport?>(null)
     val report = mutableReport.asStateFlow()
-    private val mutableLoadFailed = MutableStateFlow(false)
-    /** Report reads can fail independently of saves, including before the first snapshot. */
-    val loadFailed = mutableLoadFailed.asStateFlow()
+    private val mutableReadFailed = MutableStateFlow(false)
+    /** The latest report rebuild failed; a retained snapshot may be stale. Success or Clear resets this. */
+    val readFailed = mutableReadFailed.asStateFlow()
+    /** Compatibility alias for callers handling a failed initial load. Also true for stale cached reports. */
+    val loadFailed = readFailed
     private val mutableFailed = MutableStateFlow(false)
     val failed = mutableFailed.asStateFlow()
     val clearing = AtomicBoolean()
@@ -152,10 +154,10 @@ internal class BatteryStore(private val context: Context, private val prefs: Sto
         }
     }
     private fun buildReport(): BatteryReport? = try {
-        rows { BatteryMath.report(it, prefs.proxySetup) }.also { mutableLoadFailed.value = false }
+        rows { BatteryMath.report(it, prefs.proxySetup) }.also { mutableReadFailed.value = false }
     } catch (cause: Throwable) {
-        if (!mutableLoadFailed.value) Log.w("BatteryStore", "Battery report failed (${cause.javaClass.simpleName})")
-        mutableLoadFailed.value = true
+        if (!mutableReadFailed.value) Log.w("BatteryStore", "Battery report failed (${cause.javaClass.simpleName})")
+        mutableReadFailed.value = true
         null
     }
     private fun rebuild() { buildReport()?.let { mutableReport.value = it } }

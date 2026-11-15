@@ -48,8 +48,10 @@ class BatteryControl internal constructor(private val app: ConnectApp,
     /** Reason for CouldNotSave; cleared when off or recovered. Start failure takes precedence. */
     val problem: StateFlow<BatteryProblem?> = mutableProblem.asStateFlow()
     val report: StateFlow<BatteryReport?> = disk.report
-    /** A retained-data read failed; refresh or Clear can recover even without a report. */
-    val loadFailed: StateFlow<Boolean> = disk.loadFailed
+    /** The latest report rebuild failed; the shown report may be stale. Success or Clear resets this. */
+    val readFailed: StateFlow<Boolean> = disk.readFailed
+    /** Compatibility alias for initial-load callers; includes failures after a cached report exists. */
+    val loadFailed: StateFlow<Boolean> = readFailed
     private val mutableAutoStopped = MutableStateFlow(app.store.batteryAutoStopped)
     val autoStopped: StateFlow<Boolean> = mutableAutoStopped.asStateFlow()
     private val plugged = MutableStateFlow(false)

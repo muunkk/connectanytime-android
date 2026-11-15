@@ -164,6 +164,8 @@ class BatteryStoreTest {
             val rows = batteryTrace().take(2)
             d.add(rows[0]); d.flush(); d.awaitIdle()
             val lastReport = d.report.value!!
+            assertFalse(d.readFailed.value)
+            assertSame(d.readFailed, d.loadFailed)
             breakReport = true
             d.add(rows[1]); d.awaitIdle()
             val logsBefore = ShadowLog.getLogsForTag("BatteryStore").size
@@ -173,6 +175,7 @@ class BatteryStoreTest {
             assertTrue(completed)
             assertFalse("The append succeeded; this is only a report failure", d.failed.value)
             assertSame(lastReport, d.report.value)
+            assertTrue("A cached report must not hide a subsequent read failure", d.readFailed.value)
             assertTrue(d.bufferedRows().isEmpty())
             assertEquals(rows, saved.readLines().mapNotNull(BatteryCsv::parse))
             val retry = BatteryStore::class.java.getDeclaredField("retry").apply { isAccessible = true }.get(d)
@@ -180,6 +183,7 @@ class BatteryStoreTest {
             d.refresh(); d.summarize { fail("Unreadable report must not call the summary callback") }; d.awaitIdle()
             assertFalse(d.failed.value)
             assertSame(lastReport, d.report.value)
+            assertTrue(d.readFailed.value)
             val logs = ShadowLog.getLogsForTag("BatteryStore").drop(logsBefore)
             assertEquals(1, logs.size)
             assertTrue(logs.single().msg.contains("FileNotFoundException"))
@@ -189,12 +193,38 @@ class BatteryStoreTest {
             d.refresh(); d.awaitIdle()
             assertEquals(2, d.report.value!!.rowCount)
             assertFalse(d.failed.value)
+            assertFalse(d.readFailed.value)
             // Recovery resets the report failure latch for the next failure episode.
             assertTrue(d.file.renameTo(saved)); assertTrue(d.file.mkdir())
             d.refresh(); d.refresh(); d.awaitIdle()
             assertEquals(logsBefore + 2, ShadowLog.getLogsForTag("BatteryStore").size)
             assertFalse(d.failed.value)
+            assertTrue(d.readFailed.value)
+            assertTrue(d.clear {})
+            d.awaitIdle()
+            assertFalse(d.readFailed.value)
+            assertEquals(0, d.report.value!!.rowCount)
         } finally { collector.cancel(); saved.delete() }
+    }
+    @Test fun successfulObservedFlushRebuildClearsCachedReportReadFailure() {
+        val d = disk()
+        val collector = CoroutineScope(Dispatchers.Unconfined).launch { d.report.collect {} }
+        try {
+            val rows = batteryTrace().take(2)
+            d.add(rows[0]); d.flush(); d.awaitIdle()
+            val lastReport = d.report.value!!
+            val saved = d.file.readText()
+            assertTrue(d.file.delete()); assertTrue(d.file.mkdir())
+            d.refresh(); d.awaitIdle()
+            assertSame(lastReport, d.report.value)
+            assertTrue(d.readFailed.value)
+
+            assertTrue(d.file.delete()); d.file.writeText(saved)
+            d.add(rows[1]); d.flush(); d.awaitIdle()
+            assertFalse(d.readFailed.value)
+            assertFalse(d.failed.value)
+            assertEquals(2, d.report.value!!.rowCount)
+        } finally { collector.cancel() }
     }
     @Test fun firstLoadFailureIsExposedAndSuccessfulRefreshOrClearRecovers() {
         val d = disk()

@@ -18,6 +18,19 @@ class ProxyCountersTest {
     private val cpuDelta = ThreadLocal.withInitial { 0L }
     @Before fun reset() { ProxyCounters.gen = 0; listOf(ProxyCounters.hotUp, ProxyCounters.hotDown, ProxyCounters.usbUp, ProxyCounters.usbDown, ProxyCounters.forwardingCpuNs).forEach { it.reset() } }
     @After fun stop() { ProxyCounters.gen = 0 }
+    @Test fun replacingTheThreadFactoryWithPlainThreadsStillRunsTasks() {
+        ProxyCounters.gen = 1
+        val errors = java.util.concurrent.ConcurrentLinkedQueue<Throwable>()
+        val pool = ProxyWorkers { error("Plain threads cannot have worker-local CPU meters") }
+        pool.threadFactory = java.util.concurrent.ThreadFactory { runnable ->
+            Thread(runnable).apply { uncaughtExceptionHandler = Thread.UncaughtExceptionHandler { _, error -> errors.add(error) } }
+        }
+        try {
+            assertEquals(42, pool.submit<Int> { 42 }.get(5, TimeUnit.SECONDS))
+        } finally { pool.shutdownNow(); assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS)) }
+        assertTrue(errors.toString(), errors.isEmpty())
+        assertEquals(0L, ProxyCounters.forwardingCpuNs.sum())
+    }
     @Test fun disabledMeterReadsNeitherClock() {
         val fail = { error("clock read while disabled") }
         val meter = CpuMeter(fail, fail)

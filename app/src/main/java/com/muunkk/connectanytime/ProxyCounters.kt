@@ -71,9 +71,9 @@ internal class ProxyWorkers(createMeter: () -> CpuMeter = { CpuMeter() }) : Thre
     { runnable -> ProxyWorker(runnable, createMeter) }) {
     override fun beforeExecute(thread: Thread, runnable: Runnable) {
         super.beforeExecute(thread, runnable)
-        (thread as ProxyWorker).startTask()
+        (thread as? ProxyWorker)?.startTask()
     }
     override fun afterExecute(runnable: Runnable, error: Throwable?) {
-        try { runCatching { (Thread.currentThread() as ProxyWorker).finishTask() } } finally { super.afterExecute(runnable, error) }
+        try { runCatching { (Thread.currentThread() as? ProxyWorker)?.finishTask() } } finally { super.afterExecute(runnable, error) }
     }
 }

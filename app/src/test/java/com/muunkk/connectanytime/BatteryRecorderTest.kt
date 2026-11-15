@@ -296,6 +296,38 @@ class BatteryRecorderTest {
         assertEquals(0, c.report.value!!.rowCount)
         assertFalse(c.clearing.value)
     }
+    @Test fun cachedReportReadFailureIsAvailableThroughControlAndRefreshOrClearRecovers() {
+        val c = control()
+        assertSame(c.disk.readFailed, c.readFailed)
+        assertSame(c.readFailed, c.loadFailed)
+        val row = batteryTrace().first()
+        c.disk.add(row); c.disk.flush(); c.disk.awaitIdle()
+        c.refresh(); c.disk.awaitIdle()
+        val cached = c.report.value!!
+        assertEquals(1, cached.rowCount)
+        assertFalse(c.readFailed.value)
+
+        val saved = c.disk.file.readText()
+        assertTrue(c.disk.file.delete()); assertTrue(c.disk.file.mkdir())
+        c.refresh(); c.disk.awaitIdle()
+        assertTrue(c.readFailed.value)
+        assertSame(cached, c.report.value)
+        assertFalse(c.disk.failed.value)
+        assertEquals(BatteryStatus.Off, c.status.value)
+
+        assertTrue(c.disk.file.delete()); c.disk.file.writeText(saved + BatteryCsv.write(row.copy(seq = 1)) + "\n")
+        c.refresh(); c.disk.awaitIdle()
+        assertFalse(c.readFailed.value)
+        assertEquals(2, c.report.value!!.rowCount)
+
+        assertTrue(c.disk.file.delete()); assertTrue(c.disk.file.mkdir())
+        c.refresh(); c.disk.awaitIdle()
+        assertTrue(c.readFailed.value)
+        c.clear(); drain(c)
+        assertFalse(c.readFailed.value)
+        assertEquals(0, c.report.value!!.rowCount)
+        assertFalse(c.clearing.value)
+    }
     @Test fun turningOffWhileVpnPausedAlsoEndsSaveRetries() {
         val c = control(true); busy(); c.setEnabled(true); drain(c)
         ConnectApp.mutableState.value = VpnState(); drain(c)
@@ -923,11 +955,11 @@ class BatteryRecorderTest {
     @Test fun reconnectEpisodesCountOnlyConnectedToReconnecting() {
         val service = Robolectric.buildService(ConnectVpnService::class.java).get()
         val method = ConnectVpnService::class.java.getDeclaredMethod("state", String::class.java, Boolean::class.javaPrimitiveType, String::class.java).apply { isAccessible = true }
-        ConnectApp.lastStatus.set("Connected"); ConnectApp.vpnTransitions.set(0); ConnectApp.reconnectEpisodes.set(0)
-        method.invoke(service, "Reconnecting…", false, null)
-        method.invoke(service, "Reconnecting…", false, null)
+        ConnectApp.lastStatus.set(ConnectApp.VPN_STATUS_CONNECTED); ConnectApp.vpnTransitions.set(0); ConnectApp.reconnectEpisodes.set(0)
+        method.invoke(service, ConnectApp.VPN_STATUS_RECONNECTING, false, null)
+        method.invoke(service, ConnectApp.VPN_STATUS_RECONNECTING, false, null)
         method.invoke(service, "Connecting…", false, null)
-        method.invoke(service, "Reconnecting…", false, null)
+        method.invoke(service, ConnectApp.VPN_STATUS_RECONNECTING, false, null)
         assertEquals(3L, ConnectApp.vpnTransitions.get()); assertEquals(1L, ConnectApp.reconnectEpisodes.get())
     }
 }
