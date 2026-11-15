@@ -210,11 +210,15 @@ class ActivityLog(context: Context) {
     }
     @Synchronized fun flush() {
         if (!pending) return
-        // Replace atomically, so a killed process cannot leave a half-written log.
-        val temp = File(file.parentFile, "activity.tmp")
-        temp.writeText(lines.joinToString("\n"))
-        check(temp.renameTo(file))
-        pending = false
+        try {
+            // Replace atomically, so a killed process cannot leave a half-written log.
+            val temp = File(file.parentFile, "activity.tmp")
+            temp.writeText(lines.joinToString("\n"))
+            check(temp.renameTo(file))
+        } catch (_: Exception) {
+        } finally {
+            pending = false
+        }
     }
     @Synchronized fun clear() { lines.clear(); mutable.value = emptyList(); pending = true; flush() }
 }
