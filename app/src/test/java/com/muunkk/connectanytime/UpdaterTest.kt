@@ -360,6 +360,21 @@ class UpdaterTest {
         assertEquals(confirm, u.takeConfirmation())
     }
 
+    @Test fun aSlowPreparationDoesNotUseUpTheSilentInstallGrace() {
+        val (u, _) = readyUpdater()
+        var slow = true
+        facts = {
+            if (slow) { slow = false; now += 180_000 } // only the first verification stalls
+            ApkFacts(app.packageName, versionOf(it), setOf("me"))
+        }
+        u.install()
+        val session = app.store.installSession
+        // Just committed, no confirmation: Android may be installing silently. Try again
+        // (already due, counted from when Installing was shown) must leave that session alone.
+        u.install()
+        assertEquals(session, app.store.installSession)
+    }
+
     @Test fun tryAgainShowsAnOpenConfirmationAgain() {
         val (u, _) = readyUpdater()
         u.install()

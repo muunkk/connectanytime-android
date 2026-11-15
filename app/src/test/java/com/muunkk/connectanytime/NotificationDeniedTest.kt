@@ -42,6 +42,10 @@ class NotificationDeniedTest {
             assertFalse(ConnectApp.state.value.busy)
             activity = activity.recreate()
             compose.onNodeWithText(note).performScrollTo().assertIsDisplayed()
+            // Allowed in Settings meanwhile: the note isn't brought back.
+            shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+            activity = activity.recreate()
+            compose.onNodeWithText(note).assertDoesNotExist()
         } finally {
             activity.pause().stop().destroy()
         }

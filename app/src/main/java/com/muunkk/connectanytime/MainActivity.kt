@@ -98,7 +98,9 @@ class MainActivity : ComponentActivity() {
         installSplashScreen()
         super.onCreate(savedInstanceState)
         confirmHotspot = savedInstanceState?.getBoolean(Controls.EXTRA_CONFIRM_HOTSPOT) ?: false
-        notificationDenied = savedInstanceState?.getBoolean(STATE_NOTIFICATION_DENIED) ?: false
+        // Only while it's still denied: it may have been allowed in Settings meanwhile.
+        notificationDenied = savedInstanceState?.getBoolean(STATE_NOTIFICATION_DENIED) == true && Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         if (savedInstanceState == null) takeConfirmHotspot(intent)
         enableEdgeToEdge()
         setContent {
