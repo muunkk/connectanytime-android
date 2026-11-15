@@ -330,6 +330,11 @@
     <string name="battery_subtitle_on_spoken">%1$s measured, %2$s</string>
     <string name="battery_subtitle_stopped_spoken">Stopped, %1$s measured, %2$s</string>
     <string name="battery_subtitle_auto_spoken">Stopped after 7 days, %1$s measured, %2$s</string>
+    <!-- Under ten counted minutes the subtitle has no duration: %1$s = the date range. -->
+    <string name="battery_subtitle_stopped_dates">Stopped · %1$s</string>
+    <string name="battery_subtitle_auto_dates">Stopped after 7 days · %1$s</string>
+    <string name="battery_subtitle_stopped_dates_spoken">Stopped, %1$s</string>
+    <string name="battery_subtitle_auto_dates_spoken">Stopped after 7 days, %1$s</string>
     <string name="battery_less_than_minute">less than a minute</string>
     <string name="battery_loading">Loading battery data</string>
     <string name="battery_share">Share battery data</string>
@@ -434,6 +439,7 @@
     </plurals>
     <string name="battery_transport_title">Connection type</string>
     <string name="battery_transport">Fast (DTLS) %1$s · backup (TLS) %2$s · unknown %3$s of connected time</string>
+    <string name="battery_transport_spoken">Fast (DTLS) %1$s, backup (TLS) %2$s, unknown %3$s of connected time</string>
     <string name="battery_transport_note">Inferred from the VPN log. The backup connection can use more battery when the network drops packets.</string>
     <string name="battery_d_awake">Phone awake %1$s of the time</string>
     <string name="battery_d_proxy_mb">Through the proxy: %1$s an hour</string>

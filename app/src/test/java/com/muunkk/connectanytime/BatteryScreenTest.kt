@@ -36,6 +36,10 @@ internal object BatteryFakes {
     fun oneSide(): BatteryReport = BatteryMath.report(batteryTrace(loss = 400_000).asSequence(), ProxySetup.Automatic).dated()
     /** 20 minutes in use: rows, but nothing ready yet. */
     fun notReady(): BatteryReport = BatteryMath.report(batteryTrace(minutes = 20, loss = 30_000).asSequence(), ProxySetup.Automatic).dated()
+    /** Just turned on: one reading, nothing counted, nothing to break down by situation. */
+    fun firstMinutes(): BatteryReport = BatteryMath.report(batteryTrace(minutes = 5, loss = 10_000).take(1).asSequence(), ProxySetup.Automatic).dated()
+    /** Five minutes in: under the ten minutes the subtitle's duration needs. */
+    fun fiveMinutes(): BatteryReport = BatteryMath.report(batteryTrace(minutes = 5, loss = 10_000).asSequence(), ProxySetup.Automatic).dated()
     /** A ready hero on mobile data whose watts come partly from charge × voltage. */
     fun aboutWatts(): BatteryReport = compared().let { r -> r.copy(hero = r.hero!!.copy(wattsLabel = BatteryWattsLabel.About)) }
 }
@@ -144,6 +148,61 @@ class BatteryScreenTest {
         compose.onNodeWithText(first.first).assertExists()
         assertTrue(first.second, "," in first.second && "·" !in first.second)
     }
+    @Test fun subtitleUnderTenMinutesShowsOnlyTheDates() {
+        val f = BatteryFormat(app)
+        val report = BatteryFakes.fiveMinutes()
+        assertFalse(report.subtitleReady)
+        val dates = f.dates(report.firstWallMinute!!, report.lastWallMinute!!)
+        val (shown, spoken) = batterySubtitle(app, f, BatteryStatus.Measuring, report)!!
+        assertEquals(dates, shown)
+        assertFalse(spoken, "measured" in spoken || "0 min" in spoken)
+        val stopped = batterySubtitle(app, f, BatteryStatus.Off, report)!!
+        assertEquals("Stopped · $dates", stopped.first)
+        assertTrue(stopped.second, stopped.second.startsWith("Stopped, ") && "·" !in stopped.second)
+        assertEquals("Stopped after 7 days · $dates", batterySubtitle(app, f, BatteryStatus.AutoStopped, report)!!.first)
+        // From ten counted minutes the duration is back.
+        assertTrue(batterySubtitle(app, f, BatteryStatus.Measuring, BatteryFakes.notReady())!!.first.contains("measured"))
+    }
+    @Test fun bySituationIsNeverABareHeading() {
+        status = BatteryStatus.Measuring; report = BatteryFakes.firstMinutes(); show()
+        assertTrue(report!!.situations.isEmpty())
+        scrollTo(hasTestTag("battery-situations-empty"))
+        compose.onNodeWithTag("battery-situations-empty").assert(hasContentDescription("Not enough data yet"))
+        compose.onNodeWithText("Other or short", substring = true).assertDoesNotExist()
+    }
+    @Test fun noConnectedTimeLeavesOutConnectionType() {
+        status = BatteryStatus.Measuring; report = BatteryFakes.compared().copy(connectedMs = 0); show()
+        scrollTo(hasTestTag("battery-more"))
+        compose.onNodeWithTag("battery-more").performSemanticsAction(SemanticsActions.Expand); compose.waitForIdle()
+        scrollTo(hasText("Cellular data", substring = true))
+        compose.onNode(hasContentDescription("Connection type", substring = true)).assertDoesNotExist()
+        compose.onNodeWithText("Connection type").assertDoesNotExist()
+    }
+    @Test fun connectionTypeIsSpokenWithCommas() {
+        status = BatteryStatus.Measuring; report = BatteryFakes.compared(); show()
+        assertTrue(report!!.connectedMs > 0)
+        scrollTo(hasTestTag("battery-more"))
+        compose.onNodeWithTag("battery-more").performSemanticsAction(SemanticsActions.Expand); compose.waitForIdle()
+        val spoken = hasContentDescription("Connection type. Fast (DTLS)", substring = true)
+        scrollTo(spoken)
+        val description = compose.onNode(spoken).fetchSemanticsNode().config[SemanticsProperties.ContentDescription].single()
+        assertTrue(description, "·" !in description && "backup (TLS)" in description && description.endsWith("drops packets."))
+    }
+    @Test fun statusLiveRegionGoesQuietAndAScrolledBackLineDoesNotReannounce() {
+        status = BatteryStatus.Measuring; report = BatteryFakes.compared(); show()
+        status = BatteryStatus.PausedCharging; compose.waitForIdle()
+        line.assert(polite).assert(hasContentDescription("Paused while charging"))
+        compose.mainClock.advanceTimeBy(STATUS_LIVE_MS + 1_000); compose.waitForIdle()
+        line.assert(noLiveRegion).assert(hasContentDescription("Paused while charging"))
+        // Scroll the status item out (disposed) and back (recreated): still quiet.
+        scrollTo(hasText("Measured: battery charge", substring = true))
+        line.assertDoesNotExist()
+        scrollTo(hasTestTag("battery-status"))
+        line.assert(noLiveRegion).assert(hasContentDescription("Paused while charging"))
+        // A later system change is announced again.
+        status = BatteryStatus.CouldNotSave; compose.waitForIdle()
+        line.assert(polite)
+    }
     @Test fun couldNotSaveRowIsNotClickableAndRetryIsItsOwnTarget() {
         status = BatteryStatus.CouldNotSave; report = BatteryFakes.notReady(); show()
         line.assert(hasContentDescription("Couldn’t save measurements. Try saving again is below."))
@@ -196,6 +255,34 @@ class BatteryScreenTest {
         report = BatteryFakes.compared().copy(rowCount = report!!.rowCount + 5); compose.waitForIdle()
         assertEquals(id, compose.onNodeWithTag("battery-situation-0").fetchSemanticsNode().id)
     }
+    @Test fun situationRowFollowsItsSituationWhenRankingsSwap() {
+        status = BatteryStatus.Measuring; report = BatteryFakes.compared(); show()
+        val situations = report!!.situations
+        assertTrue(situations.toString(), situations.size >= 2)
+        val last = situations.size - 1
+        scrollTo(hasTestTag("battery-situation-0"))
+        val id = compose.onNodeWithTag("battery-situation-0").fetchSemanticsNode().id
+        report = report!!.copy(situations = situations.reversed(), rowCount = report!!.rowCount + 5); compose.waitForIdle()
+        scrollTo(hasTestTag("battery-situation-$last"))
+        assertEquals(id, compose.onNodeWithTag("battery-situation-$last").fetchSemanticsNode().id)
+    }
+    @Test fun comparisonSidesKeepNoNetworkApartFromAnyUplink() {
+        fun s(sharing: BatterySharing, uplink: Uplink?, hours: Double) = BatterySituationRate(
+            BatterySituation(false, BatteryHotspot.on, sharing, uplink), BatteryRate(hours = hours))
+        // No hero: in-use time with no network, baselines on Wi-Fi and with no network.
+        val report = BatteryReport(situations = listOf(s(BatterySharing.InUse, null, 1.0), s(BatterySharing.Off, Uplink.WiFi, 2.0),
+            s(BatterySharing.Off, null, 3.0)))
+        val (inUse, baseline) = comparisonSides(report, ProxySetup.Automatic)
+        assertEquals(1.0, inUse.hours, 0.0)
+        assertEquals(3.0, baseline.hours, 0.0)
+        // No in-use time at all: any uplink's baseline will do.
+        val noInUse = BatteryReport(situations = listOf(s(BatterySharing.Off, Uplink.WiFi, 2.0)))
+        assertEquals(2.0, comparisonSides(noInUse, ProxySetup.Automatic).second.hours, 0.0)
+        // A hero with no network takes the no-network baseline, not Wi-Fi's.
+        val hero = BatteryReport(hero = BatteryRate(hours = 5.0), heroUplink = null,
+            situations = listOf(s(BatterySharing.Off, Uplink.WiFi, 2.0), s(BatterySharing.Off, null, 3.0)))
+        assertEquals(5.0 to 3.0, comparisonSides(hero, ProxySetup.Automatic).let { it.first.hours to it.second.hours })
+    }
     @Test fun moreDetailIsAnExpandableButton() {
         status = BatteryStatus.Measuring; report = BatteryFakes.compared(); show()
         scrollTo(hasTestTag("battery-more"))
@@ -204,8 +291,8 @@ class BatteryScreenTest {
             .assert(SemanticsMatcher.keyIsDefined(SemanticsActions.Expand)).assertHeightIsAtLeast(56.dp)
         more.performSemanticsAction(SemanticsActions.Expand); compose.waitForIdle()
         more.assert(stateDescription("Expanded")).assert(SemanticsMatcher.keyIsDefined(SemanticsActions.Collapse))
-        scrollTo(hasText("Connection type"))
-        compose.onNodeWithText("Connection type").assertIsDisplayed()
+        scrollTo(hasContentDescription("Connection type", substring = true))
+        compose.onNode(hasContentDescription("Connection type", substring = true)).assertIsDisplayed()
         compose.onNodeWithText("VPN: at least 3.3% of one core").assertExists()
     }
     @Test fun offWithoutRowsShowsOnlyTheSwitchPanelAndFootnotes() {

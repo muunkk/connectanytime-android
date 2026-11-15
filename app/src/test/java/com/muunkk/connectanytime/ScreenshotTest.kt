@@ -347,6 +347,11 @@ class ScreenshotTest(private val dark: Boolean) {
         battery(BatteryStatus.Measuring, BatteryFakes.notReady()); save("battery-measuring-not-ready")
         scrollTo("battery-situations"); save("battery-measuring-not-ready-situations")
     }
+    @Test fun batteryMeasuringFirstMinutes() {
+        app.store.shareOverHotspot = true
+        battery(BatteryStatus.Measuring, BatteryFakes.firstMinutes()); save("battery-measuring-first-minutes")
+        scrollTo("battery-situations-empty"); save("battery-measuring-first-minutes-situations")
+    }
     @Test fun batteryReadyWithComparison() {
         app.store.proxySetup = ProxySetup.Automatic
         battery(BatteryStatus.Measuring, BatteryFakes.compared()); save("battery-ready-compared")
