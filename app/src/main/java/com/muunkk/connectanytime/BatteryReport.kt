@@ -168,12 +168,11 @@ internal object BatteryMath {
     fun report(rows: Sequence<BatteryRow>, setup: ProxySetup): BatteryReport {
         val epochs = linkedMapOf<Pair<Long, Long>, MutableList<BatteryRow>>()
         var count = 0; var first: Long? = null; var last: Long? = null
-        var warmest: Int? = null; var dropped = 0L
+        var dropped = 0L
         var previous: BatteryRow? = null
         rows.forEach { row ->
             count++; first = first?.let { minOf(it, row.wallMin) } ?: row.wallMin
             last = last?.let { maxOf(it, row.wallMin) } ?: row.wallMin
-            row.thermal?.let { warmest = maxOf(warmest ?: it, it) }
             previous?.let { a -> if (a.boot == row.boot && a.rec == row.rec && (row.kind == BatteryKind.gap || a.kind == BatteryKind.gap))
                 dropped += (row.elapsedMs - a.elapsedMs).coerceAtLeast(0) }
             previous = row
@@ -181,6 +180,7 @@ internal object BatteryMath {
         }
         val windows = epochs.values.flatMap(::windows)
         val intervals = windows.flatMap { it.intervals }
+        val warmest = intervals.asSequence().flatMap { sequenceOf(it.first, it.last) }.mapNotNull { it.thermal }.maxOrNull()
         val all = rate(windows)
         val grouped = windows.filter { it.situation != null && it.ms >= 600_000 }.groupBy { it.situation!! }.mapValues { rate(it.value) }
         fun active(key: BatterySituation) = !key.screenOn && key.hotspot == BatteryHotspot.on && key.sharing == BatterySharing.InUse
@@ -204,12 +204,15 @@ internal object BatteryMath {
                 if (!bothReady) null else if (!visible) BatteryDifference.None else if (d > 0) BatteryDifference.More else BatteryDifference.Less,
                 if (bothReady) abs(d) else null)
         }
-        val heroKey = if (comparison != null) chosen
-            else grouped.keys.filter { active(it) && grouped.getValue(it).ready }.maxByOrNull { grouped.getValue(it).hours }
+        val heroKey = chosen?.takeIf { grouped.getValue(it).ready }
+            ?: grouped.keys.filter { active(it) && grouped.getValue(it).ready }.maxByOrNull { grouped.getValue(it).hours }
         val retained = windows.filter { it.situation != null }.groupBy { it.situation!! }
         // Keep one uplink for both progress sides, even when only short windows have been recorded.
         val progressKeys = retained.keys.filter(::active) + retained.keys.filter(::baseline)
-        val compareUplink = (chosen ?: progressKeys.maxWithOrNull(uplinkOrder))?.uplink
+        fun progressTime(uplink: Uplink?) = retained.entries
+            .filter { it.key.uplink == uplink && (active(it.key) || baseline(it.key)) }
+            .sumOf { entry -> entry.value.sumOf { it.ms } }
+        val compareUplink = (chosen ?: progressKeys.maxWithOrNull(uplinkOrder.thenBy { progressTime(it.uplink) }))?.uplink
         val compareInUse = comparison?.inUse ?: side(compareUplink, ::active)
         val compareBaseline = comparison?.baseline ?: side(compareUplink, ::baseline)
         fun progress(matches: (BatterySituation) -> Boolean) = retained.entries
@@ -220,9 +223,16 @@ internal object BatteryMath {
         val other = windows.filter { it.situation !in topKeys || it.ms < 600_000 }
         val elapsed = intervals.sumOf { it.ms }
         fun cpu(value: (BatteryRow) -> Long?): Double? {
-            if (elapsed == 0L) return null
-            val deltas = intervals.mapNotNull { i -> value(i.first)?.let { a -> value(i.last)?.let { b -> (b - a).takeIf { it >= 0 } } } }
-            return if (deltas.size != intervals.size) null else 100.0 * deltas.sum() / elapsed
+            var sampledMs = 0L
+            var deltaMs = 0L
+            for (interval in intervals) {
+                val first = value(interval.first) ?: continue
+                val last = value(interval.last) ?: continue
+                if (last < first) continue
+                deltaMs += last - first
+                sampledMs += interval.ms
+            }
+            return if (sampledMs == 0L) null else 100.0 * deltaMs / sampledMs
         }
         val proc = cpu { it.cpuProcMs }; val vpn = cpu { it.cpuVpnMs }; val fwd = cpu { it.cpuFwdMs }
         val connected = intervals.filter { it.first.vpn == BatteryVpn.connected && it.last.vpn == BatteryVpn.connected }

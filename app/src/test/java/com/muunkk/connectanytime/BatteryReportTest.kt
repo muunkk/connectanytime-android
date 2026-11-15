@@ -218,11 +218,11 @@ class BatteryReportTest {
     }
     @Test fun shortComparisonProgressNeverPairsDifferentUplinks() {
         val r = report(batteryTrace(8) + batteryTrace(rec = 2, uplink = Uplink.WiFi, sharing = false, inUse = false))
-        assertEquals(Uplink.MobileData, r.compareUplink)
+        assertEquals(Uplink.WiFi, r.compareUplink)
         assertNull(r.compareInUse)
-        assertEquals(480_000L, r.compareInUseProgressMs)
-        assertEquals(0L, r.compareBaselineProgressMs)
-        assertNull(r.compareBaseline)
+        assertEquals(0L, r.compareInUseProgressMs)
+        assertEquals(3_600_000L, r.compareBaselineProgressMs)
+        assertEquals(1.0, r.compareBaseline!!.hours, 0.0)
         assertNull(r.comparison)
         val baselineOnly = report(batteryTrace(5, sharing = false, inUse = false))
         assertNull(baselineOnly.compareInUse)
@@ -241,8 +241,9 @@ class BatteryReportTest {
                 batteryTrace(rec = 3) +
                 batteryTrace(5, rec = 4, sharing = setup == ProxySetup.Manual, inUse = false), setup)
             assertEquals(Uplink.WiFi, r.comparison!!.uplink)
-            assertEquals(Uplink.WiFi, r.heroUplink)
-            assertNull(r.hero)
+            assertEquals(Uplink.MobileData, r.heroUplink)
+            assertTrue(r.hero!!.ready)
+            assertEquals(1.0, r.hero.hours, 0.0)
             assertEquals(r.comparison.uplink, r.compareUplink)
             assertEquals(r.comparison.inUse, r.compareInUse)
             assertEquals(r.comparison.baseline, r.compareBaseline)
@@ -258,14 +259,14 @@ class BatteryReportTest {
         assertEquals(1.0, unknown.compareInUse!!.hours, 0.0)
         assertNull(unknown.compareBaseline)
     }
-    @Test fun heroStaysOnComparisonUplinkWhenItsActiveSideIsUnready() {
+    @Test fun heroUsesReadyInUseFallbackWhenComparisonActiveSideIsUnready() {
         val r = report(batteryTrace(20, rec = 1, uplink = Uplink.WiFi) +
             batteryTrace(rec = 2, uplink = Uplink.WiFi, sharing = false, inUse = false) +
             batteryTrace(rec = 3))
         assertEquals(Uplink.WiFi, r.comparison!!.uplink)
         assertFalse(r.comparison.inUse.ready)
-        assertEquals(Uplink.WiFi, r.heroUplink)
-        assertNull(r.hero)
+        assertEquals(Uplink.MobileData, r.heroUplink)
+        assertTrue(r.hero!!.ready)
     }
     @Test fun progressRatesExcludeShortWindowsAndKeepTheirDurationsSeparate() {
         val r = report(batteryTrace(rec = 1) + batteryTrace(5, loss = 500_000, rec = 2) +
@@ -290,11 +291,63 @@ class BatteryReportTest {
         assertEquals(3_600_000L, r.compareInUseProgressMs)
         assertEquals(3_600_000L, r.compareBaselineProgressMs)
     }
-    @Test fun heroFallsBackToMostReadyHoursOnlyWithoutComparison() {
+    @Test fun heroWithoutComparisonFallsBackToMostReadyHours() {
         val r = report(batteryTrace() + batteryTrace(120, rec = 2, uplink = Uplink.WiFi))
         assertNull(r.comparison)
         assertEquals(Uplink.WiFi, r.heroUplink)
         assertEquals(2.0, r.hero!!.hours, 0.0)
+    }
+    @Test fun unreadyComparisonFallsBackToReadyInUseWithMostHours() {
+        val r = report(batteryTrace(20) + batteryTrace(rec = 2, sharing = false, inUse = false) +
+            batteryTrace(rec = 3, uplink = Uplink.WiFi) + batteryTrace(120, rec = 4, uplink = Uplink.Ethernet))
+        assertEquals(Uplink.MobileData, r.comparison!!.uplink)
+        assertFalse(r.comparison.inUse.ready)
+        assertEquals(Uplink.Ethernet, r.heroUplink)
+        assertTrue(r.hero!!.ready)
+        assertEquals(2.0, r.hero.hours, 0.0)
+    }
+    @Test fun progressUplinkTiesUseRetainedTimeRegardlessOfInsertionOrder() {
+        val shorter = batteryTrace(5)
+        val longer = batteryTrace(8, rec = 2, uplink = Uplink.WiFi)
+        for (rows in listOf(shorter + longer, longer + shorter)) {
+            val r = report(rows)
+            assertNull(r.comparison)
+            assertEquals(Uplink.WiFi, r.compareUplink)
+            assertEquals(480_000L, r.compareInUseProgressMs)
+            assertEquals(0L, r.compareBaselineProgressMs)
+        }
+    }
+    @Test fun cpuUsesOnlyIntervalsWithBothCountersAndTheirElapsedTime() {
+        val rows = batteryTrace(10).filter { it.seq in listOf(0L, 1L, 3L, 6L, 10L) }.map {
+            it.copy(cpuProcMs = when (it.seq) { 0L -> 0; 1L -> 6000; 3L -> null; 6L -> 90_000; else -> 210_000 },
+                cpuVpnMs = if (it.seq == 0L) null else it.elapsedMs / 5,
+                cpuFwdMs = it.elapsedMs / 20)
+        }
+        val cpu = report(rows).cpu
+        assertEquals(42.0, cpu.totalPercent!!, 1e-10)
+        assertEquals(20.0, cpu.vpnPercent!!, 1e-10)
+        assertEquals(5.0, cpu.forwardingPercent!!, 1e-10)
+        assertEquals(17.0, cpu.otherPercent!!, 1e-10)
+        val missing = report(rows.map { it.copy(cpuProcMs = null) }).cpu
+        assertNull(missing.totalPercent); assertNull(missing.otherPercent)
+        assertEquals(20.0, missing.vpnPercent!!, 1e-10)
+        val reset = report(rows.take(2).mapIndexed { index, row -> row.copy(cpuProcMs = 10L - index) }).cpu
+        assertNull(reset.totalPercent)
+    }
+    @Test fun warmestThermalUsesOnlyValidIntervalEndpoints() {
+        val valid = batteryTrace().map { it.copy(thermal = 1) }
+        val excluded = listOf(
+            batteryTrace(rec = 2).map { it.copy(thermal = 3, plugged = 1) },
+            batteryTrace(rec = 3).map { it.copy(thermal = 3, vpn = BatteryVpn.off) },
+            batteryTrace(rec = 4).map { it.copy(thermal = 3, kind = BatteryKind.gap) },
+            listOf(batteryTrace(rec = 5).first().copy(thermal = 3)))
+        for (rows in excluded) {
+            assertEquals(BatteryThermal.Warm, report(valid + rows).warmestThermal)
+            assertNull(report(rows).warmestThermal)
+        }
+        assertEquals(BatteryThermal.Hot, report(valid.mapIndexed { index, row ->
+            row.copy(thermal = if (index == 0 || index == 60) 2 else 1)
+        }).warmestThermal)
     }
     @Test fun otherCpuIsFlooredOnlyForDisplayAndLevelIncreaseIsExcluded() {
         val r = report(batteryTrace().map { it.copy(cpuProcMs = 0) })

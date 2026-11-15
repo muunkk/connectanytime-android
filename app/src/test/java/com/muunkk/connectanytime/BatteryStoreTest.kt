@@ -230,6 +230,28 @@ class BatteryStoreTest {
         assertTrue(rows.first().seq > 0)
         assertTrue(d.file.readText().endsWith("\n"))
     }
+    @Test fun storedHeadersStaySeparateFromExportMetadataEvenAfterRotation() {
+        val d = disk(max = 4096)
+        d.add(batteryTrace().first()); d.flush(); d.awaitIdle()
+        fun checkStored() {
+            val text = d.file.readText()
+            assertTrue(text.startsWith("# schema=1\n# build="))
+            for (field in listOf("# exported=", "# capacity_mAh_est=", "# adb:", "# device=", "# android=")) {
+                assertFalse("Stored CSV contains export metadata: $field", text.contains(field))
+            }
+        }
+        checkStored()
+        batteryTrace(100).drop(1).forEach(d::add); d.flush(); d.awaitIdle()
+        assertTrue(d.file.readLines().mapNotNull(BatteryCsv::parse).first().seq > 0)
+        checkStored()
+        var exported: File? = null
+        d.export { exported = it }; d.awaitIdle(); shadowOf(Looper.getMainLooper()).idle()
+        val text = exported!!.readText()
+        assertTrue(text.contains("# exported=10000000\n"))
+        assertTrue(text.contains("# capacity_mAh_est="))
+        assertTrue(text.contains("# device="))
+        assertTrue(text.contains("# adb:"))
+    }
     @Test fun clearDeletesBufferCsvExportsAndLatchAndIgnoresConcurrentClear() {
         val d = disk()
         batteryTrace().take(5).forEach(d::add); d.awaitIdle()

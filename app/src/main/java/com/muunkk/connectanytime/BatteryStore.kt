@@ -58,11 +58,13 @@ internal class BatteryStore(private val context: Context, private val prefs: Sto
         }
         if (buffer.size >= 5 && retry == null) flushNow()
     }
-    private fun headers(): String = buildString {
+    private fun headers(export: Boolean): String = buildString {
         append("# schema=1\n# build=${BuildConfig.BUILD_DESCRIPTION}\n")
-        append("# device=${Build.MANUFACTURER} ${Build.MODEL}\n# android=${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})\n")
-        append("# capacity_mAh_est=${report.value?.capacityMah ?: ""}\n# exported=${now()}\n")
-        append("# adb: README.md, battery measurement ground truth steps\n")
+        if (export) {
+            append("# device=${Build.MANUFACTURER} ${Build.MODEL}\n# android=${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})\n")
+            append("# capacity_mAh_est=${report.value?.capacityMah ?: ""}\n# exported=${now()}\n")
+            append("# adb: README.md, battery measurement ground truth steps\n")
+        }
         append(BatteryCsv.COLUMNS); append('\n')
     }
     private fun truncateTail() {
@@ -94,7 +96,7 @@ internal class BatteryStore(private val context: Context, private val prefs: Sto
             truncateTail()
             val last = lastId()
             while (buffer.isNotEmpty() && last != null && !after(buffer.first().id, last)) buffer.removeFirst()
-            if (!file.exists() || file.length() == 0L) append(file, headers())
+            if (!file.exists() || file.length() == 0L) append(file, headers(export = false))
             if (buffer.isNotEmpty()) append(file, buffer.joinToString("") { BatteryCsv.write(it) + "\n" })
             buffer.clear()
             rotate()
@@ -116,7 +118,7 @@ internal class BatteryStore(private val context: Context, private val prefs: Sto
         if (file.length() <= maxBytes) return
         val temp = File(file.parentFile, "samples.tmp")
         FileOutputStream(temp).use { output ->
-            output.write(headers().toByteArray(Charsets.UTF_8))
+            output.write(headers(export = false).toByteArray(Charsets.UTF_8))
             RandomAccessFile(file, "r").use { input ->
                 input.seek(file.length() / 2)
                 input.readLine() // The cut can be inside a row.
@@ -162,7 +164,7 @@ internal class BatteryStore(private val context: Context, private val prefs: Sto
             do { out = File(exports, "battery-$stamp-${UUID.randomUUID().toString().take(4)}.csv") } while (!out.createNewFile())
             try {
                 out.outputStream().bufferedWriter().use { writer ->
-                    writer.write(headers())
+                    writer.write(headers(export = true))
                     rows { rows -> rows.forEach { writer.write(BatteryCsv.write(it)); writer.newLine() } }
                 }
                 out

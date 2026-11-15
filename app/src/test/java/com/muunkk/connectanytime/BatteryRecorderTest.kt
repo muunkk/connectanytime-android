@@ -167,6 +167,74 @@ class BatteryRecorderTest {
         assertFalse(app.store.measureBattery); assertTrue(c.autoStopped.value)
         assertEquals(BatteryStatus.AutoStopped, c.status.value)
     }
+    @Test fun queuedRecorderExpiryCannotStopRestartedMeasurement() {
+        val c = control(); busy(); c.setEnabled(true); drain(c)
+        val old = BatteryControl::class.java.getDeclaredField("recorder").apply { isAccessible = true }.get(c)
+        val expired = BatteryRecorder::class.java.getDeclaredField("expired").apply { isAccessible = true }
+            .get(old) as Function0<*>
+        wall = app.store.batteryDeadline
+        // The worker has noticed expiry, but main is still occupied when the user restarts.
+        Executors.newSingleThreadExecutor().let { worker ->
+            try { worker.submit { expired.invoke() }.get(5, TimeUnit.SECONDS) }
+            finally { worker.shutdownNow() }
+        }
+        c.setEnabled(false)
+        c.setEnabled(true)
+        val newDeadline = app.store.batteryDeadline
+        drain(c)
+        assertTrue(app.store.measureBattery)
+        assertEquals(newDeadline, app.store.batteryDeadline)
+        assertEquals(BatteryStatus.Measuring, c.status.value)
+        assertFalse(c.autoStopped.value)
+        val line = app.getString(R.string.battery_log_auto_stop)
+        assertTrue(app.log.state.value.none { it.endsWith(line) })
+    }
+    @Test fun recorderExpiryRechecksPersistedDeadlineForTheSameRecorder() {
+        val c = control(); busy(); c.setEnabled(true); drain(c)
+        val oldDeadline = app.store.batteryDeadline
+        val r = BatteryControl::class.java.getDeclaredField("recorder").apply { isAccessible = true }.get(c)
+        val expired = BatteryRecorder::class.java.getDeclaredField("expired").apply { isAccessible = true }
+            .get(r) as Function0<*>
+        wall = oldDeadline
+        Executors.newSingleThreadExecutor().let { worker ->
+            try { worker.submit { expired.invoke() }.get(5, TimeUnit.SECONDS) }
+            finally { worker.shutdownNow() }
+        }
+        app.store.batteryDeadline = wall + 60_000
+        drain(c)
+        assertTrue(app.store.measureBattery)
+        assertFalse(c.autoStopped.value)
+        assertEquals(BatteryStatus.Measuring, c.status.value)
+    }
+    @Test fun deadlineStopsWithoutAnyVpnOrPreferenceChange() {
+        val c = control(); c.setEnabled(true); drain(c)
+        assertEquals(BatteryStatus.PausedVpnOff, c.status.value)
+        wall = app.store.batteryDeadline - 1
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofDays(7).minusMillis(1))
+        assertTrue(app.store.measureBattery)
+        wall++
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1))
+        drain(c)
+        assertFalse(app.store.measureBattery)
+        assertTrue(c.autoStopped.value)
+        assertEquals(BatteryStatus.AutoStopped, c.status.value)
+    }
+    @Test fun deadlineTimerRearmsFromCurrentWallTimeAndCancelsOnClose() {
+        val c = control(); c.setEnabled(true); drain(c)
+        val deadline = app.store.batteryDeadline
+        // A backward wall-clock change must not let the uptime timer stop early.
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofDays(7))
+        assertTrue(app.store.measureBattery)
+        wall = deadline
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofDays(7))
+        drain(c)
+        assertEquals(BatteryStatus.AutoStopped, c.status.value)
+        c.setEnabled(true); drain(c)
+        c.close()
+        wall = app.store.batteryDeadline
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofDays(7))
+        assertTrue(app.store.measureBattery)
+    }
     @Test fun vpnOffAndProcessRecoveryCheckExpiredDeadlineBeforeStarting() {
         val c = control(); c.setEnabled(true); drain(c)
         wall = app.store.batteryDeadline + 1
@@ -194,8 +262,12 @@ class BatteryRecorderTest {
         val c = control(true); busy(); c.setEnabled(true); drain(c)
         c.disk.flush(); c.disk.awaitIdle(); drain(c)
         assertEquals(BatteryStatus.CouldNotSave, c.status.value); assertTrue(app.store.measureBattery)
+        assertEquals(BatteryProblem.SaveFailed, c.problem.value)
         c.retrySave(); c.disk.awaitIdle(); drain(c)
         assertTrue(app.store.measureBattery)
+        assertEquals(BatteryProblem.SaveFailed, c.problem.value)
+        c.setEnabled(false); drain(c)
+        assertNull(c.problem.value)
     }
     @Test fun failedStartLogsOnlyCauseTypeOnceAndRetryCanStartRecording() {
         var fail = true
@@ -206,6 +278,7 @@ class BatteryRecorderTest {
         val before = app.log.state.value.count { it.endsWith(line) }
         busy(); c.setEnabled(true); drain(c)
         assertEquals(BatteryStatus.CouldNotSave, c.status.value)
+        assertEquals(BatteryProblem.StartFailed, c.problem.value)
         assertTrue(app.store.measureBattery)
         assertEquals(before + 1, app.log.state.value.count { it.endsWith(line) })
         assertTrue(app.log.state.value.none { it.contains("/private/user/account") })
@@ -215,6 +288,7 @@ class BatteryRecorderTest {
         assertEquals(before + 1, app.log.state.value.count { it.endsWith(line) })
         fail = false; c.retrySave(); drain(c)
         assertEquals(BatteryStatus.Measuring, c.status.value)
+        assertNull(c.problem.value)
         assertEquals(before + 1, app.log.state.value.count { it.endsWith(line) })
     }
     @Test fun asynchronousStartFailureLogsCauseOnceAndRetryRestartsRecorder() {
@@ -232,6 +306,7 @@ class BatteryRecorderTest {
         val before = app.log.state.value.count { it.endsWith(line) }
         busy(); c.setEnabled(true); drain(c)
         assertEquals(BatteryStatus.CouldNotSave, c.status.value)
+        assertEquals(BatteryProblem.StartFailed, c.problem.value)
         assertTrue(app.store.measureBattery)
         assertEquals(0L, ProxyCounters.gen)
         assertEquals(before + 1, app.log.state.value.count { it.endsWith(line) })
@@ -240,8 +315,29 @@ class BatteryRecorderTest {
         assertEquals(before + 1, app.log.state.value.count { it.endsWith(line) })
         fail = false; c.retrySave(); drain(c)
         assertEquals(BatteryStatus.Measuring, c.status.value)
+        assertNull(c.problem.value)
         assertTrue(ProxyCounters.gen > 0)
         assertEquals(before + 1, app.log.state.value.count { it.endsWith(line) })
+    }
+    @Test fun startProblemTakesPrecedenceAndFallsBackToDiskProblemAfterRetry() {
+        var failStart = true
+        var failSave = true
+        val disk = BatteryStore(app, app.store, append = { file, text ->
+            if (failSave) error("full") else file.appendText(text)
+        }).also { disks += it }
+        val c = BatteryControl(app, disk, { if (failStart) error("unavailable") else readings }, { wall })
+            .also { controls += it }
+        assertNull(c.problem.value)
+        busy(); c.setEnabled(true); drain(c)
+        disk.flush(); disk.awaitIdle(); drain(c)
+        assertTrue(disk.failed.value)
+        assertEquals(BatteryProblem.StartFailed, c.problem.value)
+        failStart = false; c.retrySave(); drain(c)
+        assertEquals(BatteryStatus.CouldNotSave, c.status.value)
+        assertEquals(BatteryProblem.SaveFailed, c.problem.value)
+        failSave = false; c.retrySave(); drain(c)
+        assertEquals(BatteryStatus.Measuring, c.status.value)
+        assertNull(c.problem.value)
     }
     @Test fun clearDuringRecordingAllocatesNewRecAndResetsAutoStopped() {
         val c = control(); busy(); c.setEnabled(true); drain(c)

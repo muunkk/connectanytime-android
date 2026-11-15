@@ -21,6 +21,7 @@ import kotlinx.coroutines.launch
 import java.io.File
 
 enum class BatteryStatus { Off, Measuring, PausedVpnOff, PausedCharging, CouldNotSave, AutoStopped }
+enum class BatteryProblem { StartFailed, SaveFailed }
 internal data class BatteryPrefs(val enabled: Boolean, val autoStopped: Boolean, val deadline: Long,
     val sharing: Boolean, val usbSharing: Boolean, val setup: ProxySetup)
 internal fun batteryPrefs(store: Store) = callbackFlow {
@@ -43,6 +44,9 @@ class BatteryControl internal constructor(private val app: ConnectApp,
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val mutableStatus = MutableStateFlow(BatteryStatus.Off)
     val status: StateFlow<BatteryStatus> = mutableStatus.asStateFlow()
+    private val mutableProblem = MutableStateFlow<BatteryProblem?>(null)
+    /** Reason for CouldNotSave; cleared when off or recovered. Start failure takes precedence. */
+    val problem: StateFlow<BatteryProblem?> = mutableProblem.asStateFlow()
     val report: StateFlow<BatteryReport?> = disk.report
     private val mutableAutoStopped = MutableStateFlow(app.store.batteryAutoStopped)
     val autoStopped: StateFlow<Boolean> = mutableAutoStopped.asStateFlow()
@@ -55,6 +59,14 @@ class BatteryControl internal constructor(private val app: ConnectApp,
     private var stopping = false
     private var startFailed = false
     private var erasing = false
+    private var closed = false
+    private val deadlineReconcile = Runnable { reconcile() }
+    private fun armDeadline(prefs: BatteryPrefs) {
+        main.removeCallbacks(deadlineReconcile)
+        // Uptime timers can run late after sleep, or early after a backward wall-clock change.
+        // Reconcile always checks the current wall clock and persisted deadline before stopping.
+        if (prefs.enabled) main.postDelayed(deadlineReconcile, (prefs.deadline - now()).coerceAtLeast(0))
+    }
     init {
         scope.launch {
             combine(batteryPrefs(app.store), ConnectApp.state, disk.failed, plugged) { prefs, vpn, failed, charging ->
@@ -64,6 +76,8 @@ class BatteryControl internal constructor(private val app: ConnectApp,
     }
     private data class State(val prefs: BatteryPrefs, val busy: Boolean, val failed: Boolean, val charging: Boolean)
     private fun update(state: State) {
+        if (closed) return
+        armDeadline(state.prefs)
         mutableAutoStopped.value = state.prefs.autoStopped
         if (state.prefs.enabled && now() >= state.prefs.deadline) { autoStop(); return }
         if (state.prefs.enabled && state.busy && !clearPending) {
@@ -72,7 +86,9 @@ class BatteryControl internal constructor(private val app: ConnectApp,
                     val sticky = app.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
                     plugged.value = (sticky?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
                     lateinit var next: BatteryRecorder
-                    next = BatteryRecorder(app, disk, readings(), { onMain { autoStop() } }, { charging ->
+                    next = BatteryRecorder(app, disk, readings(), { onMain {
+                        if (recorder === next) autoStop()
+                    } }, { charging ->
                         onMain { if (recorder === next) plugged.value = charging }
                     }, failed = { cause -> onMain {
                         if (recorder === next) { recorderFailed(cause); reconcile() }
@@ -82,6 +98,12 @@ class BatteryControl internal constructor(private val app: ConnectApp,
                 }.onFailure(::recorderFailed)
             }
         } else { stopRecorder() }
+        mutableProblem.value = when {
+            !state.prefs.enabled -> null
+            startFailed -> BatteryProblem.StartFailed
+            state.failed -> BatteryProblem.SaveFailed
+            else -> null
+        }
         mutableStatus.value = when {
             !state.prefs.enabled -> if (state.prefs.autoStopped) BatteryStatus.AutoStopped else BatteryStatus.Off
             state.failed || startFailed -> BatteryStatus.CouldNotSave
@@ -102,9 +124,11 @@ class BatteryControl internal constructor(private val app: ConnectApp,
         if (Looper.myLooper() == Looper.getMainLooper()) block() else main.post { block() }
     }
     private fun autoStop() {
-        if (!app.store.measureBattery) return
+        if (!app.store.measureBattery || now() < app.store.batteryDeadline) return
+        main.removeCallbacks(deadlineReconcile)
         app.store.prefs.edit().putBoolean("batteryAutoStopped", true).putBoolean("measureBattery", false).apply()
         stopRecorder()
+        mutableProblem.value = null
         mutableAutoStopped.value = true; mutableStatus.value = BatteryStatus.AutoStopped
         app.log.add(app.getString(R.string.battery_log_auto_stop))
     }
@@ -150,7 +174,10 @@ class BatteryControl internal constructor(private val app: ConnectApp,
         stopRecorder()
         if (!stopping) erase()
     }
-    internal fun close() { scope.cancel(); recorder?.stop(); recorder = null; plugged.value = false }
+    internal fun close() {
+        closed = true; main.removeCallbacks(deadlineReconcile)
+        scope.cancel(); recorder?.stop(); recorder = null; plugged.value = false
+    }
     fun retrySave() = onMain { startFailed = false; disk.retrySave(); reconcile() }
     fun refresh() { disk.refresh() }
     fun export(callback: (File?) -> Unit) { disk.export(callback) }
