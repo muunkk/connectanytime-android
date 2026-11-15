@@ -5,6 +5,8 @@ import android.graphics.Canvas
 import android.view.View
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -328,5 +330,62 @@ class ScreenshotTest(private val dark: Boolean) {
     @Test fun activityEmpty() {
         compose.setContent { ConnectTheme(dark = dark, dynamicColor = false) { ActivityScreen(app.log, {}, {}) } }
         save("activity-empty")
+    }
+
+    // ---- Battery drain ----
+    private fun battery(status: BatteryStatus, report: BatteryReport?, fontScale: Float? = null, rtl: Boolean = false) {
+        compose.setContent { ConnectTheme(dark = dark, dynamicColor = false) {
+            val density = LocalDensity.current
+            CompositionLocalProvider(LocalDensity provides Density(density.density, fontScale ?: density.fontScale),
+                LocalLayoutDirection provides if (rtl) LayoutDirection.Rtl else LayoutDirection.Ltr) {
+                BatteryContent(app.store, status, report, false, {}, {}, {}, {}, {})
+            }
+        } }
+        compose.waitForIdle()
+    }
+    private fun scrollTo(tag: String) { compose.onNode(hasScrollToNodeAction()).performScrollToNode(hasTestTag(tag)); compose.waitForIdle() }
+    @Test fun batteryOff() { battery(BatteryStatus.Off, BatteryReport()); save("battery-off") }
+    @Test fun batteryMeasuringNotReady() {
+        app.store.shareOverHotspot = true
+        battery(BatteryStatus.Measuring, BatteryFakes.notReady()); save("battery-measuring-not-ready")
+        scrollTo("battery-situations"); save("battery-measuring-not-ready-situations")
+    }
+    @Test fun batteryReadyWithComparison() {
+        app.store.proxySetup = ProxySetup.Automatic
+        battery(BatteryStatus.Measuring, BatteryFakes.compared()); save("battery-ready-compared")
+        scrollTo("battery-side-baseline"); save("battery-ready-compared-rows")
+        scrollTo("battery-more"); compose.onNodeWithTag("battery-more").performClick(); compose.onNode(hasScrollToNodeAction()).performScrollToNode(hasText("Cellular data", substring = true))
+        compose.waitForIdle(); save("battery-ready-more-detail")
+    }
+    @Test fun batteryCouldNotSave() { battery(BatteryStatus.CouldNotSave, BatteryFakes.notReady()); save("battery-could-not-save") }
+    @Test fun batteryPausedCharging() { battery(BatteryStatus.PausedCharging, BatteryFakes.compared()); save("battery-paused-charging") }
+    @Test fun homeBatteryCouldNotSave() {
+        account(); compose.setContent { ConnectTheme(dark = dark, dynamicColor = false) {
+            HomeScreen(app.store, VpnState("Connected", busy = true, connected = true), false, {}, {}, {}, {}, battery = BatteryStatus.CouldNotSave)
+        } }
+        compose.onNodeWithTag("battery-row").performScrollTo()
+        save("home-battery-could-not-save")
+    }
+    @Test @Config(qualifiers = "w891dp-h411dp-xhdpi") fun homeBatteryCouldNotSaveWide() {
+        account(); compose.setContent { ConnectTheme(dark = dark, dynamicColor = false) {
+            HomeScreen(app.store, VpnState("Connected", busy = true, connected = true), false, {}, {}, {}, {}, battery = BatteryStatus.CouldNotSave)
+        } }
+        compose.onNodeWithTag("battery-row").performScrollTo()
+        save("home-battery-could-not-save-w891dp")
+    }
+    @Test @Config(qualifiers = "w891dp-h411dp-xhdpi") fun batteryLandscape200() {
+        battery(BatteryStatus.Measuring, BatteryFakes.compared(), fontScale = 2f); save("battery-landscape-200pct")
+        scrollTo("battery-hero"); save("battery-landscape-200pct-hero")
+    }
+    @Test fun batteryPortrait200() { battery(BatteryStatus.Measuring, BatteryFakes.compared(), fontScale = 2f); save("battery-200pct") }
+    @Test fun batteryRtl() {
+        app.store.proxySetup = ProxySetup.Automatic
+        battery(BatteryStatus.Measuring, BatteryFakes.compared(), rtl = true); save("battery-rtl")
+        scrollTo("battery-more"); compose.onNodeWithTag("battery-more").performClick(); scrollTo("battery-more"); save("battery-rtl-more")
+    }
+    @Test @Config(qualifiers = "w360dp-h800dp-xhdpi") fun batteryCompared360Large() {
+        app.store.proxySetup = ProxySetup.Automatic
+        battery(BatteryStatus.Measuring, BatteryFakes.compared(), fontScale = 2f)
+        scrollTo("battery-side-in-use"); save("battery-compared-360dp-200pct")
     }
 }

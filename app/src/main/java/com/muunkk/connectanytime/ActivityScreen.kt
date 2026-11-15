@@ -5,7 +5,6 @@ package com.muunkk.connectanytime
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
@@ -100,7 +99,7 @@ fun ActivityScreen(log: ActivityLog, onBack: () -> Unit, onShare: (List<String>)
         }
         // At large font sizes the time sits above its line instead of in a column.
         val stacked = LocalDensity.current.fontScale >= 1.5f
-        LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp)) {
+        ReadableLazyColumn(padding) {
             groups.forEachIndexed { g, (day, entries) ->
                 if (day != null) item(key = "day$g") {
                     Text(dayLabel(day), style = MaterialTheme.typography.titleSmallEmphasized, color = MaterialTheme.colorScheme.primary,

@@ -56,7 +56,8 @@ fun VpnState.phase(): Phase = when {
 @Composable
 fun HomeScreen(store: Store, state: VpnState, notificationDenied: Boolean, onConnect: () -> Unit,
     onDisconnect: () -> Unit, onActivity: () -> Unit, onStayChanged: () -> Unit,
-    update: UpdateState = UpdateState.Idle, onCheckUpdate: () -> Unit = {}, onInstallUpdate: () -> Unit = {}) {
+    update: UpdateState = UpdateState.Idle, onCheckUpdate: () -> Unit = {}, onInstallUpdate: () -> Unit = {},
+    battery: BatteryStatus = BatteryStatus.Off, onBattery: () -> Unit = {}) {
     val focus = LocalFocusManager.current
     var user by rememberSaveable { mutableStateOf(store.user) }
     var server by rememberSaveable { mutableStateOf(store.server) }
@@ -93,7 +94,8 @@ fun HomeScreen(store: Store, state: VpnState, notificationDenied: Boolean, onCon
             val settings = @Composable {
                 Settings(store, state, user, { user = it; store.user = it }, server, { server = it; store.server = it },
                     hasPassword, { hasPassword = it; if (it) problem = null }, onActivity,
-                    stay, { stay = it; store.stayConnected = it; onStayChanged() }, update, restarts, onCheckUpdate, onInstallUpdate)
+                    stay, { stay = it; store.stayConnected = it; onStayChanged() }, update, restarts, onCheckUpdate, onInstallUpdate,
+                    battery, onBattery)
             }
             if (maxWidth >= 600.dp) {
                 // Side by side on tablets and wide landscape: the status stays in view.
@@ -270,7 +272,8 @@ private fun PrimaryButton(busy: Boolean, onClick: () -> Unit) {
 @Composable
 private fun Settings(store: Store, state: VpnState, user: String, onUser: (String) -> Unit, server: String, onServer: (String) -> Unit,
     hasPassword: Boolean, onHasPassword: (Boolean) -> Unit, onActivity: () -> Unit, stay: Boolean, onStay: (Boolean) -> Unit,
-    update: UpdateState, restarts: Boolean, onCheckUpdate: () -> Unit, onInstallUpdate: () -> Unit) {
+    update: UpdateState, restarts: Boolean, onCheckUpdate: () -> Unit, onInstallUpdate: () -> Unit,
+    battery: BatteryStatus, onBattery: () -> Unit) {
     val context = LocalContext.current
     val focus = LocalFocusManager.current
     // Passwords deliberately never enter saved instance state.
@@ -362,11 +365,12 @@ private fun Settings(store: Store, state: VpnState, user: String, onUser: (Strin
     ShareSection(store)
 
     Spacer(Modifier.height(24.dp))
-    Group(1) {
-        SegmentedListItem(colors = segmentColors(), onClick = onActivity, shapes = ListItemDefaults.segmentedShapes(0, 1),
+    Group(2) { index ->
+        if (index == 0) SegmentedListItem(colors = segmentColors(), onClick = onActivity, shapes = ListItemDefaults.segmentedShapes(0, 2),
             leadingContent = { Icon(painterResource(R.drawable.ic_list), contentDescription = null) },
             trailingContent = { Icon(painterResource(R.drawable.ic_chevron_right), contentDescription = null) },
             supportingContent = { Text(stringResource(R.string.activity_help)) }) { Text(stringResource(R.string.activity)) }
+        else BatteryRow(battery, onBattery)
     }
 
     SectionTitle(R.string.about)
@@ -391,6 +395,30 @@ private fun Settings(store: Store, state: VpnState, user: String, onUser: (Strin
             }, modifier = Modifier.heightIn(min = 48.dp)) { Text(stringResource(R.string.remove)) }
         },
         dismissButton = { TextButton(onClick = { confirmRemove = false }, modifier = Modifier.heightIn(min = 48.dp)) { Text(stringResource(R.string.cancel)) } })
+}
+
+/** Home's way into the Battery screen: its status, never a ticking duration. */
+@Composable
+private fun BatteryRow(status: BatteryStatus, onClick: () -> Unit) {
+    val title = stringResource(R.string.battery_title)
+    val spoken = stringResource(R.string.battery_home_spoken, title, stringResource(batteryHomeSpoken(status)))
+    val open = stringResource(R.string.battery_open)
+    val failed = status == BatteryStatus.CouldNotSave
+    SegmentedListItem(colors = segmentColors(), onClick = onClick, shapes = ListItemDefaults.segmentedShapes(1, 2),
+        modifier = Modifier.testTag("battery-row").clearAndSetSemantics {
+            contentDescription = spoken
+            onClick(label = open) { onClick(); true }
+        },
+        // The primary tint while measuring is decoration; the text says the same.
+        leadingContent = { Icon(painterResource(R.drawable.ic_battery), contentDescription = null,
+            tint = if (status == BatteryStatus.Measuring) MaterialTheme.colorScheme.primary else LocalContentColor.current) },
+        trailingContent = { Icon(painterResource(R.drawable.ic_chevron_right), contentDescription = null) },
+        supportingContent = {
+            if (failed) Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(painterResource(R.drawable.ic_error), contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
+                Text(stringResource(R.string.battery_status_save_failed_home), color = MaterialTheme.colorScheme.error)
+            } else Text(stringResource(batteryStatusText(status)))
+        }) { Text(title) }
 }
 
 // Segments sit on surfaceContainer so each group reads as one block on the background.
@@ -418,7 +446,10 @@ internal fun SectionTitle(id: Int) {
 }
 
 @Composable
-internal fun Footnote(id: Int) {
-    Text(stringResource(id), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+internal fun Footnote(id: Int) = Footnote(stringResource(id))
+
+@Composable
+internal fun Footnote(text: String) {
+    Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp))
 }
