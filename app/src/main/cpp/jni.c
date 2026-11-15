@@ -164,9 +164,9 @@ JNIEXPORT jstring JNICALL API(error)(JNIEnv *e, jobject self, jlong handle) {
     (void)self; return string(e, B->error);
 }
 JNIEXPORT jobjectArray JNICALL API(saved)(JNIEnv *e, jobject self, jlong handle) {
-    (void)self; char *s[4];
-    if (ocb_session_saved(B->s, s)) { const char *none[4] = {0}; return strings(e, none, 4); }
-    jobjectArray a = strings(e, (const char **)s, 4);
+    (void)self; char *s[OCB_SAVED_COUNT];
+    if (ocb_session_saved(B->s, s)) { const char *none[OCB_SAVED_COUNT] = {0}; return strings(e, none, OCB_SAVED_COUNT); }
+    jobjectArray a = strings(e, (const char **)s, OCB_SAVED_COUNT);
     ocb_saved_free(s); // wipes the cookie copy
     return a;
 }

@@ -171,6 +171,55 @@ class LogicTest {
         tuns.switched()
         assertEquals(listOf("b", "a"), closed)
     }
+    @Test fun aSwitchBringsTheVpnUpOnlyIfNoNewerReconnectStarted() {
+        val tuns = TunHandoff<String> { }
+        tuns.install("a")
+        tuns.offer("b") // RECONNECTED with new settings
+        assertTrue(tuns.awaitPending()) // so the service doesn't say Connected yet
+        assertEquals("b", tuns.take())
+        assertTrue(tuns.switched()) // SWITCHED: Connected
+        tuns.offer("c")
+        tuns.reconnecting() // the next reconnect started before OpenConnect read SWITCH_TUN
+        assertEquals("c", tuns.take()) // read during that reconnect
+        assertFalse(tuns.switched()) // still Reconnecting…; the watchdog keeps going
+        assertFalse(tuns.awaitPending()) // its RECONNECTED, nothing left to take: Connected
+    }
+    @Test fun aReconnectThatOvertakesAnOfferWaitsForIt() {
+        val tuns = TunHandoff<String> { }
+        tuns.install("a")
+        tuns.offer("b")
+        tuns.reconnecting() // a newer reconnect before the switch
+        assertTrue(tuns.awaitPending()) // its RECONNECTED needs no new interface, but b isn't taken yet
+        tuns.take()
+        assertTrue(tuns.switched())
+    }
+    @Test fun stoppingWhileASwitchIsOfferedClosesItAndALateSwitchChangesNothing() {
+        val closed = mutableListOf<String>()
+        val tuns = TunHandoff<String> { closed += it }
+        tuns.install("a")
+        tuns.offer("b")
+        tuns.closeAll() // Disconnect before OpenConnect took b
+        assertEquals(listOf("a", "b"), closed)
+        assertNull(tuns.take())
+        assertFalse(tuns.switched())
+        // A SWITCHED from a run that already ended, after the rejoin installed c:
+        tuns.install("c")
+        tuns.offer("d"); tuns.take()
+        tuns.install("e") // that run ended; the rejoin built e
+        closed.clear()
+        assertFalse(tuns.switched()) // the stale report neither says Connected...
+        assertEquals(emptyList<String>(), closed) // ...nor closes anything in use
+        assertEquals("e", tuns.current())
+    }
+    @Test fun onlyAnEndedSessionIsntSavedWhenARunEnds() {
+        assertFalse(RunEnd.keepsSession(-1 * 1)) // EPERM: 401
+        assertFalse(RunEnd.keepsSession(-4)) // EINTR: logged out
+        assertFalse(RunEnd.keepsSession(-32)) // EPIPE: the server terminated it
+        assertTrue(RunEnd.keepsSession(-103)) // ECONNABORTED: detached (OS stop, give-up)
+        assertTrue(RunEnd.keepsSession(-110)) // ETIMEDOUT
+        assertTrue(RunEnd.keepsSession(-1 * 5)) // EIO
+        assertTrue(RunEnd.keepsSession(-22)) // EINVAL
+    }
     @Test fun aRunThatEndsBeforeSwitchingLeavesTheNewestInterface() {
         val closed = mutableListOf<String>()
         val tuns = TunHandoff<String> { closed += it }

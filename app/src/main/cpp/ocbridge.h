@@ -59,12 +59,16 @@ int ocb_connect(ocb_session *s, char *err, size_t errlen);
 int ocb_resume(ocb_session *s, const char *url, const char *cookie, const char *dnsname,
                const char *ip, char *err, size_t errlen);
 
-/// What ocb_resume needs to rejoin the session later (url, cookie, dnsname, ip), as
-/// of the last successful connect, resume or reconnect. Thread-safe: copies taken
-/// while ocb_run may be reconnecting. Free them with ocb_saved_free. 0 on success.
-/// The cookie is a credential (it carries the current STRAP key); never log it.
-int ocb_session_saved(ocb_session *s, char *out[4]);
-void ocb_saved_free(char *saved[4]);
+/// What ocb_resume needs to rejoin the session later: url, cookie, dnsname, ip, and a
+/// candidate cookie ("" if none). The cookie carries the STRAP key the server last
+/// accepted. The candidate carries a newer key that a CONNECT presented without an
+/// answer: the server may hold it, so try it only if the cookie gets OCB_SESSION_ENDED.
+/// As of the last connect, resume or reconnect, or the end of ocb_run. Thread-safe:
+/// copies taken while ocb_run may be reconnecting. Free them with ocb_saved_free.
+/// 0 on success. Both cookies are credentials; never log them.
+#define OCB_SAVED_COUNT 5
+int ocb_session_saved(ocb_session *s, char *out[OCB_SAVED_COUNT]);
+void ocb_saved_free(char *saved[OCB_SAVED_COUNT]);
 
 int ocb_get_config(ocb_session *s, ocb_config *out);
 void ocb_config_free(ocb_config *c);

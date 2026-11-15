@@ -35,11 +35,11 @@ struct ocb_session {
     char auth_error[512];
     char first_error[256]; // OpenConnect's first error in ocb_connect, to say why it failed
     char *pin_name, *pin_ip; // resolve pin_name to pin_ip (see ocb_resume)
-    // What ocb_resume needs (url, cookie, dnsname, ip), copied on OpenConnect's own
-    // thread after each successful CONNECT: a reconnect replaces the cookie's STRAP
-    // key (see openconnect-strap-cookie.patch) and may free the strings it came from.
+    // What ocb_resume needs (url, cookie, dnsname, ip, candidate cookie), copied on
+    // OpenConnect's own thread: a reconnect replaces the cookie's STRAP key (see
+    // openconnect-strap-cookie.patch) and may free the strings it came from.
     pthread_mutex_t saved_lock;
-    char *saved[4];
+    char *saved[OCB_SAVED_COUNT];
 };
 
 enum { LOGIN_IDLE, LOGIN_SENDING_SECRETS, LOGIN_ABORTED };
@@ -331,31 +331,36 @@ int ocb_resume(ocb_session *s, const char *url, const char *cookie, const char *
 
 static char *dup_or_empty(const char *v) { return strdup(v ? v : ""); }
 
-// Only on the thread that owns s->vpn: after ocb_connect or ocb_resume, or in
-// reconnected_cb while ocb_run is going.
+// Only on the thread that owns s->vpn: after ocb_connect or ocb_resume, in
+// reconnected_cb, and when ocb_run ends.
 static void snapshot_saved(ocb_session *s) {
-    char *next[4] = {
+    const char *cookie = openconnect_get_cookie(s->vpn); // the key the server last accepted
+    // The key a CONNECT presented without an answer, if it differs: the server may hold it.
+    char *candidate = openconnect_strap_candidate_cookie(s->vpn);
+    if (candidate && cookie && !strcmp(candidate, cookie)) { wipe_free(candidate); candidate = NULL; }
+    char *next[OCB_SAVED_COUNT] = {
         // openconnect_get_connect_url appends to its buffer on every call; ask once.
         s->saved[0] ? NULL : dup_or_empty(openconnect_get_connect_url(s->vpn)),
-        dup_or_empty(openconnect_get_cookie(s->vpn)), // current STRAP key, with our patch
+        dup_or_empty(cookie),
         dup_or_empty(openconnect_get_dnsname(s->vpn)),
         dup_or_empty(openconnect_get_hostname(s->vpn)), // the address connected to, despite the name
+        candidate ? candidate : strdup(""),
     };
     pthread_mutex_lock(&s->saved_lock);
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < OCB_SAVED_COUNT; i++) {
         if (i == 0 && !next[0]) continue;
         char *old = s->saved[i];
         s->saved[i] = next[i];
         next[i] = old;
     }
     pthread_mutex_unlock(&s->saved_lock);
-    for (int i = 0; i < 4; i++) wipe_free(next[i]);
+    for (int i = 0; i < OCB_SAVED_COUNT; i++) wipe_free(next[i]);
 }
 
-int ocb_session_saved(ocb_session *s, char *out[4]) {
+int ocb_session_saved(ocb_session *s, char *out[OCB_SAVED_COUNT]) {
     int ok = 1;
     pthread_mutex_lock(&s->saved_lock);
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < OCB_SAVED_COUNT; i++) {
         out[i] = s->saved[i] ? strdup(s->saved[i]) : NULL;
         ok = ok && out[i];
     }
@@ -364,8 +369,8 @@ int ocb_session_saved(ocb_session *s, char *out[4]) {
     return 0;
 }
 
-void ocb_saved_free(char *saved[4]) {
-    for (int i = 0; i < 4; i++) { wipe_free(saved[i]); saved[i] = NULL; }
+void ocb_saved_free(char *saved[OCB_SAVED_COUNT]) {
+    for (int i = 0; i < OCB_SAVED_COUNT; i++) { wipe_free(saved[i]); saved[i] = NULL; }
 }
 
 static char *dup_or_null(const char *v) { return v && *v ? strdup(v) : NULL; }
@@ -445,9 +450,11 @@ static void stats_cb(void *priv, const struct oc_stats *stats) {
     int fd = s->next_tun ? s->next_tun(s->ctx) : -1;
     if (fd < 0) return;
     if (openconnect_setup_tun_fd(s->vpn, fd)) {
-        // It already dropped the old fd. End this run; the caller rejoins.
+        // It already dropped the old fd but can't use the new one. End this run (the
+        // caller rejoins and closes both); don't report a switch that didn't happen.
         logf_(s, PRG_ERR, "Couldn't switch to the new VPN interface");
         ocb_detach(s);
+        return;
     }
     if (s->event) s->event(s->ctx, OCB_TUN_SWITCHED, NULL);
 }
@@ -457,11 +464,14 @@ int ocb_run(ocb_session *s, int tun_fd, int reconnect_timeout) {
     // library.c vpninfo_free does not close an externally supplied fd. We never
     // set a script: ParcelFileDescriptor owns this borrowed fd (and any that
     // stats_cb switches to) across rejoins.
-    if (openconnect_setup_tun_fd(s->vpn, tun_fd)) return -1;
+    if (openconnect_setup_tun_fd(s->vpn, tun_fd)) return -EIO; // not -1: that's -EPERM, a 401
     int ret;
     // Only a pause makes the mainloop return 0 (it closes its connections first).
     // Calling it again reconnects with the session cookie: no new login or Duo push.
     while ((ret = openconnect_mainloop(s->vpn, reconnect_timeout, RECONNECT_INTERVAL_MIN)) == 0) {}
+    // A reconnect may have got its 200 (so the server holds a new key) and then failed,
+    // or sent a new key and heard nothing back: keep both for the caller to save.
+    snapshot_saved(s);
     return ret;
 }
 

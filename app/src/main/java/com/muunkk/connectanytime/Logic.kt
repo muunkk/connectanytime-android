@@ -182,11 +182,16 @@ class NetworkBaseline {
  *  (so traffic never bypasses the VPN) and [offer]s it, OpenConnect [take]s it on its own
  *  thread, and once it reports the switch, [switched] closes the old one. Never close an
  *  interface OpenConnect may still use: the fd number could be reused under it.
- *  Thread-safe; `close` runs under the lock and must not block. */
+ *  Also tracks whether a reported switch brings the VPN back up: not if a newer
+ *  reconnect started after the offer ([reconnecting]).
+ *  Thread-safe. `close` runs under the lock: closing a tun fd can take the kernel's
+ *  network configuration lock for a few milliseconds, and [take] on OpenConnect's
+ *  thread waits that long at most. */
 class TunHandoff<T : Any>(private val close: (T) -> Unit) {
     private var current: T? = null
     private var next: T? = null
     private val retired = ArrayList<T>()
+    private var awaiting = false
 
     /** The interface a new run uses. */
     @Synchronized fun current(): T? = current
@@ -195,6 +200,7 @@ class TunHandoff<T : Any>(private val close: (T) -> Unit) {
      *  the rest (one offered to a run that ended before taking it, for instance). */
     @Synchronized fun idle(): T? {
         next?.let { n -> current?.let(retired::add); current = n; next = null }
+        awaiting = false
         closeRetired()
         return current
     }
@@ -202,16 +208,27 @@ class TunHandoff<T : Any>(private val close: (T) -> Unit) {
     /** No run is using any interface: [tun] replaces them all. */
     @Synchronized fun install(tun: T) {
         listOfNotNull(current, next).forEach(retired::add)
-        current = tun; next = null
+        current = tun; next = null; awaiting = false
         closeRetired()
     }
 
     /** A run is going: switch to [tun] when OpenConnect asks. Replaces (and closes) one
-     *  offered earlier that it hasn't taken yet. */
+     *  offered earlier that it hasn't taken yet. The VPN is up once it has switched. */
     @Synchronized fun offer(tun: T) {
         next?.let(close)
         next = tun
+        awaiting = true
     }
+
+    /** A reconnect came back: if an offered interface still waits to be taken, the VPN
+     *  is up only once OpenConnect switches to it. Returns whether one does. */
+    @Synchronized fun awaitPending(): Boolean {
+        if (next != null) awaiting = true
+        return next != null
+    }
+
+    /** A (newer) reconnect is under way. */
+    @Synchronized fun reconnecting() { awaiting = false }
 
     /** On OpenConnect's thread: the interface to switch to, or null. */
     @Synchronized fun take(): T? {
@@ -221,15 +238,29 @@ class TunHandoff<T : Any>(private val close: (T) -> Unit) {
         return n
     }
 
-    /** OpenConnect has switched to what it took: close what it used before. */
-    @Synchronized fun switched() = closeRetired()
+    /** OpenConnect has switched to what it took: close what it used before. Returns
+     *  whether that brings the VPN up, i.e. no newer reconnect started since the offer. */
+    @Synchronized fun switched(): Boolean {
+        closeRetired()
+        return awaiting.also { awaiting = false }
+    }
 
     /** Stopped, and no run is using any interface. */
     @Synchronized fun closeAll() {
         listOfNotNull(current, next).forEach(retired::add)
-        current = null; next = null
+        current = null; next = null; awaiting = false
         closeRetired()
     }
 
     private fun closeRetired() { retired.forEach(close); retired.clear() }
+}
+
+/** How an OpenConnect run ended (its -errno), as the service handles it. */
+object RunEnd {
+    // Linux errno values; OpenConnect's mainloop returns them negated.
+    private const val EPERM = 1 // 401: the server ended the session
+    private const val EINTR = 4 // OC_CMD_CANCEL: logged out
+    private const val EPIPE = 32 // the server terminated the session
+    /** Whether the session may still be rejoined, so what the run last held is worth saving. */
+    fun keepsSession(result: Int) = result != -EPERM && result != -EINTR && result != -EPIPE
 }

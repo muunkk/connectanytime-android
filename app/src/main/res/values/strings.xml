@@ -89,6 +89,7 @@
     <string name="settings_changed_keep">The reconnect brought new tunnel settings (%1$s); the VPN interface still fits</string>
     <string name="switched_interface">Moved to the new VPN interface</string>
     <string name="switch_failed">Couldn\'t set up the new VPN interface (%1$s); rejoining the session</string>
+    <string name="rejoin_candidate">The saved session key was refused; trying the newer one from the last reconnect</string>
     <string name="save_session_failed">Couldn\'t save the session after reconnecting: %1$s</string>
     <string name="disconnected">Disconnected</string>
     <string name="stopped_session">Stopped, keeping the session</string>
