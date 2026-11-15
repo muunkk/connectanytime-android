@@ -51,7 +51,6 @@ import java.math.BigDecimal
 import java.math.RoundingMode
 import java.text.NumberFormat
 import java.util.Locale
-import kotlin.math.abs
 import kotlin.math.roundToLong
 
 // ---- Formatting ---------------------------------------------------------------
@@ -59,8 +58,9 @@ import kotlin.math.roundToLong
 /** Every number on the Battery screen and in its share text. Rates arrive as percentage
  *  points (2.0 = 2 %), shares as 0–1, sizes as bytes. */
 internal class BatteryFormat(private val context: Context, val locale: Locale = context.resources.configuration.locales[0]) {
-    /** §3.7: one decimal under 10, none at 10 or more. */
-    private fun digits(value: Double) = if (abs(value) < 10) 1 else 0
+    /** §3.7: one decimal under 10, none at 10 or more, judged on the value as rounded to one
+     *  decimal (half up), so 9.96 is "10", never "10.0". */
+    private fun digits(value: Double) = if (exact(value).abs().setScale(1, RoundingMode.HALF_UP) < BigDecimal.TEN) 1 else 0
     private fun exact(value: Double) = BigDecimal.valueOf(value)
     // Built once per instance and reused (main thread only), keyed by fraction digits.
     private val percents = HashMap<Int, NumberFormat>()
@@ -220,10 +220,12 @@ fun BatteryScreen(app: ConnectApp, onBack: () -> Unit, onShare: (File, String) -
     // The auto-stop copy stays for the visit, even after the pref is cleared on leaving.
     var latched by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(autoStopped) { if (autoStopped) latched = true }
+    // Observed, so a sharing or setup change made while the screen is open updates its copy.
+    val prefs by rememberBatteryPrefs(app.store)
     LaunchedEffect(Unit) { battery.refresh() }
     DisposableEffect(Unit) { onDispose { if (app.store.batteryAutoStopped) app.store.batteryAutoStopped = false } }
     val shown = if (latched && !status.on) BatteryStatus.AutoStopped else status
-    BatteryContent(app.store, shown, report, clearing, onBack, problem = problem,
+    BatteryContent(prefs.sharing, prefs.setup, shown, report, clearing, onBack, problem = problem,
         onToggle = { on -> if (on) latched = false; battery.setEnabled(on) },
         onClear = { latched = false; battery.clear() },
         onRetry = battery::retrySave, loadFailed = loadFailed, onReload = battery::refresh,
@@ -234,6 +236,15 @@ fun BatteryScreen(app: ConnectApp, onBack: () -> Unit, onShare: (File, String) -
                 else Toast.makeText(context, R.string.battery_share_failed, Toast.LENGTH_SHORT).show()
             }
         })
+}
+
+/** The prefs the screen's copy reads (hotspot sharing, proxy setup), kept current while it's shown. */
+@Composable
+internal fun rememberBatteryPrefs(store: Store): State<BatteryPrefs> {
+    val flow = remember(store) { batteryPrefs(store) }
+    val initial = remember(store) { BatteryPrefs(store.measureBattery, store.batteryAutoStopped, store.batteryDeadline,
+        store.shareOverHotspot, store.shareWithTether, store.proxySetup) }
+    return flow.collectAsStateWithLifecycle(initial)
 }
 
 /** Stands in for the display cutout in tests and screenshots; null on a phone, which uses the real one. */
@@ -273,7 +284,7 @@ internal fun ReadableTopBar(bar: @Composable (WindowInsets) -> Unit) {
 
 /** Stateless: everything comes in as values, so tests can drive any state. */
 @Composable
-internal fun BatteryContent(store: Store, status: BatteryStatus, report: BatteryReport?, clearing: Boolean, onBack: () -> Unit,
+internal fun BatteryContent(sharing: Boolean, setup: ProxySetup, status: BatteryStatus, report: BatteryReport?, clearing: Boolean, onBack: () -> Unit,
     onToggle: (Boolean) -> Unit, onClear: () -> Unit, onRetry: () -> Unit, onShare: () -> Unit, problem: BatteryProblem? = null,
     loadFailed: Boolean = false, onReload: () -> Unit = {}) {
     val context = LocalContext.current
@@ -302,9 +313,11 @@ internal fun BatteryContent(store: Store, status: BatteryStatus, report: Battery
     val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     Scaffold(modifier = Modifier.nestedScroll(scroll.nestedScrollConnection), topBar = { ReadableTopBar { insets ->
         val subtitle = batterySubtitle(context, f, status, report)
+        // Three lines at large text, so "Stopped after 7 days · … measured · dates" isn't cut off.
+        val lines = if (LocalDensity.current.fontScale >= 1.5f) 3 else 2
         MediumFlexibleTopAppBar(
             title = { Text(stringResource(R.string.battery_title)) },
-            subtitle = subtitle?.let { (shown, spoken) -> { Text(shown, maxLines = 2, overflow = TextOverflow.Ellipsis,
+            subtitle = subtitle?.let { (shown, spoken) -> { Text(shown, maxLines = lines, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.semantics { contentDescription = spoken }) } },
             navigationIcon = {
                 IconButton(onClick = onBack, shapes = IconButtonDefaults.shapes()) {
@@ -356,7 +369,7 @@ internal fun BatteryContent(store: Store, status: BatteryStatus, report: Battery
                 status == BatteryStatus.AutoStopped && !hasRows -> item(key = "panel") { Panel(null, stringResource(R.string.battery_off_help)) }
                 status == BatteryStatus.Measuring && !heroReady -> item(key = "panel") {
                     val body = stringResource(when {
-                        !store.shareOverHotspot -> R.string.battery_keep_body_noshare
+                        !sharing -> R.string.battery_keep_body_noshare
                         report.path == BatteryPath.Level -> R.string.battery_keep_body_level
                         else -> R.string.battery_keep_body
                     })
@@ -370,7 +383,7 @@ internal fun BatteryContent(store: Store, status: BatteryStatus, report: Battery
             }
             if (hasRows) {
                 if (heroReady) item(key = "hero") { Hero(f, report) }
-                item(key = "compared") { Compared(f, store, report) }
+                item(key = "compared") { Compared(f, setup, report, showHow = status.on) }
                 item(key = "app") { ThisApp(f, report) }
                 item(key = "situations") { Situations(f, report) }
                 item(key = "more") { MoreDetail(f, report) }
@@ -460,10 +473,13 @@ private fun StatusLine(status: BatteryStatus, problem: BatteryProblem?, announce
     val error = status == BatteryStatus.CouldNotSave
     val color = if (error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
     val shown = status != BatteryStatus.Off
-    // At least 48 dp in every shown state, so the list doesn't jump between Measuring and Paused,
-    // and a readable line is a full touch-exploration target (hidden Measuring isn't one); Off
-    // takes no space.
-    val layout = if (shown) Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp).heightIn(min = 48.dp) else Modifier
+    // A readable line is at least 48 dp, a full touch-exploration target, and the same height in
+    // every readable state, so the list doesn't jump between them. Hidden Measuring isn't a target,
+    // so it takes the normal rhythm and the panel sits close under it. "Measuring again" keeps its
+    // 48 dp once it has been announced, so the list doesn't jump a few seconds later. Off takes no space.
+    val target = !announcement.hidden(StatusAnnouncement.NEVER)
+    val layout = if (!shown) Modifier
+        else Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp).then(if (target) Modifier.heightIn(min = 48.dp) else Modifier)
     Row(Modifier.fillMaxWidth().then(layout).testTag("battery-status")
         .clearAndSetSemantics {
             if (announcement.live) liveRegion = LiveRegionMode.Polite
@@ -503,7 +519,7 @@ private fun ProblemRow(problem: BatteryProblem?, onRetry: () -> Unit) {
                             Text(stringResource(if (start) R.string.battery_start_failed_help else R.string.battery_save_failed_help))
                             val inset = ButtonDefaults.TextButtonContentPadding
                             TextButton(onClick = onRetry, shapes = ButtonDefaults.shapes(), contentPadding = inset,
-                                modifier = Modifier.offset(x = -inset.calculateLeftPadding(LayoutDirection.Ltr))
+                                modifier = Modifier.offset(x = -inset.calculateStartPadding(LocalLayoutDirection.current))
                                     .heightIn(min = 48.dp).testTag("battery-retry")) {
                                 Text(stringResource(if (start) R.string.battery_start_retry else R.string.battery_retry))
                             }
@@ -529,7 +545,7 @@ private fun LoadFailedRow(onReload: () -> Unit) {
                     supportingContent = {
                         val inset = ButtonDefaults.TextButtonContentPadding
                         TextButton(onClick = onReload, shapes = ButtonDefaults.shapes(), contentPadding = inset,
-                            modifier = Modifier.offset(x = -inset.calculateLeftPadding(LayoutDirection.Ltr))
+                            modifier = Modifier.offset(x = -inset.calculateStartPadding(LocalLayoutDirection.current))
                                 .heightIn(min = 48.dp).testTag("battery-reload")) {
                             Text(stringResource(R.string.battery_load_retry))
                         }
@@ -631,9 +647,8 @@ private fun rateValue(f: BatteryFormat, rate: BatteryRate): Pair<String, String>
     } else stringResource(R.string.battery_not_yet) to stringResource(R.string.battery_not_yet_spoken)
 
 @Composable
-private fun Compared(f: BatteryFormat, store: Store, report: BatteryReport) {
+private fun Compared(f: BatteryFormat, setup: ProxySetup, report: BatteryReport, showHow: Boolean) {
     val context = LocalContext.current
-    val setup = store.proxySetup
     val c = report.comparison
     // The rows shown are the comparison's own sides when there is one, so readiness comes from them.
     val (inUse, baseline) = comparisonSides(report)
@@ -659,7 +674,8 @@ private fun Compared(f: BatteryFormat, store: Store, report: BatteryReport) {
                 modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 12.dp))
         }
         // Both sides always show; a side with nothing recorded yet is a not-ready placeholder.
-        val count = if (bothReady) 2 else 3
+        // How to compare only while measuring is on: when it's off there's nothing to compare yet.
+        val count = if (bothReady || !showHow) 2 else 3
         // Keyed by role: the in-use and baseline rows keep their nodes when the help row comes or goes.
         KeyedGroup(listOf("in-use", "baseline", "how").take(count)) { index ->
             when (index) {

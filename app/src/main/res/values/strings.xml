@@ -325,8 +325,8 @@
     <string name="battery_home_spoken_measuring">Battery drain, measuring</string>
     <string name="battery_home_spoken_paused_vpn">Battery drain, paused: the VPN is off</string>
     <string name="battery_home_spoken_paused_charging">Battery drain, paused while charging</string>
-    <string name="battery_home_spoken_save_failed">Battery drain, on, couldn’t save</string>
-    <string name="battery_home_spoken_start_failed">Battery drain, on, couldn’t start</string>
+    <string name="battery_home_spoken_save_failed">Battery drain, on, couldn’t save. Open to retry</string>
+    <string name="battery_home_spoken_start_failed">Battery drain, on, couldn’t start. Open to retry</string>
     <string name="battery_home_spoken_auto">Battery drain, stopped after 7 days</string>
     <!-- Subtitle: %1$s = measured time, %2$s = the date range. -->
     <string name="battery_subtitle_on">%1$s measured · %2$s</string>
@@ -461,8 +461,9 @@
     <string name="battery_d_vpn">VPN: at least %1$s of one core</string>
     <string name="battery_d_fwd">Forwarding: about %1$s of one core</string>
     <string name="battery_d_other">Other: about %1$s of one core</string>
-    <!-- Above zero but under what rounds to 0.1%: %1$s = 0.1%, formatted in code. -->
-    <string name="battery_d_vpn_tiny">VPN: under %1$s of one core</string>
+    <!-- Above zero but under what rounds to 0.1%: %1$s = 0.1%, formatted in code. The VPN figure
+         is a lower bound (its threads may be counted elsewhere), so its tiny form keeps "at least". -->
+    <string name="battery_d_vpn_tiny">VPN: at least a trace (under %1$s of one core recorded)</string>
     <string name="battery_d_fwd_tiny">Forwarding: under %1$s of one core</string>
     <string name="battery_d_other_tiny">Other: under %1$s of one core</string>
     <!-- %1$d = the number of reconnects, %2$s = reconnects an hour (a decimal). The one and other

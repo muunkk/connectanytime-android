@@ -338,7 +338,7 @@ class ScreenshotTest(private val dark: Boolean) {
         compose.setContent { ConnectTheme(dark = dark, dynamicColor = false) {
             val density = LocalDensity.current
             CompositionLocalProvider(LocalDensity provides Density(density.density, fontScale ?: density.fontScale), LocalCutoutInsets provides cutout) {
-                BatteryContent(app.store, status, report, false, {}, {}, {}, {}, {}, problem)
+                BatteryContent(app.store.shareOverHotspot, app.store.proxySetup, status, report, false, {}, {}, {}, {}, {}, problem)
             }
         } }
         compose.waitForIdle()
@@ -347,14 +347,14 @@ class ScreenshotTest(private val dark: Boolean) {
     @Test fun batteryLoadingReducedMotion() {
         compose.setContent { ConnectTheme(dark = dark, dynamicColor = false) {
             CompositionLocalProvider(LocalReducedMotion provides true) {
-                BatteryContent(app.store, BatteryStatus.Measuring, null, false, {}, {}, {}, {}, {})
+                BatteryContent(app.store.shareOverHotspot, app.store.proxySetup, BatteryStatus.Measuring, null, false, {}, {}, {}, {}, {})
             }
         } }
         save("battery-loading-reduced-motion")
     }
     @Test fun batteryLoadFailed() {
         compose.setContent { ConnectTheme(dark = dark, dynamicColor = false) {
-            BatteryContent(app.store, BatteryStatus.Measuring, null, false, {}, {}, {}, {}, {}, loadFailed = true)
+            BatteryContent(app.store.shareOverHotspot, app.store.proxySetup, BatteryStatus.Measuring, null, false, {}, {}, {}, {}, {}, loadFailed = true)
         } }
         compose.waitForIdle()
         save("battery-load-failed")

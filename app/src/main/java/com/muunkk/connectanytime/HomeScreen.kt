@@ -412,9 +412,13 @@ private fun BatteryRow(status: BatteryStatus, problem: BatteryProblem?, onClick:
             role = Role.Button
             onClick(label = open) { onClick(); true }
         },
-        // The primary tint while measuring is decoration; the text says the same.
+        // The primary tint while measuring and the error tint on a failure are decoration; the text says the same.
         leadingContent = { Icon(painterResource(R.drawable.ic_battery), contentDescription = null,
-            tint = if (status == BatteryStatus.Measuring) MaterialTheme.colorScheme.primary else LocalContentColor.current) },
+            tint = when {
+                failed -> MaterialTheme.colorScheme.error
+                status == BatteryStatus.Measuring -> MaterialTheme.colorScheme.primary
+                else -> LocalContentColor.current
+            }) },
         trailingContent = { Icon(painterResource(R.drawable.ic_chevron_right), contentDescription = null) },
         supportingContent = {
             if (failed) Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {

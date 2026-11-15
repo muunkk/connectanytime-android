@@ -76,7 +76,8 @@ class BatteryScreenTest {
     private var toggleTakes = true
     private fun show() {
         compose.setContent { ConnectTheme { CompositionLocalProvider(LocalReducedMotion provides reducedMotion) {
-            BatteryContent(app.store, status, report, false, {}, onToggle = { on ->
+            val prefs by rememberBatteryPrefs(app.store)
+            BatteryContent(prefs.sharing, prefs.setup, status, report, false, {}, onToggle = { on ->
                 if (toggleTakes) status = if (on) BatteryStatus.PausedVpnOff else BatteryStatus.Off
             }, onClear = {}, onRetry = { retried++ }, onShare = {}, problem = problem, loadFailed = loadFailed, onReload = { reloaded++ })
         } } }
@@ -183,13 +184,48 @@ class BatteryScreenTest {
         status = BatteryStatus.Measuring; compose.waitForIdle()
         line.assert(polite).assert(hidden).assert(says("Measuring"))
     }
-    @Test fun statusLineKeepsOneHeightInEveryShownState() {
+    @Test fun statusLineKeepsOneHeightInEveryReadableState() {
         status = BatteryStatus.Measuring; show()
-        val measuring = line.getBoundsInRoot()
-        for (next in listOf(BatteryStatus.PausedCharging, BatteryStatus.PausedVpnOff, BatteryStatus.AutoStopped)) {
+        // Hidden Measuring isn't a touch target: the normal rhythm, not 48 dp.
+        val hiddenHeight = line.assert(hidden).getBoundsInRoot().let { it.bottom - it.top }
+        assertTrue("$hiddenHeight", hiddenHeight < 48.dp)
+        status = BatteryStatus.PausedCharging; compose.waitForIdle()
+        val readableBounds = line.assert(readable).assertHeightIsAtLeast(48.dp).getBoundsInRoot()
+        for (next in listOf(BatteryStatus.PausedVpnOff, BatteryStatus.AutoStopped, BatteryStatus.CouldNotSave)) {
             status = next; compose.waitForIdle()
-            assertEquals("$next", measuring, line.getBoundsInRoot())
+            assertEquals("$next", readableBounds, line.assert(readable).getBoundsInRoot())
         }
+        // "Measuring again" keeps the readable height, even once it has been announced and hidden.
+        status = BatteryStatus.PausedVpnOff; compose.waitForIdle()
+        status = BatteryStatus.Measuring; compose.waitForIdle()
+        assertEquals(readableBounds, line.assert(readable).getBoundsInRoot())
+        compose.mainClock.advanceTimeBy(5_000); compose.waitForIdle()
+        assertEquals(readableBounds, line.assert(hidden).getBoundsInRoot())
+    }
+    @Test fun aSharingOrSetupChangeWhileOpenUpdatesTheCopy() {
+        status = BatteryStatus.Measuring; report = BatteryFakes.notReady(); show()
+        val noShare = app.getString(R.string.battery_keep_body_noshare)
+        val share = app.getString(R.string.battery_keep_body)
+        compose.onNodeWithText(noShare).assertExists()
+        app.store.shareOverHotspot = true; compose.waitForIdle()
+        compose.onNodeWithText(share).assertExists()
+        compose.onNodeWithText(noShare).assertDoesNotExist()
+        scrollTo(hasText("Sharing in use vs idle"))
+        app.store.proxySetup = ProxySetup.Automatic; compose.waitForIdle()
+        scrollTo(hasText("Sharing in use vs off"))
+        compose.onNodeWithText("Sharing in use vs idle").assertDoesNotExist()
+    }
+    @Test fun howToCompareShowsOnlyWhileMeasuringIsOn() {
+        report = BatteryFakes.oneSide()
+        status = BatteryStatus.Measuring; show()
+        scrollTo(hasText("How to compare"))
+        for (next in listOf(BatteryStatus.Off, BatteryStatus.AutoStopped)) {
+            status = next; compose.waitForIdle()
+            scrollTo(hasTestTag("battery-side-baseline"))
+            compose.onNodeWithText("How to compare").assertDoesNotExist()
+        }
+        status = BatteryStatus.PausedCharging; compose.waitForIdle()
+        scrollTo(hasText("How to compare"))
     }
     @Test fun withOneSideRecordedBothSidesAndHowToCompareShow() {
         app.store.proxySetup = ProxySetup.Automatic
@@ -436,7 +472,7 @@ class BatteryScreenTest {
             reconnects = 1, reconnectsPerHour = 0.03); show()
         scrollTo(hasTestTag("battery-more"))
         compose.onNodeWithTag("battery-more").performSemanticsAction(SemanticsActions.Expand); compose.waitForIdle()
-        for (text in listOf("VPN: under 0.1% of one core", "Forwarding: under 0.1% of one core", "Other: about 0% of one core",
+        for (text in listOf("VPN: at least a trace (under 0.1% of one core recorded)", "Forwarding: under 0.1% of one core", "Other: about 0% of one core",
             "VPN reconnects: 1 (less than 0.1 an hour)")) {
             scrollTo(hasText(text)); compose.onNodeWithText(text).assertExists()
         }
@@ -576,7 +612,7 @@ class BatteryScreenTest {
         var opened = 0
         compose.setContent { ConnectTheme { HomeScreen(app.store, VpnState(), false, {}, {}, {}, {}, battery = BatteryStatus.CouldNotSave, onBattery = { opened++ }) } }
         val row = compose.onNodeWithTag("battery-row").performScrollTo()
-        row.assert(hasContentDescription("Battery drain, on, couldn’t save"))
+        row.assert(hasContentDescription("Battery drain, on, couldn’t save. Open to retry"))
             .assert(SemanticsMatcher("open details") { it.config.getOrElseNullable(SemanticsActions.OnClick) { null }?.label == "open details" })
         compose.onNodeWithText("Couldn’t save measurements. Open to retry", useUnmergedTree = true).assertExists()
         row.performClick()
@@ -590,13 +626,13 @@ class BatteryScreenTest {
     @Test fun homeRowSpeaksOneWholeStringPerStatus() {
         val spoken = BatteryStatus.entries.map { app.getString(batteryHomeSpoken(it)) } + app.getString(batteryHomeSpoken(BatteryStatus.CouldNotSave, BatteryProblem.StartFailed))
         assertEquals(listOf("Battery drain. How fast the phone’s battery drains while the VPN is on.", "Battery drain, measuring",
-            "Battery drain, paused: the VPN is off", "Battery drain, paused while charging", "Battery drain, on, couldn’t save",
-            "Battery drain, stopped after 7 days", "Battery drain, on, couldn’t start").sorted(), spoken.sorted())
+            "Battery drain, paused: the VPN is off", "Battery drain, paused while charging", "Battery drain, on, couldn’t save. Open to retry",
+            "Battery drain, stopped after 7 days", "Battery drain, on, couldn’t start. Open to retry").sorted(), spoken.sorted())
     }
     @Test fun homeRowSaysAStartFailure() {
         compose.setContent { ConnectTheme { HomeScreen(app.store, VpnState(), false, {}, {}, {}, {},
             battery = BatteryStatus.CouldNotSave, batteryProblem = BatteryProblem.StartFailed) } }
-        compose.onNodeWithTag("battery-row").performScrollTo().assert(hasContentDescription("Battery drain, on, couldn’t start"))
+        compose.onNodeWithTag("battery-row").performScrollTo().assert(hasContentDescription("Battery drain, on, couldn’t start. Open to retry"))
         compose.onNodeWithText("Couldn’t start measuring. Open to retry", useUnmergedTree = true).assertExists()
         compose.onNodeWithText("Couldn’t save measurements. Open to retry", useUnmergedTree = true).assertDoesNotExist()
     }
@@ -613,6 +649,10 @@ class BatteryFormatTest {
         assertEquals("2.0%", f().percent(2.0))
         assertEquals("12%", f().percent(12.4))
         assertEquals("10%", f().percent(10.0))
+        // Decimals follow the rounded value: 9.96 rounds to 10, so no decimal.
+        assertEquals("10%", f().percent(9.96))
+        assertEquals("10%", f().percent(9.95))
+        assertEquals("9.9%", f().percent(9.94))
         assertEquals("150%", f().percent(150.0))
         assertEquals("200%", f().percent(200.0))
     }
@@ -631,6 +671,8 @@ class BatteryFormatTest {
     }
     @Test fun comparisonIsAPlainLocalisedDecimal() {
         assertEquals("1.3", f().plain(1.25))
+        assertEquals("10", f().plain(9.96))
+        assertEquals("9.9", f().plain(9.94))
         assertEquals("1,3", f(Locale.GERMANY).plain(1.25))
         assertFalse("%" in f().plain(6.0))
         assertTrue(f().plainIsZero(.04))
