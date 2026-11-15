@@ -128,6 +128,15 @@ class BatteryReportTest {
             assertEquals(.4, it.all.watts!!, 1e-10); assertEquals(BatteryWattsLabel.About, it.all.wattsLabel)
         }
     }
+    @Test fun flatEnergyAnchorsOnFirstAvailableChargeReading() {
+        val rows = batteryTrace(loss = 120_000).mapIndexed { index, row ->
+            row.copy(energyNwh = 20_000_000_000, chargeUah = if (index == 0) null else row.chargeUah)
+        }
+        val r = report(rows)
+        assertEquals(BatteryPath.Charge, r.path)
+        assertEquals(.48, r.all.watts!!, 1e-10)
+        assertEquals(BatteryWattsLabel.About, r.all.wattsLabel)
+    }
     @Test fun wattsTimeWeightedAcrossIrregularIntervalsAndMissingVoltage() {
         val rows = batteryTrace().filterIndexed { i, _ -> i % 7 == 0 || i == 60 }
         assertEquals(.4, report(rows).all.watts!!, 1e-10)
@@ -175,8 +184,36 @@ class BatteryReportTest {
         val r = report(batteryTrace().mapIndexed { i, r -> r.copy(transport = if (i <= 30) BatteryTransport.dtls else BatteryTransport.tls,
             transportGen = if (i <= 30) 0 else 1, reconnects = if (i == 60) 2 else 0) })
         assertEquals(.5, r.transport.dtls, 1e-10)
+        assertEquals(3_600_000L, r.connectedMs)
         assertEquals(1.0, r.transport.dtls + r.transport.tls + r.transport.unknown, 1e-10)
         assertEquals(2L, r.reconnects); assertEquals(2.0, r.reconnectsPerHour!!, 0.0)
+    }
+    @Test fun connectedDurationExposesTheTransportShareDenominator() {
+        assertEquals(0L, BatteryReport().connectedMs)
+        val noConnection = report(batteryTrace().map { it.copy(vpn = BatteryVpn.connecting) })
+        assertEquals(3_600_000L, noConnection.countedMs)
+        assertEquals(0L, noConnection.connectedMs)
+        assertEquals(BatteryTransportShares(), noConnection.transport)
+        val partial = report(batteryTrace().mapIndexed { index, row -> row.copy(
+            vpn = if (index <= 30) BatteryVpn.connected else BatteryVpn.connecting,
+            transport = BatteryTransport.dtls) })
+        assertEquals(3_600_000L, partial.countedMs)
+        assertEquals(1_800_000L, partial.connectedMs)
+        assertEquals(1.0, partial.transport.dtls, 0.0)
+    }
+    @Test fun countedSubtitleIsReadyOnlyAfterTenMeasuredMinutes() {
+        assertFalse(BatteryReport().subtitleReady)
+        listOf(1, 4, 5, 9).forEach { minutes ->
+            val r = report(batteryTrace(minutes))
+            assertEquals(minutes * 60_000L, r.countedMs)
+            assertFalse("Subtitle was ready at $minutes minutes", r.subtitleReady)
+        }
+        val tenMinutes = report(batteryTrace(10))
+        assertTrue(tenMinutes.subtitleReady)
+        assertEquals(600_000L, tenMinutes.subtitleCountedMs)
+        assertEquals(1_200_000L, report(batteryTrace(15)).subtitleCountedMs)
+        val onlyStoredTime = report(batteryTrace(10).map { it.copy(plugged = 1) })
+        assertFalse(onlyStoredTime.subtitleReady)
     }
     @Test fun epochsAggregateTheirOwnCapacityAndGapReportsDroppedCoverage() {
         val r = report(batteryTrace() + batteryTrace(rec = 2).map { it.copy(chargeUah = it.chargeUah!! * 2) })

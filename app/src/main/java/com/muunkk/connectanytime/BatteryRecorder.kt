@@ -28,6 +28,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 internal data class BatteryProcStat(val tid: Long, val name: String, val start: Long, val ticks: Long)
+private val BATTERY_CPU_THREAD_NAMES = setOf(BatteryThreads.VPN, BatteryThreads.TIMER, BatteryThreads.ACCEPT)
 internal fun batteryProcStat(line: String): BatteryProcStat? = runCatching {
     val open = line.indexOf('('); val close = line.lastIndexOf(')')
     require(open > 0 && close > open)
@@ -44,7 +45,9 @@ internal class BatteryProc(private val root: File = File("/proc/self"),
     fun read(): Cpu {
         fun read(file: File) = runCatching { batteryProcStat(file.readText()) }.getOrNull()
         root.resolve("task").listFiles()?.forEach { dir ->
-            read(dir.resolve("stat"))?.takeIf { it.name in setOf(BatteryThreads.VPN, BatteryThreads.TIMER, BatteryThreads.ACCEPT) }?.let { stat ->
+            val name = runCatching { dir.resolve("comm").readText().trimEnd() }.getOrNull()
+            if (name !in BATTERY_CPU_THREAD_NAMES) return@forEach
+            read(dir.resolve("stat"))?.takeIf { it.name in BATTERY_CPU_THREAD_NAMES }?.let { stat ->
                 val key = stat.tid to stat.start
                 if (stat.ticks >= (seen[key]?.ticks ?: 0)) seen[key] = stat
             }
@@ -223,7 +226,6 @@ internal class BatteryRecorder(private val app: ConnectApp, private val disk: Ba
         else app.registerReceiver(events, eventFilter, null, handler)
         eventsRegistered = true
         runCatching { sample(BatteryKind.start) }
-        app.log.add(app.getString(R.string.battery_log_start))
         summaryAt = readings.elapsed()
         scope!!.launch {
             var lastUplink = ConnectApp.uplink.value
@@ -261,7 +263,7 @@ internal class BatteryRecorder(private val app: ConnectApp, private val disk: Ba
             if (kind != BatteryKind.stop && readings.wall() >= app.store.batteryDeadline) { expired(); return }
             updateTransport()
             val raw = readings.read()
-            periodicEnabled = raw.plugged == 0
+            periodicEnabled = raw.plugged == null || raw.plugged == 0
             val last = previous
             if (last != null && (last.status != raw.status || last.plugged != raw.plugged)) pgen++
             val vpnChanges = ConnectApp.vpnTransitions.get()
@@ -283,7 +285,7 @@ internal class BatteryRecorder(private val app: ConnectApp, private val disk: Ba
                 else -> BatteryHotspot.off
             } }
             samplerNs = maxOf(samplerNs, readings.cpu())
-            val rowKind = if (kind == BatteryKind.periodic && raw.plugged != 0) BatteryKind.event else kind
+            val rowKind = if (kind == BatteryKind.periodic && !periodicEnabled) BatteryKind.event else kind
             val row = raw.copy(rec = rec, seq = ++seq, gen = gen, pgen = pgen, transportGen = changes, kind = rowKind,
                 vpn = vpn, transport = transport.transport, hotspot = hotspot, sharingOn = app.store.shareOverHotspot,
                 uplink = ConnectApp.uplink.value, reconnects = ConnectApp.reconnectEpisodes.get(), samplerCpuUs = samplerNs / 1000,
@@ -293,8 +295,10 @@ internal class BatteryRecorder(private val app: ConnectApp, private val disk: Ba
             charging(raw.plugged != null && raw.plugged != 0)
             if (kind != BatteryKind.stop && readings.elapsed() - summaryAt >= 6 * 3_600_000) {
                 summaryAt = readings.elapsed()
-                val minutes = (disk.report.value?.countedMs ?: 0L) / 60_000
-                app.log.add(app.resources.getQuantityString(R.plurals.battery_log_summary, minutes.toInt(), minutes))
+                disk.summarize { report ->
+                    val minutes = report.countedMs / 60_000
+                    app.log.add(app.resources.getQuantityString(R.plurals.battery_log_summary, minutes.toInt(), minutes))
+                }
             }
         } finally {
             handler?.removeCallbacks(periodic)
@@ -318,7 +322,6 @@ internal class BatteryRecorder(private val app: ConnectApp, private val disk: Ba
             runCatching { if (eventsRegistered) app.unregisterReceiver(events) }
             runCatching { if (tetherRegistered) app.unregisterReceiver(tether) }
             runCatching { disk.flush(callback) }
-            runCatching { app.log.add(app.getString(R.string.battery_log_stop)) }
             worker?.quitSafely()
         }
     }

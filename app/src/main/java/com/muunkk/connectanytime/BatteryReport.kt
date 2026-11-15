@@ -35,8 +35,11 @@ data class BatteryReport(
     val situations: List<BatterySituationRate> = emptyList(), val otherOrShort: BatteryRate = BatteryRate(),
     val transport: BatteryTransportShares = BatteryTransportShares(), val reconnects: Long = 0,
     val reconnectsPerHour: Double? = null, val warmestThermal: BatteryThermal? = null, val droppedCoverageMs: Long = 0,
-    val anySituationReady: Boolean = false
-)
+    val anySituationReady: Boolean = false, val connectedMs: Long = 0
+) {
+    /** The rounded duration is suitable for the subtitle after ten counted minutes. */
+    val subtitleReady: Boolean get() = countedMs >= 600_000
+}
 
 internal data class BatteryInterval(val first: BatteryRow, val last: BatteryRow, val situation: BatterySituation?,
     val points: Double, val error: Double?, val energyWh: Double?, val wattsLabel: BatteryWattsLabel?) {
@@ -82,7 +85,8 @@ internal object BatteryMath {
     private fun flatEnergy(rows: List<BatteryRow>): Boolean {
         var start: BatteryRow? = null
         for (r in rows) {
-            if (r.energyNwh == null || start?.energyNwh != r.energyNwh) start = r
+            if (r.energyNwh == null || start?.energyNwh != r.energyNwh)
+                start = r.takeIf { it.energyNwh != null && it.chargeUah != null }
             val a = start ?: continue
             if (r.energyNwh != null && r.elapsedMs - a.elapsedMs >= 1_800_000 &&
                 r.chargeUah != null && a.chargeUah != null && r.chargeUah < a.chargeUah) return true
@@ -220,6 +224,6 @@ internal object BatteryMath {
             top.map { BatterySituationRate(it.key, it.value, it.key == highest) }.toList(), rate(other),
             BatteryTransportShares(share(BatteryTransport.dtls), share(BatteryTransport.tls), share(BatteryTransport.unknown)),
             reconnects, if (all.hours > 0) reconnects / all.hours else null,
-            warmest?.let { BatteryThermal.entries[it.coerceIn(0, 3)] }, dropped, grouped.values.any { it.ready })
+            warmest?.let { BatteryThermal.entries[it.coerceIn(0, 3)] }, dropped, grouped.values.any { it.ready }, connectedMs)
     }
 }

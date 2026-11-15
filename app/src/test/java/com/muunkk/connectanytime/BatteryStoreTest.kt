@@ -69,6 +69,25 @@ class BatteryStoreTest {
         d.refresh(); d.awaitIdle()
         assertEquals(10, d.report.value!!.rowCount)
     }
+    @Test fun summaryBuildsOnIoFromRetainedAndBufferedRowsWithoutUpdatingCachedReport() {
+        var fail = false
+        val d = disk({ fail })
+        val rows = batteryTrace().take(8)
+        rows.take(5).forEach(d::add); d.refresh(); d.awaitIdle()
+        val cached = d.report.value
+        fail = true
+        rows.drop(5).forEach(d::add); d.flush(); d.awaitIdle()
+        var summary: BatteryReport? = null
+        var threadName: String? = null
+        d.summarize { summary = it; threadName = Thread.currentThread().name }
+        d.awaitIdle()
+        assertEquals(BatteryThreads.IO, threadName)
+        assertEquals(8, summary!!.rowCount)
+        assertEquals(7 * 60_000L, summary!!.countedMs)
+        assertSame(cached, d.report.value)
+        assertTrue(d.failed.value)
+        assertEquals(3, d.bufferedRows().size)
+    }
     @Test fun flushRebuildsOnlyDuringCollectionAndIncludesFailedBuffers() {
         var fail = false
         val d = disk({ fail })
@@ -102,6 +121,35 @@ class BatteryStoreTest {
         assertEquals(7, saved.size); assertEquals(7, saved.map { it.id }.distinct().size)
         assertEquals(listOf(1L, 1L, 1L, 1L, 1L, 2L, 2L), saved.map { it.rec })
         assertFalse(d.failed.value)
+    }
+    @Test fun exportIncludesSavedAndBufferedRowsWhenFlushFails() {
+        var fail = false
+        val d = disk({ fail })
+        val rows = batteryTrace().take(8)
+        rows.take(5).forEach(d::add); d.awaitIdle()
+        fail = true
+        rows.drop(5).forEach(d::add)
+        // A complete row and a partial tail may have reached disk before a write failed.
+        d.awaitIdle()
+        d.file.appendText(BatteryCsv.write(rows[5]) + "\n1,partial")
+        var snapshot: File? = null
+        var called = false
+        d.export { called = true; snapshot = it }
+        d.awaitIdle(); shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(called)
+        assertTrue(d.failed.value)
+        assertNotNull(snapshot)
+        assertEquals(rows, snapshot!!.readLines().mapNotNull(BatteryCsv::parse))
+        assertEquals(rows.drop(6), d.bufferedRows())
+    }
+    @Test fun exportReturnsNullWhenSnapshotCannotBeWritten() {
+        val d = disk()
+        d.awaitIdle()
+        d.exports.writeText("blocks export directory")
+        var called = false
+        d.export { called = true; assertNull(it) }
+        d.awaitIdle(); shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(called)
     }
     @Test fun rebuildSkipsEvenAParseableRowUntilItsNewlineIsPresent() {
         val d = disk()
@@ -158,6 +206,19 @@ class BatteryStoreTest {
         assertThrows(IllegalArgumentException::class.java) { FileProvider.getUriForFile(app, BATTERY_AUTHORITY, File(app.cacheDir, "private.csv")) }
         val info = app.packageManager.resolveContentProvider(BATTERY_AUTHORITY, 0)!!
         assertFalse(info.exported); assertTrue(info.grantUriPermissions)
+    }
+    @Test fun constructionAndRefreshPruneExpiredExports() {
+        val directory = File(app.cacheDir, "battery-export").apply { mkdirs() }
+        val old = File(directory, "old.csv").apply { writeText("old"); setLastModified(1) }
+        val recent = File(directory, "recent.csv").apply { writeText("new"); setLastModified(9_999_999) }
+        val boundary = File(directory, "boundary.csv").apply { writeText("boundary"); setLastModified(6_400_000) }
+        val d = disk(); d.awaitIdle()
+        assertFalse("Construction retained an expired export", old.exists())
+        assertTrue(recent.exists()); assertTrue(boundary.exists())
+        val expired = File(directory, "expired.csv").apply { writeText("expired"); setLastModified(6_399_999) }
+        d.refresh(); d.awaitIdle()
+        assertFalse("Refresh retained an expired export", expired.exists())
+        assertTrue(recent.exists()); assertTrue(boundary.exists())
     }
     @Test fun observerCanThrowThrowableAndLogStillStoresAndReturns() {
         app.log.observer = { throw AssertionError("observer") }

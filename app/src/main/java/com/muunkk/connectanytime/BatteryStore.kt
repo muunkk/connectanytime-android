@@ -49,6 +49,7 @@ internal class BatteryStore(private val context: Context, private val prefs: Sto
         ioCpuUs.addAndGet(((cpu() - start) / 1000).coerceAtLeast(0))
     }
     private fun execute(block: () -> Unit) { io.execute(task(block)) }
+    init { execute { pruneExports() } }
     fun add(row: BatteryRow) = execute {
         buffer.addLast(row)
         if (buffer.size > 120) {
@@ -140,14 +141,20 @@ internal class BatteryStore(private val context: Context, private val prefs: Sto
         }
     }
     private fun rebuild() { mutableReport.value = rows { BatteryMath.report(it, prefs.proxySetup) } }
-    fun refresh() = execute { truncateTail(); rebuild() }
+    /** Build from retained data on battery-io even when the UI report is unobserved. */
+    fun summarize(callback: (BatteryReport) -> Unit) = execute { callback(rows { BatteryMath.report(it, prefs.proxySetup) }) }
+    private fun pruneExports() {
+        val cutoff = now() - 3_600_000
+        exports.listFiles()?.filter { it.lastModified() < cutoff }?.forEach { it.delete() }
+    }
+    fun refresh() = execute { pruneExports(); truncateTail(); rebuild() }
     fun flush(callback: (() -> Unit)? = null) = execute { flushNow(); callback?.let { main.post(it) } }
     fun retrySave() = execute { retry?.cancel(false); retry = null; flushNow() }
     fun export(callback: (File?) -> Unit) = execute {
         val snapshot = runCatching {
-            check(flushNow())
+            flushNow()
             exports.mkdirs()
-            exports.listFiles()?.filter { now() - it.lastModified() > 3_600_000 }?.forEach { it.delete() }
+            pruneExports()
             val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date(now()))
             var out: File
             do { out = File(exports, "battery-$stamp-${UUID.randomUUID().toString().take(4)}.csv") } while (!out.createNewFile())

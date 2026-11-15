@@ -46,6 +46,7 @@ class BatteryControl internal constructor(private val app: ConnectApp,
     private val plugged = MutableStateFlow(false)
     private var recorder: BatteryRecorder? = null
     private var clearPending = false
+    private var logClearRestart = false
     private val mutableClearing = MutableStateFlow(false)
     val clearing: StateFlow<Boolean> = mutableClearing.asStateFlow()
     private var stopping = false
@@ -90,9 +91,14 @@ class BatteryControl internal constructor(private val app: ConnectApp,
         app.log.add(app.getString(R.string.battery_log_auto_stop))
     }
     fun setEnabled(on: Boolean) = onMain {
-        if (on && !app.store.measureBattery) app.store.prefs.edit().putLong("batteryDeadline", now() + 7 * 86_400_000L)
+        val changed = on != app.store.measureBattery
+        if (on && changed) app.store.prefs.edit().putLong("batteryDeadline", now() + 7 * 86_400_000L)
             .putBoolean("batteryAutoStopped", false).putBoolean("measureBattery", true).apply()
         else if (!on) { app.store.measureBattery = false; startFailed = false }
+        if (changed) {
+            logClearRestart = false
+            app.log.add(app.getString(if (on) R.string.battery_log_start else R.string.battery_log_stop))
+        }
         reconcile()
     }
     private fun reconcile() {
@@ -113,12 +119,16 @@ class BatteryControl internal constructor(private val app: ConnectApp,
         erasing = true
         disk.clear {
             clearPending = false; mutableClearing.value = false; erasing = false
+            if (logClearRestart && app.store.measureBattery) app.log.add(app.getString(R.string.battery_log_start))
+            logClearRestart = false
             reconcile()
         }
     }
     fun clear() = onMain {
         if (clearPending || disk.clearing.get()) return@onMain
         clearPending = true; mutableClearing.value = true
+        logClearRestart = app.store.measureBattery
+        if (logClearRestart) app.log.add(app.getString(R.string.battery_log_stop))
         stopRecorder()
         if (!stopping) erase()
     }

@@ -30,6 +30,7 @@ class BatteryRecorderTest {
     private var wall = 1_000_000L
     private var elapsed = 100_000L
     private var plugged = false
+    private var missingPlugged = false
     private var readingFailures = 0
     private val readings get() = object : BatteryReadings(app, BatteryProc(File("missing-proc"), 100)) {
         override fun wall() = wall
@@ -39,7 +40,8 @@ class BatteryRecorderTest {
         override fun read(): BatteryRow {
             if (readingFailures > 0) { readingFailures--; error("transient battery read") }
             return batteryTrace().first().copy(wallMin = wall / 60_000, elapsedMs = elapsed, uptimeMs = elapsed,
-            plugged = if (plugged) 1 else 0, status = if (plugged) BatteryManager.BATTERY_STATUS_CHARGING else BatteryManager.BATTERY_STATUS_DISCHARGING)
+            plugged = if (missingPlugged) null else if (plugged) 1 else 0,
+            status = if (plugged) BatteryManager.BATTERY_STATUS_CHARGING else BatteryManager.BATTERY_STATUS_DISCHARGING)
         }
     }
     @Before fun init() {
@@ -245,6 +247,64 @@ class BatteryRecorderTest {
         shadowOf(h.looper).idleFor(Duration.ofMinutes(1)); drain(c)
         assertTrue(saved(c).any { it.kind == BatteryKind.periodic })
     }
+    @Test fun missingPluggedExtraKeepsPeriodicSamplingEnabled() {
+        missingPlugged = true
+        val c = control(); busy(); c.setEnabled(true); drain(c)
+        repeat(2) {
+            wall += 60_000; elapsed += 60_000
+            shadowOf(handler(c).looper).idleFor(Duration.ofMinutes(1)); drain(c)
+        }
+        val periodic = saved(c).filter { it.kind == BatteryKind.periodic }
+        assertEquals(2, periodic.size)
+        assertTrue(periodic.all { it.plugged == null })
+        assertEquals(BatteryStatus.Measuring, c.status.value)
+    }
+    @Test fun sixHourSummaryUsesRetainedRowsAndBufferWithoutRefreshingUiReport() {
+        val c = control()
+        batteryTrace(rec = 0).forEach(c.disk::add)
+        c.disk.flush(); c.disk.refresh(); c.disk.awaitIdle()
+        val cached = c.report.value
+        assertEquals(3_600_000L, cached!!.countedMs)
+        busy(); c.setEnabled(true); drain(c)
+        repeat(4) {
+            wall += 90 * 60_000; elapsed += 90 * 60_000
+            shadowOf(handler(c).looper).idleFor(Duration.ofMinutes(1)); drain(c)
+        }
+        assertEquals(elapsed, c.disk.bufferedRows().last().elapsedMs)
+        assertSame(cached, c.report.value)
+        val summary = app.resources.getQuantityString(R.plurals.battery_log_summary, 420, 420L)
+        assertTrue(app.log.state.value.any { it.endsWith(summary) })
+    }
+    @Test fun measurementLogsFollowUserToggleAndClearWhileVpnPausesStayQuiet() {
+        val c = control()
+        fun count(id: Int) = app.log.state.value.count { it.endsWith(app.getString(id)) }
+        val starts = count(R.string.battery_log_start)
+        val stops = count(R.string.battery_log_stop)
+        c.setEnabled(true); c.setEnabled(true); drain(c)
+        assertEquals(starts + 1, count(R.string.battery_log_start))
+        repeat(2) {
+            busy(); drain(c)
+            ConnectApp.mutableState.value = VpnState(); drain(c)
+        }
+        busy(); drain(c)
+        assertEquals(starts + 1, count(R.string.battery_log_start))
+        assertEquals(stops, count(R.string.battery_log_stop))
+        c.clear(); drain(c)
+        assertEquals(starts + 2, count(R.string.battery_log_start))
+        assertEquals(stops + 1, count(R.string.battery_log_stop))
+        c.setEnabled(false); c.setEnabled(false); drain(c)
+        assertEquals(stops + 2, count(R.string.battery_log_stop))
+    }
+    @Test fun autoStopLogsItsCauseOnceWithoutGenericRecorderStop() {
+        val c = control(); busy(); c.setEnabled(true); drain(c)
+        fun count(id: Int) = app.log.state.value.count { it.endsWith(app.getString(id)) }
+        val stops = count(R.string.battery_log_stop)
+        val autoStops = count(R.string.battery_log_auto_stop)
+        wall = app.store.batteryDeadline
+        app.sendBroadcast(Intent(Intent.ACTION_SCREEN_ON)); drain(c)
+        assertEquals(stops, count(R.string.battery_log_stop))
+        assertEquals(autoStops + 1, count(R.string.battery_log_auto_stop))
+    }
     @Test fun sampleRearmsWallDeadlineAfterDeepSleepEvenWhileCharging() {
         val c = control(); plugged = true; busy(); c.setEnabled(true); drain(c)
         wall = app.store.batteryDeadline - 1000
@@ -417,11 +477,18 @@ class BatteryRecorderTest {
             File(root, "stat").writeText(stat(1, "app", 95, 1))
             val task = File(root, "task/3/stat").apply { parentFile!!.mkdirs(); writeText(stat(3, BatteryThreads.VPN, 15, 1)) }
             val timer = File(root, "task/4/stat").apply { parentFile!!.mkdirs(); writeText(stat(4, BatteryThreads.TIMER, 5, 1)) }
+            File(task.parentFile, "comm").writeText(BatteryThreads.VPN + "\n")
+            File(timer.parentFile, "comm").writeText(BatteryThreads.TIMER + "\n")
+            // Unselected and unreadable comm files must prevent reading their stat entries.
+            File(root, "task/5/stat").apply { parentFile!!.mkdirs(); writeText(stat(5, BatteryThreads.VPN, 100, 1)) }
+            File(root, "task/5/comm").writeText("unrelated\n")
+            File(root, "task/6/stat").apply { parentFile!!.mkdirs(); writeText(stat(6, BatteryThreads.TIMER, 100, 1)) }
             val proc = BatteryProc(root, 100)
             assertEquals(BatteryProc.Cpu(1000, 200, 100), proc.read())
             task.delete(); timer.delete()
             assertEquals(BatteryProc.Cpu(1000, 200, 100), proc.read())
             task.writeText(stat(3, BatteryThreads.VPN, 5, 2)); timer.writeText(stat(4, BatteryThreads.ACCEPT, 5, 2))
+            File(timer.parentFile, "comm").writeText(BatteryThreads.ACCEPT + "\n")
             assertEquals(BatteryProc.Cpu(1000, 300, 200), proc.read())
         } finally { root.deleteRecursively() }
         assertEquals(BatteryProc.Cpu(null, 0, 0), BatteryProc(File("missing-proc"), 100).read())
