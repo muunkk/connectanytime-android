@@ -108,17 +108,32 @@ class WidgetTest {
         assertTrue(said.toString(), app.getString(R.string.widget_hotspot_settings_on) !in said)
         val share = app.getString(R.string.widget_share_off, app.getString(R.string.share_hotspot_switch), app.getString(R.string.sharing_link_off))
         assertTrue(said.toString(), app.getString(R.string.widget_share_hotspot_state_on, share) in said)
+        hotspot(AndroidHotspot.Off)
+        val saidOff = descriptions(laidOut(DpSize(180.dp, 110.dp)))
+        assertTrue(saidOff.toString(), app.getString(R.string.widget_share_hotspot_state_off, share) in saidOff)
+        // With hotspot sharing on, the state joins the "on" form ("…, on. No VPN. Android hotspot, off").
+        app.store.shareOverHotspot = true
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        val sharing = app.getString(R.string.widget_share_on, app.getString(R.string.share_hotspot_switch),
+            app.getString(R.string.widget_link_starts))
+        val saidSharing = descriptions(laidOut(DpSize(180.dp, 110.dp)))
+        assertTrue(saidSharing.toString(), app.getString(R.string.widget_share_hotspot_state_off, sharing) in saidSharing)
         hotspot(AndroidHotspot.Unknown)
         assertTrue(descriptions(laidOut(DpSize(180.dp, 110.dp))).none { "Android hotspot," in it })
     }
 
-    @Test fun theOnDotStandsOutFromTheButtonInTheBrandPalette() {
+    @Test fun theOnDotStandsOutFromTheButtonInEveryPalette() {
         // The dot is a shape cue first, but it must also be visible on the button: 3:1 (WCAG non-text).
+        // It is drawn in the sign's ink on the button's fill (HotspotSettings).
         fun lum(c: androidx.compose.ui.graphics.Color) = c.luminance().toDouble()
         fun contrast(a: androidx.compose.ui.graphics.Color, b: androidx.compose.ui.graphics.Color) =
             (maxOf(lum(a), lum(b)) + 0.05) / (minOf(lum(a), lum(b)) + 0.05)
-        for (scheme in listOf(BrandLight, BrandDark)) for (fill in listOf(scheme.secondaryContainer, scheme.surfaceVariant))
-            assertTrue("${contrast(scheme.tertiary, fill)}", contrast(scheme.tertiary, fill) >= 3.0)
+        // Android 10–11's brand palette, and Android 12+'s wallpaper palette as this test device builds it.
+        val schemes = listOf(BrandLight, BrandDark, androidx.compose.material3.dynamicLightColorScheme(app),
+            androidx.compose.material3.dynamicDarkColorScheme(app))
+        for (scheme in schemes) for ((ink, fill) in listOf(scheme.onSecondaryContainer to scheme.secondaryContainer,
+                scheme.onSurfaceVariant to scheme.surfaceVariant))
+            assertTrue("${contrast(ink, fill)}", contrast(ink, fill) >= 3.0)
     }
 
     private fun tap(action: String) =

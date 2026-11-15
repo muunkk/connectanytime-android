@@ -106,14 +106,15 @@ internal fun androidHotspot(e: HotspotEvidence): AndroidHotspot {
  * again until the hotspot is heard going off (Android 12L+ doesn't keep that broadcast), so the
  * widget shows its neutral button rather than an Off that may have changed meanwhile.
  */
-internal class HotspotWatch(private val context: Context, private val publish: (AndroidHotspot) -> Unit) {
+internal class HotspotWatch(private val context: Context, private val publish: (AndroidHotspot) -> Unit,
+    typedSource: TetherTypeSource? = if (Build.VERSION.SDK_INT >= 36) AndroidTetherTypes(context) else null) {
     private val lock = Any()
     private var seq = 0L
     private var evidence = HotspotEvidence()
     private var handoffSeq: Long? = null
     private var handoffAt = 0L
     private val main = Handler(Looper.getMainLooper())
-    @Volatile private var typed: Any? = null // Typed on Android 16, kept untyped so older Android never loads it
+    private val typed = typedSource?.let { Typed(it) }
     private val receiver = object : BroadcastReceiver() {
         // The sticky handed over at registration is cached, not news.
         override fun onReceive(context: Context, intent: Intent) = heard(intent, live = !isInitialStickyBroadcast)
@@ -132,13 +133,15 @@ internal class HotspotWatch(private val context: Context, private val publish: (
         refresh()
     }
 
-    /** Reads what Android holds now: the sticky broadcasts and, on Android 16, a fresh callback
-     *  snapshot. Called at app start and before the widget draws. */
+    /** Reads what Android holds now: the sticky broadcasts, the tethering restriction and, on
+     *  Android 16, the tethering callback (registered once; it stays live). Called at app start and
+     *  before the widget draws. */
     fun refresh() {
         // Tether first, AP second: on Android 10–12, where both are sticky, the radio's state counts as the newer.
         readSticky(TETHER_STATE_CHANGED); readSticky(WIFI_AP_STATE_CHANGED)
-        if (Build.VERSION.SDK_INT >= 36) synchronized(this) { typed as? Typed ?: Typed().also { typed = it } }.register()
+        typed?.ensure()
         synchronized(lock) {
+            readRestriction()
             if (handoffSeq != null && SystemClock.elapsedRealtime() - handoffAt >= HANDOFF_MS) handoffSeq = null
             recompute()
         }
@@ -153,7 +156,7 @@ internal class HotspotWatch(private val context: Context, private val publish: (
 
     fun close() {
         runCatching { context.unregisterReceiver(receiver) }
-        if (Build.VERSION.SDK_INT >= 36) (typed as? Typed)?.unregister()
+        typed?.unregister()
         main.removeCallbacksAndMessages(null)
     }
 
@@ -200,7 +203,7 @@ internal class HotspotWatch(private val context: Context, private val publish: (
                     apStopSeq = if (state == AP_DISABLING || state == AP_DISABLED || state == AP_FAILED) stamp else evidence.apStopSeq)
                 if (live) clearHandoff(stamp)
             }
-            USER_RESTRICTIONS_CHANGED -> {}
+            USER_RESTRICTIONS_CHANGED -> readRestriction()
             else -> return@synchronized
         }
         recompute()
@@ -220,49 +223,84 @@ internal class HotspotWatch(private val context: Context, private val publish: (
 
     private fun clearHandoff(stamp: Long) { if ((handoffSeq ?: return) < stamp) handoffSeq = null }
 
+    /** Under [lock]: DISALLOW_CONFIG_TETHERING, or (Android 13+) DISALLOW_WIFI_TETHERING; read when
+     *  they may have changed (their broadcast, a refresh). */
+    private fun readRestriction() {
+        val restricted = runCatching {
+            val users = context.getSystemService(UserManager::class.java) ?: return@runCatching false
+            users.hasUserRestriction(UserManager.DISALLOW_CONFIG_TETHERING) ||
+                (Build.VERSION.SDK_INT >= 33 && users.hasUserRestriction(UserManager.DISALLOW_WIFI_TETHERING))
+        }.getOrDefault(true)
+        evidence = evidence.copy(restrictedNow = restricted, restrictionSeq = if (restricted) ++seq else evidence.restrictionSeq)
+    }
+
     /** Under [lock]. */
     private fun recompute() {
-        val restricted = runCatching {
-            context.getSystemService(UserManager::class.java)?.hasUserRestriction(UserManager.DISALLOW_CONFIG_TETHERING) == true
-        }.getOrDefault(true)
-        if (restricted) evidence = evidence.copy(restrictionSeq = ++seq)
-        evidence = evidence.copy(restrictedNow = restricted, handoffPending = handoffSeq != null)
+        evidence = evidence.copy(handoffPending = handoffSeq != null)
         publish(androidHotspot(evidence))
     }
 
-    /** Android 16's public tethering callback: typed (no name guessing) and answered right after
-     *  registering, so it knows On even before any broadcast since boot. */
-    @RequiresApi(36)
-    private inner class Typed {
-        @Volatile private var current: TetheringManager.TetheringEventCallback? = null
+    /** Follows a [TetherTypeSource] (Android 16's tethering callback): one registration at a time,
+     *  and nothing from a replaced or failed one gets through. */
+    private inner class Typed(private val source: TetherTypeSource) {
+        /** Identifies the live registration; null when none. */
+        @Volatile private var current: Any? = null
+        private var handle: Any? = null
+        /** Registers unless already registered: a live callback follows changes by itself. */
+        @Synchronized fun ensure() { if (current == null) register() }
         @Synchronized fun register() {
-            val manager = context.getSystemService(TetheringManager::class.java) ?: return typedLost()
             unregister()
             val askedAt = synchronized(lock) { seq }
-            val callback = object : TetheringManager.TetheringEventCallback {
-                private var first = true
-                override fun onTetheredInterfacesChanged(interfaces: Set<TetheringInterface>) {
+            val registration = Any()
+            var first = true
+            current = registration
+            runCatching {
+                handle = source.register { wifi ->
                     // Under the same monitor as register(), so a replacement (or its failure clearing
                     // the typed report) can't interleave with this one publishing. Lock order: this, then lock.
-                    synchronized(this@Typed) {
-                        if (current !== this) return // from a registration that has since been replaced
-                        typedReport(interfaces.any { it.type == TetheringManager.TETHERING_WIFI }, snapshot = first, askedAt)
+                    synchronized(this) {
+                        if (current !== registration) return@synchronized // from a registration since replaced
+                        typedReport(wifi, snapshot = first, askedAt)
                         first = false
                     }
                 }
-            }
-            current = callback
-            runCatching { manager.registerTetheringEventCallback(context.mainExecutor, callback) }
-                .onFailure { current = null; typedLost() }
+            }.onFailure { current = null; handle = null; typedLost() }
         }
         @Synchronized fun unregister() {
-            val old = current ?: return
             current = null
-            runCatching { context.getSystemService(TetheringManager::class.java)?.unregisterTetheringEventCallback(old) }
+            val old = handle ?: return
+            handle = null
+            runCatching { source.unregister(old) }
         }
     }
 
     companion object {
         const val HANDOFF_MS = 15_000L
+    }
+}
+
+/** Where Android 16's typed tethering state comes from; a seam so the registration lifecycle can be tested. */
+internal interface TetherTypeSource {
+    /** Calls [onChange] with whether any tethered interface is Wi-Fi: first with a snapshot, then on
+     *  each change. Returns a handle for [unregister]; throws if registration fails. */
+    fun register(onChange: (wifi: Boolean) -> Unit): Any
+    fun unregister(handle: Any)
+}
+
+/** Android 16's public `TetheringManager` callback: typed (no name guessing) and answered right
+ *  after registering, so it knows On even before any broadcast since boot. */
+@RequiresApi(36)
+private class AndroidTetherTypes(private val context: Context) : TetherTypeSource {
+    override fun register(onChange: (wifi: Boolean) -> Unit): Any {
+        val manager = checkNotNull(context.getSystemService(TetheringManager::class.java))
+        val callback = object : TetheringManager.TetheringEventCallback {
+            override fun onTetheredInterfacesChanged(interfaces: Set<TetheringInterface>) =
+                onChange(interfaces.any { it.type == TetheringManager.TETHERING_WIFI })
+        }
+        manager.registerTetheringEventCallback(context.mainExecutor, callback)
+        return callback
+    }
+    override fun unregister(handle: Any) {
+        context.getSystemService(TetheringManager::class.java)?.unregisterTetheringEventCallback(handle as TetheringManager.TetheringEventCallback)
     }
 }

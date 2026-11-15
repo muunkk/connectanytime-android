@@ -31,6 +31,8 @@ class HotspotWatchTest {
         app.removeStickyBroadcast(Intent(TETHER_STATE_CHANGED))
         shadowOf(app.getSystemService(UserManager::class.java))
             .setUserRestriction(Process.myUserHandle(), UserManager.DISALLOW_CONFIG_TETHERING, false)
+        shadowOf(app.getSystemService(UserManager::class.java))
+            .setUserRestriction(Process.myUserHandle(), UserManager.DISALLOW_WIFI_TETHERING, false)
         ConnectApp.mutableAndroidHotspot.value = AndroidHotspot.Unknown
     }
 
@@ -258,5 +260,105 @@ class HotspotWatchTest {
         assertEquals(AndroidHotspot.Unknown, ConnectApp.androidHotspot.value)
         broadcast(tether("wlan2"))
         assertEquals(AndroidHotspot.On, ConnectApp.androidHotspot.value)
+    }
+
+    @Test fun theWifiOnlyTetheringRestrictionAlsoGoesNeutral() {
+        stickyWifi()
+        assertEquals(AndroidHotspot.On, ConnectApp.androidHotspot.value)
+        val users = shadowOf(app.getSystemService(UserManager::class.java))
+        users.setUserRestriction(Process.myUserHandle(), UserManager.DISALLOW_WIFI_TETHERING, true)
+        broadcast(Intent(USER_RESTRICTIONS_CHANGED))
+        assertEquals(AndroidHotspot.Unknown, ConnectApp.androidHotspot.value)
+        users.setUserRestriction(Process.myUserHandle(), UserManager.DISALLOW_WIFI_TETHERING, false)
+        broadcast(Intent(USER_RESTRICTIONS_CHANGED))
+        // The tethering list from before the restriction may describe tethering it stopped.
+        assertEquals(AndroidHotspot.Unknown, ConnectApp.androidHotspot.value)
+        broadcast(tether("wlan2"))
+        assertEquals(AndroidHotspot.On, ConnectApp.androidHotspot.value)
+    }
+
+    /** Android 16's callback, driven by hand: registrations, and what each delivers when. */
+    private class FakeTypes : TetherTypeSource {
+        val live = mutableListOf<(Boolean) -> Unit>()
+        val all = mutableListOf<(Boolean) -> Unit>()
+        var fail = false
+        override fun register(onChange: (wifi: Boolean) -> Unit): Any {
+            if (fail) throw SecurityException("refused")
+            live += onChange; all += onChange
+            return onChange
+        }
+        override fun unregister(handle: Any) { live.remove(handle) }
+    }
+
+    private fun watchWith(types: FakeTypes): Pair<HotspotWatch, () -> AndroidHotspot> {
+        app.hotspot.close() // the app's own watch must not answer for this one
+        var value = AndroidHotspot.Unknown
+        val watch = HotspotWatch(app, publish = { value = it }, typedSource = types)
+        watch.start()
+        return watch to { value }
+    }
+
+    @Test fun theTypedCallbackRegistersOnceAndFollowsChanges() {
+        val types = FakeTypes()
+        val (watch, value) = watchWith(types)
+        assertEquals(1, types.live.size)
+        types.live.single()(true) // snapshot
+        assertEquals(AndroidHotspot.On, value())
+        watch.refresh(); watch.refresh()
+        assertEquals("a live callback isn't registered again", 1, types.all.size)
+        types.live.single()(false)
+        assertEquals(AndroidHotspot.Unknown, value()) // no Wi-Fi tethered proves nothing about the radio
+        watch.close()
+        assertEquals(0, types.live.size)
+    }
+
+    @Test fun aSnapshotTakenBeforeTheHotspotStoppedIsDropped() {
+        val types = FakeTypes()
+        val (watch, value) = watchWith(types)
+        val stale = types.live.single()
+        // The hotspot stops and starts again before the registration's snapshot arrives.
+        for (state in listOf(AP_DISABLING, AP_DISABLED, AP_ENABLING, AP_ENABLED)) app.sendBroadcast(ap(state))
+        idle()
+        stale(true) // describes the previous run
+        assertEquals(AndroidHotspot.Unknown, value())
+        // A change reported after that is news.
+        stale(true)
+        assertEquals(AndroidHotspot.On, value())
+        watch.close()
+    }
+
+    @Test fun aReplacedOrFailedRegistrationGetsNothingThrough() {
+        val types = FakeTypes()
+        val (watch, value) = watchWith(types)
+        val first = types.live.single()
+        first(true)
+        assertEquals(AndroidHotspot.On, value())
+        // Registration fails on a later attempt: the typed report is dropped, and the old callback is silenced.
+        watch.close()
+        types.fail = true
+        watch.start()
+        assertEquals(AndroidHotspot.Unknown, value())
+        first(true)
+        assertEquals(AndroidHotspot.Unknown, value())
+        // A new registration works again, and only it counts.
+        types.fail = false
+        watch.refresh()
+        val second = types.live.single()
+        first(true)
+        assertEquals(AndroidHotspot.Unknown, value())
+        second(true)
+        assertEquals(AndroidHotspot.On, value())
+        watch.close()
+    }
+
+    @Test fun onlyALiveTypedChangeClearsTheHandoff() {
+        val types = FakeTypes()
+        val (watch, value) = watchWith(types)
+        watch.handedOff()
+        types.live.single()(true) // the registration's snapshot: cached, not a report since the tap
+        assertEquals(AndroidHotspot.Unknown, value())
+        types.live.single()(true) // a change after the tap
+        assertEquals(AndroidHotspot.On, value())
+        watch.close()
     }
 }

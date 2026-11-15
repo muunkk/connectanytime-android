@@ -44,7 +44,7 @@ class ConnectApp : Application() {
         store.prefs.registerOnSharedPreferenceChangeListener(tetherPreferenceListener)
         Notices.channels(this)
         // Android's own hotspot, for the widget's hotspot button (HotspotWatch.kt).
-        hotspot = HotspotWatch(this) { mutableAndroidHotspot.value = it }.also { it.start() }
+        hotspot = HotspotWatch(this, publish = { mutableAndroidHotspot.value = it }).also { it.start() }
         // Keeps the home screen widget in step with the VPN, sharing and the switches.
         widgets.launch { ConnectWidget.changes(this@ConnectApp).collect { ConnectWidget.refresh(this@ConnectApp) } }
     }

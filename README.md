@@ -37,7 +37,8 @@ connected and which network the phone is on. It also has:
   when off) and show what each link is doing, or how many devices are using it;
 - a button for Android's hotspot settings, which also shows whether Android's hotspot
   is on: a **dot** means on, a **slashed** sign means off, and the **plain** sign means
-  the widget doesn't know (often the case with the hotspot off; see below). TalkBack says "Android hotspot, on" or "off" when it knows.
+  the widget doesn't know (often the case with the hotspot off; see below). TalkBack
+  says "Android hotspot, on" or "off" when it knows.
 
 Android doesn't let apps turn the hotspot itself on or off, so that button opens
 Android's tethering screen. Use Android's own Hotspot tile in Quick Settings for one tap.
@@ -54,8 +55,10 @@ doesn't poll; Android tells the app when something changes:
   is connected the app keeps running and follows both.
 - It shows the plain sign when a work policy restricts tethering, while the hotspot is
   turning on or off, when what Android reported doesn't add up (say, tethering heard
-  after the hotspot said it went off), while a Wi-Fi interface is in an error state, and right after you tap the
-  button until Android reports again (or 15 seconds pass).
+  after the hotspot said it went off), while a Wi-Fi interface is in an error state, and
+  right after you tap the button, until Android reports again or the app looks again
+  15 seconds later. If Android pauses the idle app before then, the plain sign stays
+  until the next report or refresh.
 
 Limits: if Android freezes or stops the idle app (usual with the VPN off), the widget
 keeps showing what it last saw. Android then holds the app's broadcasts, so a hotspot
@@ -64,8 +67,9 @@ refreshes (about every 30 minutes, which Android may delay). A policy that restr
 tethering and is lifted again while the app isn't running can leave an old "on". An
 Android build that names its hotspot interface like a USB, Bluetooth or Ethernet one
 would be misread, and one whose hotspot broadcast doesn't say which hotspot it is
-(AOSP always does) would only ever show the plain sign. Only interface names and states are read: no network names, devices
-or addresses, and nothing is stored or sent.
+(AOSP always does) would only ever show the plain sign. Only interface names, hotspot
+states and whether tethering is restricted are read: no network names, devices or
+addresses, and nothing is stored or sent.
 
 Tapping the status opens the app. It's 4 × 2 by default and resizes down to about
 3 × 2 (180 dp), where the buttons lose their words. With a larger font, titles shorten

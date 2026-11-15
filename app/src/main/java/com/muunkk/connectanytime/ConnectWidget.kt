@@ -361,14 +361,19 @@ private fun HotspotSettings(context: Context, connected: Boolean, state: Android
             Image(ImageProvider(if (state == AndroidHotspot.Off) R.drawable.ic_hotspot_off else R.drawable.ic_hotspot), contentDescription = null,
                 colorFilter = ColorFilter.tint(ink), modifier = GlanceModifier.size(20.dp))
             if (state == AndroidHotspot.On) Box(GlanceModifier.fillMaxSize(), contentAlignment = Alignment.TopEnd) {
-                // A 7 dp dot ringed in the button's own fill, so it reads as a badge on either background.
+                // An 8 dp dot in the sign's own ink, ringed in the button's fill so it reads as a badge apart
+                // from the waves. Ink, not tertiary: Material 3 keeps an on-colour readable on its container in
+                // every palette, where tertiary on secondaryContainer drops near 2:1 with some wallpapers.
+                // (10 dp is as large as the ring gets without cutting into the outer wave.)
                 Box(GlanceModifier.size(10.dp), contentAlignment = Alignment.Center) {
                     Image(ImageProvider(R.drawable.ic_dot), contentDescription = null, colorFilter = ColorFilter.tint(fill), modifier = GlanceModifier.size(10.dp))
-                    Image(ImageProvider(R.drawable.ic_dot), contentDescription = null, colorFilter = ColorFilter.tint(colors.tertiary), modifier = GlanceModifier.size(7.dp))
+                    Image(ImageProvider(R.drawable.ic_dot), contentDescription = null, colorFilter = ColorFilter.tint(ink), modifier = GlanceModifier.size(8.dp))
                 }
             }
             Box(GlanceModifier.fillMaxSize(), contentAlignment = Alignment.BottomEnd) {
                 // A plate in the button's fill under the arrow, so the off sign's slash doesn't show through it.
+                // Drawn in every state so the arrow looks the same in all three; it trims the outer wave's
+                // lower end slightly, compared with before this state was shown.
                 Box(GlanceModifier.size(13.dp).cornerRadius(2.dp).background(fill), contentAlignment = Alignment.Center) {
                     Image(ImageProvider(R.drawable.ic_open_external), contentDescription = null,
                         colorFilter = ColorFilter.tint(ink), modifier = GlanceModifier.size(12.dp))
