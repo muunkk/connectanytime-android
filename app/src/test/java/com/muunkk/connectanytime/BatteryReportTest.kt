@@ -132,6 +132,41 @@ class BatteryReportTest {
         val events = stable.map { it.copy(kind = BatteryKind.event) }
         assertEquals(BatteryMath.quantum(stable)!!, BatteryMath.quantum(events)!!, 0.0)
     }
+    @Test fun interleavedEventsDoNotShrinkQuantumOrMakeSituationsReadyEarly() {
+        val periodic = batteryTrace().mapIndexed { minute, row ->
+            val charge = 5_000_000L - minOf(minute, 30) * 10_000 - maxOf(minute - 30, 0) * 1000
+            row.copy(chargeUah = charge, level = charge.toInt(), interactive = minute >= 30,
+                gen = if (minute >= 30) 1 else 0)
+        }
+        val withEvents = periodic.zipWithNext().flatMap { (a, b) ->
+            listOf(a, a.copy(kind = BatteryKind.event, elapsedMs = a.elapsedMs + 30_000,
+                uptimeMs = a.uptimeMs + 30_000, chargeUah = (a.chargeUah!! + b.chargeUah!!) / 2,
+                level = (a.level!! + b.level!!) / 2, hotDown = a.hotDown + 50_000))
+        } + periodic.last()
+        assertEquals(5500.0, BatteryMath.quantum(periodic)!!, 0.0)
+        assertEquals(BatteryMath.quantum(periodic)!!, BatteryMath.quantum(withEvents)!!, 0.0)
+        val expected = report(periodic).situations.single { it.situation.screenOn }.rate
+        val actual = report(withEvents).situations.single { it.situation.screenOn }.rate
+        assertFalse(expected.ready)
+        assertEquals(BatteryReason.ReadingsTooUneven, expected.reason)
+        assertEquals(expected.ready, actual.ready)
+        assertEquals(expected.reason, actual.reason)
+        assertEquals(expected.rangePerHour!!, actual.rangePerHour!!, 1e-10)
+    }
+    @Test fun quantumExcludesPairsAcrossBootRecordingAndPowerBoundaries() {
+        val rows = batteryTrace(20, loss = 200_000)
+        val invalid = listOf<(Int, BatteryRow) -> BatteryRow>(
+            { i, r -> r.copy(boot = i.toLong()) },
+            { i, r -> r.copy(rec = i.toLong()) },
+            { i, r -> r.copy(pgen = i.toLong()) },
+            { _, r -> r.copy(plugged = 1) },
+            { _, r -> r.copy(status = 2) })
+        for (change in invalid) {
+            for (kind in listOf(BatteryKind.periodic, BatteryKind.event)) {
+                assertNull(BatteryMath.quantum(rows.mapIndexed { i, r -> change(i, r).copy(kind = kind) }))
+            }
+        }
+    }
     @Test fun wattsFallbackHandlesIncreasingMissingFlatAndMixedEnergy() {
         val rows = batteryTrace()
         val increasing = report(rows.map { it.copy(energyNwh = 1_000_000 + it.elapsedMs) })

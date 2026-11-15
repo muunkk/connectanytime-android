@@ -24,6 +24,7 @@ class BatteryStoreTest {
     private val stores = mutableListOf<BatteryStore>()
     @Before fun init() {
         app = ApplicationProvider.getApplicationContext()
+        app.battery.close()
         app.store.measureBattery = false
         File(app.filesDir, "battery").deleteRecursively(); File(app.cacheDir, "battery-export").deleteRecursively()
     }
@@ -85,6 +86,7 @@ class BatteryStoreTest {
         assertEquals(10, d.report.value!!.rowCount)
     }
     @Test fun summaryBuildsOnIoFromRetainedAndBufferedRowsWithoutUpdatingCachedReport() {
+        app.store.measureBattery = true
         var fail = false
         val d = disk({ fail })
         val rows = batteryTrace().take(8)
@@ -104,6 +106,7 @@ class BatteryStoreTest {
         assertEquals(3, d.bufferedRows().size)
     }
     @Test fun flushRebuildsOnlyDuringCollectionAndIncludesFailedBuffers() {
+        app.store.measureBattery = true
         var fail = false
         val d = disk({ fail })
         val collector = CoroutineScope(Dispatchers.Unconfined).launch { d.report.collect {} }
@@ -122,6 +125,7 @@ class BatteryStoreTest {
         assertEquals(15, d.report.value!!.rowCount)
     }
     @Test fun unreadableCsvStillCompletesStopFlushAndRecoversThroughRetryAndClear() {
+        app.store.measureBattery = true
         val d = disk()
         val collector = CoroutineScope(Dispatchers.Unconfined).launch { d.report.collect {} }
         try {
@@ -192,7 +196,61 @@ class BatteryStoreTest {
             assertFalse(d.failed.value)
         } finally { collector.cancel(); saved.delete() }
     }
+    @Test fun firstLoadFailureIsExposedAndSuccessfulRefreshOrClearRecovers() {
+        val d = disk()
+        d.file.mkdirs()
+        d.refresh(); d.awaitIdle()
+        assertNull(d.report.value)
+        assertTrue(d.loadFailed.value)
+        assertFalse(d.failed.value)
+        assertTrue(d.file.delete())
+        d.refresh(); d.awaitIdle()
+        assertFalse(d.loadFailed.value)
+        assertEquals(0, d.report.value!!.rowCount)
+
+        // Clear must also recover directly from a failed first load, without a cached report.
+        val fresh = disk()
+        fresh.file.mkdirs()
+        fresh.refresh(); fresh.awaitIdle()
+        assertNull(fresh.report.value)
+        assertTrue(fresh.loadFailed.value)
+        var cleared = false
+        assertTrue(fresh.clear { cleared = true })
+        fresh.awaitIdle(); shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(cleared)
+        assertFalse(fresh.loadFailed.value)
+        assertFalse(fresh.failed.value)
+        assertEquals(0, fresh.report.value!!.rowCount)
+    }
+    @Test fun finalFlushWhileOffCancelsRetriesAndResetsSaveFailureButRetainsRows() {
+        app.store.measureBattery = true
+        val d = disk({ true })
+        val rows = batteryTrace().take(5)
+        rows.forEach(d::add); d.awaitIdle()
+        assertTrue(d.failed.value)
+        val retryField = BatteryStore::class.java.getDeclaredField("retry").apply { isAccessible = true }
+        val pending = retryField.get(d) as java.util.concurrent.ScheduledFuture<*>
+        assertFalse(pending.isCancelled)
+        app.store.measureBattery = false
+        var completed = false
+        d.flush { completed = true }
+        d.awaitIdle(); shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(completed)
+        assertFalse(d.failed.value)
+        assertTrue(pending.isCancelled)
+        assertNull(retryField.get(d))
+        assertEquals(0, BatteryStore::class.java.getDeclaredField("failures").apply { isAccessible = true }.get(d))
+        assertEquals(rows, d.bufferedRows())
+
+        app.store.measureBattery = true
+        assertFalse("Re-enabling must not restore a stale save error", d.failed.value)
+        d.retrySave(); d.awaitIdle()
+        assertTrue(d.failed.value)
+        val next = retryField.get(d) as java.util.concurrent.ScheduledFuture<*>
+        assertTrue("The next failure must start again with a one-minute backoff", next.getDelay(java.util.concurrent.TimeUnit.SECONDS) in 50..60)
+    }
     @Test fun failedFlushRetainsIdsAndDedupsCompleteRowsAfterRestart() {
+        app.store.measureBattery = true
         var fail = true
         val d = disk({ fail })
         val rows = batteryTrace().take(5)
@@ -209,6 +267,7 @@ class BatteryStoreTest {
         assertFalse(d.failed.value)
     }
     @Test fun exportIncludesSavedAndBufferedRowsWhenFlushFails() {
+        app.store.measureBattery = true
         var fail = false
         val d = disk({ fail })
         val rows = batteryTrace().take(8)
@@ -265,6 +324,18 @@ class BatteryStoreTest {
         assertTrue(rows.isNotEmpty()); assertEquals(100L, rows.last().seq)
         assertTrue(rows.first().seq > 0)
         assertTrue(d.file.readText().endsWith("\n"))
+    }
+    @Test fun defaultLimitRetainsAFullSevenDayMinuteTrace() {
+        val d = BatteryStore(app, app.store).also { stores += it }
+        val rows = batteryTrace(7 * 24 * 60).map { it.copy(wallMin = it.wallMin + 29_000_000,
+            boot = 100, rec = 1000, cpuProcMs = it.cpuProcMs!! + 100_000_000) }
+        val csv = rows.joinToString("") { BatteryCsv.write(it) + "\n" }
+        assertTrue("The regression trace must exceed the old two-MiB limit", csv.toByteArray().size > 2 * 1024 * 1024)
+        d.file.parentFile!!.mkdirs()
+        d.file.writeText(csv)
+        d.flush(); d.awaitIdle()
+        assertTrue(d.file.length() <= 4 * 1024 * 1024)
+        assertEquals(rows, d.file.readLines().mapNotNull(BatteryCsv::parse))
     }
     @Test fun storedHeadersStaySeparateFromExportMetadataEvenAfterRotation() {
         val d = disk(max = 4096)

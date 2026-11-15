@@ -76,11 +76,16 @@ internal object BatteryMath {
             BatteryPath.Charge else BatteryPath.Level
     }
     fun quantum(rows: List<BatteryRow>): Double? {
-        fun steps(periodic: Boolean): List<Double> = rows.zipWithNext().mapNotNull { (a, b) ->
-            if (periodic && (a.kind != BatteryKind.periodic || b.kind != BatteryKind.periodic || b.elapsedMs - a.elapsedMs !in 50_000..70_000)) return@mapNotNull null
-            val x = a.chargeUah ?: return@mapNotNull null
-            val y = b.chargeUah ?: return@mapNotNull null
-            abs((x - y).toDouble()).takeIf { it > 0 }
+        fun steps(periodic: Boolean): List<Double> {
+            val candidates = if (periodic) rows.filter { it.kind == BatteryKind.periodic } else rows
+            return candidates.zipWithNext().mapNotNull { (a, b) ->
+                if (a.boot != b.boot || a.rec != b.rec || a.pgen != b.pgen || a.plugged != 0 || b.plugged != 0 ||
+                    a.status !in 3..5 || b.status !in 3..5 || a.kind == BatteryKind.gap || b.kind == BatteryKind.gap ||
+                    b.elapsedMs <= a.elapsedMs || (periodic && b.elapsedMs - a.elapsedMs !in 50_000..70_000)) return@mapNotNull null
+                val x = a.chargeUah ?: return@mapNotNull null
+                val y = b.chargeUah ?: return@mapNotNull null
+                abs((x - y).toDouble()).takeIf { it > 0 }
+            }
         }
         return steps(true).takeIf { it.size >= 10 }?.let(::median)
             ?: steps(false).takeIf { it.size >= 10 }?.let(::median)

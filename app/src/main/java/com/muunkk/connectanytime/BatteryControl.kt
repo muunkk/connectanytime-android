@@ -48,6 +48,8 @@ class BatteryControl internal constructor(private val app: ConnectApp,
     /** Reason for CouldNotSave; cleared when off or recovered. Start failure takes precedence. */
     val problem: StateFlow<BatteryProblem?> = mutableProblem.asStateFlow()
     val report: StateFlow<BatteryReport?> = disk.report
+    /** A retained-data read failed; refresh or Clear can recover even without a report. */
+    val loadFailed: StateFlow<Boolean> = disk.loadFailed
     private val mutableAutoStopped = MutableStateFlow(app.store.batteryAutoStopped)
     val autoStopped: StateFlow<Boolean> = mutableAutoStopped.asStateFlow()
     private val plugged = MutableStateFlow(false)
@@ -150,7 +152,11 @@ class BatteryControl internal constructor(private val app: ConnectApp,
             disk.failed.value, plugged.value))
     }
     private fun stopRecorder() {
-        val old = recorder ?: return
+        val old = recorder ?: run {
+            // A paused recorder may already have stopped with a failed flush.
+            if (!stopping && !app.store.measureBattery && disk.failed.value) disk.flush()
+            return
+        }
         recorder = null; plugged.value = false; stopping = true
         old.stop {
             stopping = false

@@ -43,13 +43,19 @@ internal class BatteryProc(private val root: File = File("/proc/self"),
     private val readText: (File) -> String = { it.readText() }) {
     private val seen = mutableMapOf<Pair<Long, Long>, BatteryProcStat>()
     private val names = mutableMapOf<Long, Pair<Long, String>>()
+    private var samples = 0
     data class Cpu(val process: Long?, val vpn: Long, val forwarding: Long)
     fun read(): Cpu {
         fun read(file: File) = runCatching { batteryProcStat(readText(file)) }.getOrNull()
+        // Worker CPU is metered separately. Periodically check for TID reuse without
+        // reopening every worker stat on every event and minute sample.
+        val revalidateWorkers = samples++ % 10 == 0
         val live = mutableSetOf<Long>()
         root.resolve("task").listFiles()?.forEach { dir ->
+            val tid = dir.name.toLongOrNull() ?: return@forEach
+            live += tid
+            if (!revalidateWorkers && names[tid]?.second == BatteryThreads.WORKER) return@forEach
             val stat = read(dir.resolve("stat")) ?: return@forEach
-            live += stat.tid
             val cached = names[stat.tid]?.takeIf { it.first == stat.start } ?: run {
                 val name = runCatching { readText(dir.resolve("comm")).trimEnd() }.getOrNull() ?: return@forEach
                 (stat.start to name).also { names[stat.tid] = it }

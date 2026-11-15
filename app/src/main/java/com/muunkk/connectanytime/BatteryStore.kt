@@ -28,7 +28,7 @@ internal class BatteryStore(private val context: Context, private val prefs: Sto
     private val cpu: () -> Long = Debug::threadCpuTimeNanos,
     private val append: (File, String) -> Unit = { file, text ->
         FileOutputStream(file, true).use { it.write(text.toByteArray(Charsets.UTF_8)); it.flush(); it.fd.sync() }
-    }, private val maxBytes: Long = 2 * 1024 * 1024) {
+    }, private val maxBytes: Long = 4 * 1024 * 1024) {
     private val io = ScheduledThreadPoolExecutor(1) { Thread(it, BatteryThreads.IO) }.apply {
         setKeepAliveTime(30, TimeUnit.SECONDS); allowCoreThreadTimeOut(true); removeOnCancelPolicy = true
     }
@@ -37,10 +37,12 @@ internal class BatteryStore(private val context: Context, private val prefs: Sto
     internal val exports = File(context.cacheDir, "battery-export")
     private val buffer = ArrayDeque<BatteryRow>()
     private var failures = 0
-    private var reportBuildFailed = false
     private var retry: java.util.concurrent.ScheduledFuture<*>? = null
     private val mutableReport = MutableStateFlow<BatteryReport?>(null)
     val report = mutableReport.asStateFlow()
+    private val mutableLoadFailed = MutableStateFlow(false)
+    /** Report reads can fail independently of saves, including before the first snapshot. */
+    val loadFailed = mutableLoadFailed.asStateFlow()
     private val mutableFailed = MutableStateFlow(false)
     val failed = mutableFailed.asStateFlow()
     val clearing = AtomicBoolean()
@@ -112,6 +114,11 @@ internal class BatteryStore(private val context: Context, private val prefs: Sto
             }
             false
         }
+        if (!prefs.measureBattery) {
+            // The stop flush is the last attempt for this run. Keep unsaved rows, but
+            // do not keep retrying or carry its save error into the next run.
+            retry?.cancel(false); retry = null; failures = 0; mutableFailed.value = false
+        }
         // A report read can fail after a successful append or during write recovery.
         if (mutableReport.subscriptionCount.value > 0) rebuild()
         return saved
@@ -145,10 +152,10 @@ internal class BatteryStore(private val context: Context, private val prefs: Sto
         }
     }
     private fun buildReport(): BatteryReport? = try {
-        rows { BatteryMath.report(it, prefs.proxySetup) }.also { reportBuildFailed = false }
+        rows { BatteryMath.report(it, prefs.proxySetup) }.also { mutableLoadFailed.value = false }
     } catch (cause: Throwable) {
-        if (!reportBuildFailed) Log.w("BatteryStore", "Battery report failed (${cause.javaClass.simpleName})")
-        reportBuildFailed = true
+        if (!mutableLoadFailed.value) Log.w("BatteryStore", "Battery report failed (${cause.javaClass.simpleName})")
+        mutableLoadFailed.value = true
         null
     }
     private fun rebuild() { buildReport()?.let { mutableReport.value = it } }

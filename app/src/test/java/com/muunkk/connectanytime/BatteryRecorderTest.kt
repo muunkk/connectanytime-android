@@ -270,6 +270,45 @@ class BatteryRecorderTest {
         c.setEnabled(false); drain(c)
         assertNull(c.problem.value)
     }
+    @Test fun stopClearsSaveFailureBeforeMeasurementRestartsAndKeepsUnsavedRows() {
+        val c = control(true); busy(); c.setEnabled(true); drain(c)
+        c.disk.flush(); c.disk.awaitIdle(); drain(c)
+        assertEquals(BatteryStatus.CouldNotSave, c.status.value)
+        c.setEnabled(false); drain(c)
+        val retained = c.disk.bufferedRows()
+        assertTrue(retained.isNotEmpty())
+        assertFalse(c.disk.failed.value)
+        c.setEnabled(true)
+        assertEquals(BatteryStatus.Measuring, c.status.value)
+        assertNull(c.problem.value)
+        // New rows can trigger a fresh failed flush; only the old failure was reset.
+        drain(c)
+        assertTrue(c.disk.bufferedRows().containsAll(retained))
+    }
+    @Test fun loadFailureIsAvailableThroughControlAndClearWorksWithoutReport() {
+        val c = control()
+        c.disk.file.mkdirs()
+        c.refresh(); c.disk.awaitIdle()
+        assertNull(c.report.value)
+        assertTrue(c.loadFailed.value)
+        c.clear(); drain(c)
+        assertFalse(c.loadFailed.value)
+        assertEquals(0, c.report.value!!.rowCount)
+        assertFalse(c.clearing.value)
+    }
+    @Test fun turningOffWhileVpnPausedAlsoEndsSaveRetries() {
+        val c = control(true); busy(); c.setEnabled(true); drain(c)
+        ConnectApp.mutableState.value = VpnState(); drain(c)
+        assertTrue(c.disk.failed.value)
+        c.setEnabled(false); drain(c)
+        val retained = c.disk.bufferedRows()
+        assertTrue(retained.isNotEmpty())
+        assertFalse(c.disk.failed.value)
+        c.setEnabled(true); drain(c)
+        assertEquals(BatteryStatus.PausedVpnOff, c.status.value)
+        assertNull(c.problem.value)
+        assertEquals(retained, c.disk.bufferedRows())
+    }
     @Test fun failedStartLogsOnlyCauseTypeOnceAndRetryCanStartRecording() {
         var fail = true
         val disk = BatteryStore(app, app.store).also { disks += it }
@@ -778,8 +817,13 @@ class BatteryRecorderTest {
             task(4, BatteryThreads.VPN, 20, 1)
             assertEquals(BatteryProc.Cpu(1000, 200, 0), proc.read())
             for (tid in 3..5) assertEquals(1, reads["task/$tid/comm"])
+            repeat(8) { assertEquals(BatteryProc.Cpu(1000, 200, 0), proc.read()) }
+            assertEquals("Known workers must skip stat on the next nine samples", 1, reads["task/3/stat"])
+            assertEquals(10, reads["task/4/stat"])
+            assertEquals(10, reads["stat"])
             task(3, BatteryThreads.ACCEPT, 5, 2) // A reused worker TID needs a fresh classification.
             assertEquals(BatteryProc.Cpu(1000, 200, 50), proc.read())
+            assertEquals("Revalidate a cached worker TID every ten samples", 2, reads["task/3/stat"])
             assertEquals(2, reads["task/3/comm"])
             assertEquals(1, reads["task/4/comm"])
             task(4, BatteryThreads.WORKER, 500, 2)
