@@ -32,6 +32,7 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
@@ -106,6 +107,7 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(confirm) {
                     app.updater.takeConfirmation()?.let { runCatching { startActivity(it) } }
                 }
+                val holder = rememberSaveableStateHolder()
                 var activity by rememberSaveable { mutableStateOf(false) }
                 BackHandler(enabled = activity) { activity = false }
                 val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
@@ -122,11 +124,13 @@ class MainActivity : ComponentActivity() {
                             startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain")
                                 .putExtra(Intent.EXTRA_TEXT, (listOf(BuildConfig.BUILD_DESCRIPTION) + lines).joinToString("\n")), getString(R.string.share_activity)))
                         })
-                    } else HomeScreen(app.store, state, notificationDenied, onConnect = ::connect,
-                        onDisconnect = { Controls.disconnect(this@MainActivity) }, onActivity = { activity = true },
-                        onStayChanged = {
-                            if (state.busy) startService(Intent(this@MainActivity, ConnectVpnService::class.java).setAction(ConnectVpnService.ARM))
-                        }, update = update, onCheckUpdate = app.updater::check, onInstallUpdate = app.updater::install)
+                    } else holder.SaveableStateProvider("home") {
+                        HomeScreen(app.store, state, notificationDenied, onConnect = ::connect,
+                            onDisconnect = { Controls.disconnect(this@MainActivity) }, onActivity = { activity = true },
+                            onStayChanged = {
+                                if (state.busy) startService(Intent(this@MainActivity, ConnectVpnService::class.java).setAction(ConnectVpnService.ARM))
+                            }, update = update, onCheckUpdate = app.updater::check, onInstallUpdate = app.updater::install)
+                    }
                 }
                 // Only while it's off: it may have been turned on elsewhere meanwhile.
                 if (confirmHotspot && !app.store.shareOverHotspot) HotspotConfirm(onDismiss = { confirmHotspot = false }, onConfirm = {
