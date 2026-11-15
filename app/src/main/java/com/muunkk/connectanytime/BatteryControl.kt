@@ -74,10 +74,12 @@ class BatteryControl internal constructor(private val app: ConnectApp,
                     lateinit var next: BatteryRecorder
                     next = BatteryRecorder(app, disk, readings(), { onMain { autoStop() } }, { charging ->
                         onMain { if (recorder === next) plugged.value = charging }
-                    }, failed = { onMain { startFailed = true; stopRecorder(); reconcile() } })
+                    }, failed = { cause -> onMain {
+                        if (recorder === next) { recorderFailed(cause); reconcile() }
+                    } })
                     recorder = next
                     next.start()
-                }.onFailure { startFailed = true; stopRecorder() }
+                }.onFailure(::recorderFailed)
             }
         } else { stopRecorder() }
         mutableStatus.value = when {
@@ -87,6 +89,14 @@ class BatteryControl internal constructor(private val app: ConnectApp,
             plugged.value -> BatteryStatus.PausedCharging
             else -> BatteryStatus.Measuring
         }
+    }
+    private fun recorderFailed(cause: Throwable) {
+        if (!startFailed) {
+            startFailed = true
+            // Exception messages can contain paths or identifiers. Log only the failure type.
+            app.log.add(app.getString(R.string.battery_log_start_failed, cause.javaClass.simpleName))
+        }
+        stopRecorder()
     }
     private fun onMain(block: () -> Unit) {
         if (Looper.myLooper() == Looper.getMainLooper()) block() else main.post { block() }

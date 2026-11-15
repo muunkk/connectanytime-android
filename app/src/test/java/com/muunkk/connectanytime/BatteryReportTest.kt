@@ -180,6 +180,28 @@ class BatteryReportTest {
         assertEquals(BatteryDifference.More, r.comparison.difference)
         assertNull(report(batteryTrace(10) + batteryTrace(10, rec = 2, sharing = false, inUse = false)).comparison?.difference)
     }
+    @Test fun shortActiveEpochCannotChangeReadyComparisonSides() {
+        val ready = batteryTrace() + batteryTrace(rec = 2, sharing = false, inUse = false)
+        val r = report(ready + batteryTrace(5, loss = 500_000, rec = 3))
+        assertTrue(r.comparison!!.inUse.ready)
+        assertTrue(r.comparison.baseline.ready)
+        assertEquals(r.comparison.inUse, r.compareInUse)
+        assertEquals(r.comparison.baseline, r.compareBaseline)
+        assertEquals(r.comparison.uplink, r.compareUplink)
+        assertEquals(r.comparison.inUse, r.hero)
+        assertEquals(3_900_000L, r.compareInUseProgressMs)
+        assertEquals(3_600_000L, r.compareBaselineProgressMs)
+    }
+    @Test fun readyComparisonPairWinsOverLongerUnevenRecordings() {
+        val r = report(batteryTrace() + batteryTrace(rec = 2, sharing = false, inUse = false) +
+            batteryTrace(120, loss = 0, rec = 3, uplink = Uplink.WiFi) +
+            batteryTrace(120, loss = 0, rec = 4, uplink = Uplink.WiFi, sharing = false, inUse = false))
+        assertEquals(Uplink.MobileData, r.comparison!!.uplink)
+        assertTrue(r.comparison.inUse.ready)
+        assertTrue(r.comparison.baseline.ready)
+        assertEquals(Uplink.MobileData, r.compareUplink)
+        assertEquals(Uplink.MobileData, r.heroUplink)
+    }
     @Test fun comparisonProgressRetainsBothUnreadySidesOutsideTheTopThree() {
         val dominant = (1L..3L).flatMap { rec ->
             batteryTrace(120, rec = rec, uplink = Uplink.entries[(rec - 1).toInt()]).map { it.copy(interactive = true) }
@@ -197,26 +219,37 @@ class BatteryReportTest {
     @Test fun shortComparisonProgressNeverPairsDifferentUplinks() {
         val r = report(batteryTrace(8) + batteryTrace(rec = 2, uplink = Uplink.WiFi, sharing = false, inUse = false))
         assertEquals(Uplink.MobileData, r.compareUplink)
-        assertEquals(8 / 60.0, r.compareInUse!!.hours, 1e-10)
+        assertNull(r.compareInUse)
+        assertEquals(480_000L, r.compareInUseProgressMs)
+        assertEquals(0L, r.compareBaselineProgressMs)
         assertNull(r.compareBaseline)
         assertNull(r.comparison)
         val baselineOnly = report(batteryTrace(5, sharing = false, inUse = false))
         assertNull(baselineOnly.compareInUse)
-        assertEquals(5 / 60.0, baselineOnly.compareBaseline!!.hours, 1e-10)
+        assertNull(baselineOnly.compareBaseline)
+        assertEquals(0L, baselineOnly.compareInUseProgressMs)
+        assertEquals(300_000L, baselineOnly.compareBaselineProgressMs)
         assertEquals(Uplink.MobileData, baselineOnly.compareUplink)
         assertNull(BatteryReport().compareInUse); assertNull(BatteryReport().compareBaseline)
+        assertEquals(0L, BatteryReport().compareInUseProgressMs)
+        assertEquals(0L, BatteryReport().compareBaselineProgressMs)
     }
-    @Test fun comparisonProgressUsesSetupSpecificBaselineAndTheHeroUplink() {
+    @Test fun comparisonSidesUseSetupSpecificBaselineAndTheComparisonUplink() {
         for (setup in ProxySetup.entries) {
             val r = report(batteryTrace(20, rec = 1, uplink = Uplink.WiFi) +
                 batteryTrace(rec = 2, uplink = Uplink.WiFi, sharing = setup == ProxySetup.Manual, inUse = false) +
                 batteryTrace(rec = 3) +
                 batteryTrace(5, rec = 4, sharing = setup == ProxySetup.Manual, inUse = false), setup)
             assertEquals(Uplink.WiFi, r.comparison!!.uplink)
-            assertEquals(Uplink.MobileData, r.heroUplink)
-            assertEquals(r.heroUplink, r.compareUplink)
-            assertEquals(1.0, r.compareInUse!!.hours, 1e-10)
-            assertEquals(5 / 60.0, r.compareBaseline!!.hours, 1e-10)
+            assertEquals(Uplink.WiFi, r.heroUplink)
+            assertNull(r.hero)
+            assertEquals(r.comparison.uplink, r.compareUplink)
+            assertEquals(r.comparison.inUse, r.compareInUse)
+            assertEquals(r.comparison.baseline, r.compareBaseline)
+            assertEquals(20 / 60.0, r.compareInUse!!.hours, 1e-10)
+            assertEquals(1.0, r.compareBaseline!!.hours, 1e-10)
+            assertEquals(1_200_000L, r.compareInUseProgressMs)
+            assertEquals(3_600_000L, r.compareBaselineProgressMs)
         }
         val unknown = report(batteryTrace(uplink = null) +
             batteryTrace(rec = 2, sharing = false, inUse = false))
@@ -225,14 +258,43 @@ class BatteryReportTest {
         assertEquals(1.0, unknown.compareInUse!!.hours, 0.0)
         assertNull(unknown.compareBaseline)
     }
-    @Test fun readyHeroSurvivesAnUnreadyComparisonOnAnotherUplink() {
+    @Test fun heroStaysOnComparisonUplinkWhenItsActiveSideIsUnready() {
         val r = report(batteryTrace(20, rec = 1, uplink = Uplink.WiFi) +
             batteryTrace(rec = 2, uplink = Uplink.WiFi, sharing = false, inUse = false) +
             batteryTrace(rec = 3))
         assertEquals(Uplink.WiFi, r.comparison!!.uplink)
         assertFalse(r.comparison.inUse.ready)
-        assertEquals(Uplink.MobileData, r.heroUplink)
-        assertTrue(r.hero!!.ready)
+        assertEquals(Uplink.WiFi, r.heroUplink)
+        assertNull(r.hero)
+    }
+    @Test fun progressRatesExcludeShortWindowsAndKeepTheirDurationsSeparate() {
+        val r = report(batteryTrace(rec = 1) + batteryTrace(5, loss = 500_000, rec = 2) +
+            batteryTrace(5, rec = 3, sharing = false, inUse = false))
+        assertNull(r.comparison)
+        assertEquals(Uplink.MobileData, r.compareUplink)
+        assertEquals(1.0, r.compareInUse!!.hours, 0.0)
+        assertTrue(r.compareInUse.ready)
+        assertEquals(r.hero, r.compareInUse)
+        assertNull(r.compareBaseline)
+        assertEquals(3_900_000L, r.compareInUseProgressMs)
+        assertEquals(300_000L, r.compareBaselineProgressMs)
+    }
+    @Test fun nullUplinkComparisonKeepsBothSidesAndProgressTogether() {
+        val r = report(batteryTrace(uplink = null) + batteryTrace(rec = 2, uplink = null, sharing = false, inUse = false))
+        assertNotNull(r.comparison)
+        assertNull(r.comparison!!.uplink)
+        assertNull(r.compareUplink)
+        assertEquals(r.comparison.inUse, r.compareInUse)
+        assertEquals(r.comparison.baseline, r.compareBaseline)
+        assertEquals(r.comparison.inUse, r.hero)
+        assertEquals(3_600_000L, r.compareInUseProgressMs)
+        assertEquals(3_600_000L, r.compareBaselineProgressMs)
+    }
+    @Test fun heroFallsBackToMostReadyHoursOnlyWithoutComparison() {
+        val r = report(batteryTrace() + batteryTrace(120, rec = 2, uplink = Uplink.WiFi))
+        assertNull(r.comparison)
+        assertEquals(Uplink.WiFi, r.heroUplink)
+        assertEquals(2.0, r.hero!!.hours, 0.0)
     }
     @Test fun otherCpuIsFlooredOnlyForDisplayAndLevelIncreaseIsExcluded() {
         val r = report(batteryTrace().map { it.copy(cpuProcMs = 0) })

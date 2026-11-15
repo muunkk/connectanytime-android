@@ -36,7 +36,9 @@ data class BatteryReport(
     val transport: BatteryTransportShares = BatteryTransportShares(), val reconnects: Long = 0,
     val reconnectsPerHour: Double? = null, val warmestThermal: BatteryThermal? = null, val droppedCoverageMs: Long = 0,
     val anySituationReady: Boolean = false, val connectedMs: Long = 0,
-    val compareInUse: BatteryRate? = null, val compareBaseline: BatteryRate? = null, val compareUplink: Uplink? = null
+    val compareInUse: BatteryRate? = null, val compareBaseline: BatteryRate? = null, val compareUplink: Uplink? = null,
+    // Recorded time includes short windows. Comparison rates use only qualifying windows.
+    val compareInUseProgressMs: Long = 0, val compareBaselineProgressMs: Long = 0
 ) {
     /** The rounded duration is suitable for the subtitle after ten counted minutes. */
     val subtitleReady: Boolean get() = countedMs >= 600_000
@@ -184,12 +186,16 @@ internal object BatteryMath {
         fun active(key: BatterySituation) = !key.screenOn && key.hotspot == BatteryHotspot.on && key.sharing == BatterySharing.InUse
         fun baseline(key: BatterySituation) = !key.screenOn && key.hotspot == BatteryHotspot.on &&
             key.sharing == (if (setup == ProxySetup.Automatic) BatterySharing.Off else BatterySharing.Idle)
-        val candidates = grouped.keys.filter(::active).filter { key -> grouped.keys.any { baseline(it) && it.uplink == key.uplink } }
-        val chosen = candidates.maxByOrNull { key -> minOf(grouped.getValue(key).hours,
-            grouped.entries.first { baseline(it.key) && it.key.uplink == key.uplink }.value.hours) }
+        fun side(uplink: Uplink?, matches: (BatterySituation) -> Boolean) =
+            grouped.entries.firstOrNull { matches(it.key) && it.key.uplink == uplink }?.value
+        fun bothReady(uplink: Uplink?) = side(uplink, ::active)?.ready == true && side(uplink, ::baseline)?.ready == true
+        fun pairedHours(uplink: Uplink?) = minOf(side(uplink, ::active)?.hours ?: 0.0, side(uplink, ::baseline)?.hours ?: 0.0)
+        val uplinkOrder = compareBy<BatterySituation> { bothReady(it.uplink) }.thenBy { pairedHours(it.uplink) }
+        val candidates = grouped.keys.filter(::active).filter { side(it.uplink, ::baseline) != null }
+        val chosen = candidates.maxWithOrNull(uplinkOrder)
         val comparison = chosen?.let { key ->
             val a = grouped.getValue(key)
-            val b = grouped.entries.first { baseline(it.key) && it.key.uplink == key.uplink }.value
+            val b = checkNotNull(side(key.uplink, ::baseline))
             val d = a.percentPerHour!! - b.percentPerHour!!
             val bothReady = a.ready && b.ready
             val separated = bothReady && abs(d) > a.rangePerHour!! + b.rangePerHour!!
@@ -198,17 +204,16 @@ internal object BatteryMath {
                 if (!bothReady) null else if (!visible) BatteryDifference.None else if (d > 0) BatteryDifference.More else BatteryDifference.Less,
                 if (bothReady) abs(d) else null)
         }
-        val heroKey = chosen?.takeIf { grouped.getValue(it).ready }
-            ?: grouped.keys.filter { active(it) && grouped.getValue(it).ready }.maxByOrNull { grouped.getValue(it).hours }
-        // Progress includes short windows and situations outside the three display rows.
-        val retained = windows.filter { it.situation != null }.groupBy { it.situation!! }.mapValues { rate(it.value) }
-        val pairs = retained.keys.filter(::active).filter { key -> retained.keys.any { baseline(it) && it.uplink == key.uplink } }
-        val compareKey = heroKey ?: chosen ?: pairs.maxByOrNull { key -> minOf(retained.getValue(key).hours,
-            retained.entries.first { baseline(it.key) && it.key.uplink == key.uplink }.value.hours) }
-            ?: retained.keys.filter(::active).maxByOrNull { retained.getValue(it).hours }
-            ?: retained.keys.filter(::baseline).maxByOrNull { retained.getValue(it).hours }
-        val compareInUse = compareKey?.let { key -> retained.entries.firstOrNull { active(it.key) && it.key.uplink == key.uplink }?.value }
-        val compareBaseline = compareKey?.let { key -> retained.entries.firstOrNull { baseline(it.key) && it.key.uplink == key.uplink }?.value }
+        val heroKey = if (comparison != null) chosen
+            else grouped.keys.filter { active(it) && grouped.getValue(it).ready }.maxByOrNull { grouped.getValue(it).hours }
+        val retained = windows.filter { it.situation != null }.groupBy { it.situation!! }
+        // Keep one uplink for both progress sides, even when only short windows have been recorded.
+        val progressKeys = retained.keys.filter(::active) + retained.keys.filter(::baseline)
+        val compareUplink = (chosen ?: progressKeys.maxWithOrNull(uplinkOrder))?.uplink
+        val compareInUse = comparison?.inUse ?: side(compareUplink, ::active)
+        val compareBaseline = comparison?.baseline ?: side(compareUplink, ::baseline)
+        fun progress(matches: (BatterySituation) -> Boolean) = retained.entries
+            .filter { matches(it.key) && it.key.uplink == compareUplink }.sumOf { entry -> entry.value.sumOf { it.ms } }
         val top = grouped.entries.sortedByDescending { it.value.hours }.take(3)
         val highest = grouped.entries.filter { it.value.ready }.maxByOrNull { it.value.percentPerHour!! }?.key
         val topKeys = top.map { it.key }.toSet()
@@ -230,12 +235,12 @@ internal object BatteryMath {
         val paths = epochs.values.map(::path).distinct()
         return BatteryReport(count, elapsed, (elapsed + 300_000) / 600_000 * 600_000, first, last,
             paths.singleOrNull() ?: BatteryPath.Mixed, median(epochs.values.mapNotNull(::capacity))?.div(1000),
-            heroKey?.uplink, heroKey?.let { grouped[it] }, comparison, all,
+            heroKey?.uplink, heroKey?.let { grouped[it]?.takeIf { rate -> rate.ready } }, comparison, all,
             BatteryCpu(proc, vpn, fwd, if (proc != null && vpn != null && fwd != null) (proc - vpn - fwd).coerceAtLeast(0.0) else null),
             top.map { BatterySituationRate(it.key, it.value, it.key == highest) }.toList(), rate(other),
             BatteryTransportShares(share(BatteryTransport.dtls), share(BatteryTransport.tls), share(BatteryTransport.unknown)),
             reconnects, if (all.hours > 0) reconnects / all.hours else null,
             warmest?.let { BatteryThermal.entries[it.coerceIn(0, 3)] }, dropped, grouped.values.any { it.ready }, connectedMs,
-            compareInUse, compareBaseline, compareKey?.uplink)
+            compareInUse, compareBaseline, compareUplink, progress(::active), progress(::baseline))
     }
 }

@@ -39,19 +39,26 @@ internal fun batteryProcStat(line: String): BatteryProcStat? = runCatching {
 
 /** Keep exited threads' last totals. TID reuse has a different start tick. */
 internal class BatteryProc(private val root: File = File("/proc/self"),
-    private val ticks: Long = Os.sysconf(OsConstants._SC_CLK_TCK)) {
+    private val ticks: Long = Os.sysconf(OsConstants._SC_CLK_TCK),
+    private val readText: (File) -> String = { it.readText() }) {
     private val seen = mutableMapOf<Pair<Long, Long>, BatteryProcStat>()
+    private val names = mutableMapOf<Long, Pair<Long, String>>()
     data class Cpu(val process: Long?, val vpn: Long, val forwarding: Long)
     fun read(): Cpu {
-        fun read(file: File) = runCatching { batteryProcStat(file.readText()) }.getOrNull()
+        fun read(file: File) = runCatching { batteryProcStat(readText(file)) }.getOrNull()
+        val live = mutableSetOf<Long>()
         root.resolve("task").listFiles()?.forEach { dir ->
-            val name = runCatching { dir.resolve("comm").readText().trimEnd() }.getOrNull()
-            if (name !in BATTERY_CPU_THREAD_NAMES) return@forEach
-            read(dir.resolve("stat"))?.takeIf { it.name in BATTERY_CPU_THREAD_NAMES }?.let { stat ->
-                val key = stat.tid to stat.start
-                if (stat.ticks >= (seen[key]?.ticks ?: 0)) seen[key] = stat
+            val stat = read(dir.resolve("stat")) ?: return@forEach
+            live += stat.tid
+            val cached = names[stat.tid]?.takeIf { it.first == stat.start } ?: run {
+                val name = runCatching { readText(dir.resolve("comm")).trimEnd() }.getOrNull() ?: return@forEach
+                (stat.start to name).also { names[stat.tid] = it }
             }
+            if (cached.second !in BATTERY_CPU_THREAD_NAMES || stat.name !in BATTERY_CPU_THREAD_NAMES) return@forEach
+            val key = stat.tid to stat.start
+            if (stat.ticks >= (seen[key]?.ticks ?: 0)) seen[key] = stat
         }
+        names.keys.retainAll(live)
         fun ms(t: Long) = if (ticks > 0) t * 1000 / ticks else 0
         return Cpu(read(root.resolve("stat"))?.let { ms(it.ticks) },
             ms(seen.values.filter { it.name == BatteryThreads.VPN }.sumOf { it.ticks }),
@@ -136,7 +143,7 @@ internal open class BatteryReadings(private val context: Context, private val pr
 
 internal class BatteryRecorder(private val app: ConnectApp, private val disk: BatteryStore,
     private val readings: BatteryReadings, private val expired: () -> Unit, private val charging: (Boolean) -> Unit,
-    private val allocateRec: () -> Long = app.store::nextBatteryRec, private val failed: () -> Unit = {}) {
+    private val allocateRec: () -> Long = app.store::nextBatteryRec, private val failed: (Throwable) -> Unit = {}) {
     private var thread: HandlerThread? = null
     private var handler: Handler? = null
     private var scope: CoroutineScope? = null
@@ -150,7 +157,7 @@ internal class BatteryRecorder(private val app: ConnectApp, private val disk: Ba
     private val prefChanges = AtomicLong()
     private var seenPrefs = 0L
     private val preferenceListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-        if (key in ConnectApp.SHARE_KEYS && running.get()) { prefChanges.incrementAndGet(); event() }
+        if (key == "shareOverHotspot" && running.get()) { prefChanges.incrementAndGet(); event() }
     }
     private val transport = BatteryTransportClassifier(ConnectApp.reconnectEpisodes.get())
     private fun updateTransport() = transport.connection(ConnectApp.state.value.busy, ConnectApp.reconnectEpisodes.get())
@@ -194,7 +201,7 @@ internal class BatteryRecorder(private val app: ConnectApp, private val disk: Ba
         thread = worker; handler = Handler(worker.looper)
         scope = CoroutineScope(SupervisorJob() + handler!!.asCoroutineDispatcher())
         handler!!.post {
-            if (running.get()) runCatching { initialize() }.onFailure { failed() }
+            if (running.get()) runCatching { initialize() }.onFailure(failed)
         }
     }
     private fun initialize() {

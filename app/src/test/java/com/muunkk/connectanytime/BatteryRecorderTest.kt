@@ -197,15 +197,51 @@ class BatteryRecorderTest {
         c.retrySave(); c.disk.awaitIdle(); drain(c)
         assertTrue(app.store.measureBattery)
     }
-    @Test fun failedStartIsReportedAndRetryCanStartRecording() {
+    @Test fun failedStartLogsOnlyCauseTypeOnceAndRetryCanStartRecording() {
         var fail = true
         val disk = BatteryStore(app, app.store).also { disks += it }
-        val c = BatteryControl(app, disk, { if (fail) error("unavailable") else readings }, { wall }).also { controls += it }
+        val c = BatteryControl(app, disk, { if (fail) error("unavailable /private/user/account") else readings }, { wall })
+            .also { controls += it }
+        val line = app.getString(R.string.battery_log_start_failed, "IllegalStateException")
+        val before = app.log.state.value.count { it.endsWith(line) }
         busy(); c.setEnabled(true); drain(c)
         assertEquals(BatteryStatus.CouldNotSave, c.status.value)
         assertTrue(app.store.measureBattery)
+        assertEquals(before + 1, app.log.state.value.count { it.endsWith(line) })
+        assertTrue(app.log.state.value.none { it.contains("/private/user/account") })
+        app.store.shareWithTether = !app.store.shareWithTether; drain(c)
+        ConnectApp.mutableState.value = VpnState(); drain(c)
+        busy(); drain(c)
+        assertEquals(before + 1, app.log.state.value.count { it.endsWith(line) })
         fail = false; c.retrySave(); drain(c)
         assertEquals(BatteryStatus.Measuring, c.status.value)
+        assertEquals(before + 1, app.log.state.value.count { it.endsWith(line) })
+    }
+    @Test fun asynchronousStartFailureLogsCauseOnceAndRetryRestartsRecorder() {
+        var fail = true
+        val source = readings
+        val disk = BatteryStore(app, app.store).also { disks += it }
+        val c = BatteryControl(app, disk, {
+            object : BatteryReadings(app, BatteryProc(File("missing-proc"), 100)) {
+                override fun wall() = wall
+                override fun elapsed(): Long = if (fail) throw SecurityException("private identifier") else elapsed
+                override fun read() = source.read()
+            }
+        }, { wall }).also { controls += it }
+        val line = app.getString(R.string.battery_log_start_failed, "SecurityException")
+        val before = app.log.state.value.count { it.endsWith(line) }
+        busy(); c.setEnabled(true); drain(c)
+        assertEquals(BatteryStatus.CouldNotSave, c.status.value)
+        assertTrue(app.store.measureBattery)
+        assertEquals(0L, ProxyCounters.gen)
+        assertEquals(before + 1, app.log.state.value.count { it.endsWith(line) })
+        assertTrue(app.log.state.value.none { it.contains("private identifier") })
+        app.store.shareOverHotspot = !app.store.shareOverHotspot; drain(c)
+        assertEquals(before + 1, app.log.state.value.count { it.endsWith(line) })
+        fail = false; c.retrySave(); drain(c)
+        assertEquals(BatteryStatus.Measuring, c.status.value)
+        assertTrue(ProxyCounters.gen > 0)
+        assertEquals(before + 1, app.log.state.value.count { it.endsWith(line) })
     }
     @Test fun clearDuringRecordingAllocatesNewRecAndResetsAutoStopped() {
         val c = control(); busy(); c.setEnabled(true); drain(c)
@@ -213,6 +249,16 @@ class BatteryRecorderTest {
         c.clear(); drain(c)
         assertTrue(app.store.batteryRec > rec)
         assertTrue(app.store.measureBattery); assertFalse(c.autoStopped.value)
+    }
+    @Test fun usbSharingPreferenceLeavesSituationGenerationUnchanged() {
+        val c = control(); busy(); c.setEnabled(true); drain(c)
+        val before = saved(c).last()
+        app.store.shareWithTether = !app.store.shareWithTether; drain(c)
+        wall += 60_000; elapsed += 60_000
+        shadowOf(handler(c).looper).idleFor(Duration.ofMinutes(1)); drain(c)
+        assertEquals(before.gen, saved(c).last().gen)
+        app.store.shareOverHotspot = !app.store.shareOverHotspot; drain(c)
+        assertEquals(before.gen + 1, saved(c).last().gen)
     }
     @Test fun tetherReceiverIsExportedAndUsbBluetoothNeverCountAsHotspot() {
         val c = control(); busy(); c.setEnabled(true); drain(c)
@@ -466,18 +512,19 @@ class BatteryRecorderTest {
     }
     @Test fun workerAllocationFailureIsReportedWithoutStartingCountersOrSampling() {
         val d = BatteryStore(app, app.store).also { disks += it }
-        var failed = false
+        val failure = IllegalStateException("commit failed")
+        var observed: Throwable? = null
         var sampled = false
         val r = BatteryRecorder(app, d, object : BatteryReadings(app, BatteryProc(File("missing-proc"), 100)) {
             override fun wall() = wall
             override fun read(): BatteryRow { sampled = true; return batteryTrace().first() }
-        }, {}, {}, allocateRec = { error("commit failed") }, failed = { failed = true })
+        }, {}, {}, allocateRec = { throw failure }, failed = { observed = it })
         busy(); app.store.batteryDeadline = wall + 60_000
         try {
             r.start()
             val h = BatteryRecorder::class.java.getDeclaredField("handler").apply { isAccessible = true }.get(r) as android.os.Handler
             shadowOf(h.looper).idle()
-            assertTrue(failed)
+            assertSame(failure, observed)
             assertFalse(sampled)
             assertEquals(0L, ProxyCounters.gen)
         } finally {
@@ -536,7 +583,7 @@ class BatteryRecorderTest {
             val timer = File(root, "task/4/stat").apply { parentFile!!.mkdirs(); writeText(stat(4, BatteryThreads.TIMER, 5, 1)) }
             File(task.parentFile, "comm").writeText(BatteryThreads.VPN + "\n")
             File(timer.parentFile, "comm").writeText(BatteryThreads.TIMER + "\n")
-            // Unselected and unreadable comm files must prevent reading their stat entries.
+            // Unselected and unreadable names must exclude their CPU totals.
             File(root, "task/5/stat").apply { parentFile!!.mkdirs(); writeText(stat(5, BatteryThreads.VPN, 100, 1)) }
             File(root, "task/5/comm").writeText("unrelated\n")
             File(root, "task/6/stat").apply { parentFile!!.mkdirs(); writeText(stat(6, BatteryThreads.TIMER, 100, 1)) }
@@ -549,6 +596,51 @@ class BatteryRecorderTest {
             assertEquals(BatteryProc.Cpu(1000, 300, 200), proc.read())
         } finally { root.deleteRecursively() }
         assertEquals(BatteryProc.Cpu(null, 0, 0), BatteryProc(File("missing-proc"), 100).read())
+    }
+    @Test fun procNamesAreReadOncePerTidStartIncludingWorkersAndOtherThreads() {
+        fun stat(tid: Int, name: String, ticks: Int, start: Int): String {
+            val fields = MutableList(20) { "0" }
+            fields[0] = "S"; fields[11] = ticks.toString(); fields[19] = start.toString()
+            return "$tid ($name) " + fields.joinToString(" ")
+        }
+        val root = Files.createTempDirectory("battery-proc-cache").toFile()
+        val reads = mutableMapOf<String, Int>()
+        fun task(tid: Int, name: String, ticks: Int, start: Int) {
+            File(root, "task/$tid").mkdirs()
+            File(root, "task/$tid/stat").writeText(stat(tid, name, ticks, start))
+            File(root, "task/$tid/comm").writeText("$name\n")
+        }
+        try {
+            File(root, "stat").writeText(stat(1, "app", 100, 1))
+            task(3, BatteryThreads.WORKER, 500, 1)
+            task(4, BatteryThreads.VPN, 10, 1)
+            task(5, "unrelated", 900, 1)
+            task(7, BatteryThreads.VPN, 10, 1)
+            File(root, "task/7/comm").delete()
+            val proc = BatteryProc(root, 100) { file ->
+                val name = file.relativeTo(root).path
+                reads[name] = (reads[name] ?: 0) + 1
+                file.readText()
+            }
+            assertEquals(BatteryProc.Cpu(1000, 100, 0), proc.read())
+            task(4, BatteryThreads.VPN, 20, 1)
+            assertEquals(BatteryProc.Cpu(1000, 200, 0), proc.read())
+            for (tid in 3..5) assertEquals(1, reads["task/$tid/comm"])
+            task(3, BatteryThreads.ACCEPT, 5, 2) // A reused worker TID needs a fresh classification.
+            assertEquals(BatteryProc.Cpu(1000, 200, 50), proc.read())
+            assertEquals(2, reads["task/3/comm"])
+            assertEquals(1, reads["task/4/comm"])
+            task(4, BatteryThreads.WORKER, 500, 2)
+            assertEquals(BatteryProc.Cpu(1000, 200, 50), proc.read())
+            assertEquals(2, reads["task/4/comm"])
+            task(6, BatteryThreads.TIMER, 3, 1) // New TIDs also read comm once.
+            assertEquals(BatteryProc.Cpu(1000, 200, 80), proc.read())
+            assertEquals(1, reads["task/6/comm"])
+            task(7, BatteryThreads.VPN, 15, 1) // A previously unreadable name can recover.
+            assertEquals(BatteryProc.Cpu(1000, 350, 80), proc.read())
+            File(root, "task").deleteRecursively()
+            assertEquals(BatteryProc.Cpu(1000, 350, 80), proc.read())
+        } finally { root.deleteRecursively() }
     }
     @Test fun transportClassifiesEvery921FallbackAndSeedsOnlyCurrentBuildTail() {
         val c = BatteryTransportClassifier()

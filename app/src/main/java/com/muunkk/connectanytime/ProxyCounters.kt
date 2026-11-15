@@ -56,6 +56,9 @@ internal class CpuMeter(private val cpu: () -> Long = Debug::threadCpuTimeNanos,
 internal class ProxyWorker(runnable: Runnable, private val createMeter: () -> CpuMeter) : Thread(runnable, BatteryThreads.WORKER) {
     var meter: CpuMeter? = null
         private set
+    fun startTask() {
+        if (ProxyCounters.gen != 0L) meter = createMeter()
+    }
     fun tick(now: Long) {
         val current = meter ?: createMeter().also { meter = it }
         current.tick(now)
@@ -68,6 +71,10 @@ internal class ProxyWorker(runnable: Runnable, private val createMeter: () -> Cp
 
 internal class ProxyWorkers(createMeter: () -> CpuMeter = { CpuMeter() }) : ThreadPoolExecutor(0, 512, 30, TimeUnit.SECONDS, SynchronousQueue(),
     { runnable -> ProxyWorker(runnable, createMeter) }) {
+    override fun beforeExecute(thread: Thread, runnable: Runnable) {
+        super.beforeExecute(thread, runnable)
+        (thread as ProxyWorker).startTask()
+    }
     override fun afterExecute(runnable: Runnable, error: Throwable?) {
         try { runCatching { (Thread.currentThread() as ProxyWorker).finishTask() } } finally { super.afterExecute(runnable, error) }
     }

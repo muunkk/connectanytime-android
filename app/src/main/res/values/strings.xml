@@ -287,6 +287,7 @@
     <string name="updated_title">Updated to version %1$s</string>
     <string name="updated_body">Tap to open ConnectAnytime.</string>
     <string name="battery_log_start">Battery measurement started</string>
+    <string name="battery_log_start_failed">Battery measurement couldn’t start (%1$s)</string>
     <string name="battery_log_stop">Battery measurement stopped</string>
     <string name="battery_log_auto_stop">Battery measurement stopped after 7 days</string>
     <plurals name="battery_log_summary">
