@@ -99,10 +99,19 @@ fallback. A rejoin returning 401/EPERM clears the session and waits for Connect.
 The session cookie carries OpenConnect's STRAP key. Every CONNECT on a live session,
 including the first after login, replaces that key on the server, but OpenConnect
 9.21 never updates the cookie, so a cookie saved at login could never be rejoined
-(the server answered 401). `openconnect-strap-cookie.patch` writes the key the
-server just accepted back into the cookie after each CONNECT. The bridge copies the
-cookie on OpenConnect's thread, and the service saves it again after every
-in-process reconnect, in the same encrypted store. It is never logged.
+(the server answered 401). `openconnect-strap-cookie.patch` writes the key back into
+the cookie as soon as the server's 200 arrives, even if the rest of the response then
+fails. The bridge copies the cookie on OpenConnect's thread after every connect,
+resume and reconnect, and when a run ends. The service saves it after every
+in-process reconnect and, unless the session is over (401, logout, server
+termination), when a run ends, in the same encrypted store. It is never logged.
+
+A CONNECT can also send a new key and get no reply: the server may or may not hold
+that key. The saved session then keeps both, the accepted key and that candidate.
+A rejoin tries the accepted one, and only if it gets 401, the candidate: one more
+CONNECT at most, never a password or a Duo push. `scripts/test-strap-cookie.sh`
+builds the patched OpenConnect for the Mac and runs `Vendor/tests/strap-cookie-test.c`,
+which drives the real CONNECT code over an in-memory TLS session to check both cases.
 
 Only the app button, unlocked Quick Settings tile, launcher Connect shortcut or the
 widget's power button can authorize a login. Boot, app updates, process restarts and Android Always-on
@@ -144,9 +153,11 @@ During an established session:
   the old one is still open, and the bridge sends OpenConnect an `OC_CMD_STATS`
   command. Its handler runs on OpenConnect's own thread between packets, takes the
   new fd and calls `openconnect_setup_tun_fd`, which unregisters the old one. Only
-  then does the service close the old descriptor. No reconnect, no rejoin. If
-  Android refuses the new interface, the service detaches and rejoins the saved
-  session instead.
+  then does the service close the old descriptor. No reconnect, no rejoin. The status
+  says Connected once OpenConnect has switched, unless a newer reconnect started in
+  the meantime. If Android refuses the new interface, the service detaches and rejoins
+  the saved session instead. After a switch, OpenConnect only tries vhost-net again if
+  the old interface used it.
 - Disconnect sends OC_CMD_CANCEL to the live connection, clears the saved session
   and pauses automatic starts until Connect. An OS stop sends OC_CMD_DETACH and
   retains the session. A server logout cannot be guaranteed on an unreachable
@@ -404,6 +415,8 @@ verify, then attach `ConnectAnytime-<versionName>-<versionCode>.apk` to a new ta
 - `Vendor/`, `gradle/`, root Gradle files: pinned builds and the seven patches.
 - `scripts/verify-native.sh`: both ABIs' exported JNI symbols, dynamic dependency
   allowlist and APK alignment.
+- `scripts/test-strap-cookie.sh`, `Vendor/tests/strap-cookie-test.c`: the STRAP
+  cookie patch against the real CONNECT code, on the Mac.
 
 ## Verification limits
 

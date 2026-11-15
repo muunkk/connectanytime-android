@@ -1081,6 +1081,63 @@ login), and every in-process reconnect worked (20 of 20).
   change before the switch replaces the first, a run that ends before switching
   leaves the newest interface for the rejoin, and stopping closes everything.
 
+## Council round 1 fixes
+
+Opus 8/10 ship, GPT Sol 7/10 don't ship. Fixed:
+
+- **An accepted rekey could be lost** (Sol, blocking). OpenConnect can get the 200,
+  so the server holds the new key, and then fail on the rest of the headers. The
+  cookie is now refreshed right after the 200 is parsed. The bridge also snapshots
+  when `ocb_run` ends, and the service saves that snapshot before freeing the native
+  state, except after a 401, a logout or server termination (`RunEnd.keepsSession`).
+  `saveSession` still clears the session after logout or Disconnect.
+- **A CONNECT that sent a new key and heard nothing.** Implemented Sol's option:
+  `openconnect_strap_candidate_cookie` (patched in) gives the cookie with the key in
+  memory. The saved session keeps it as `candidate` when it differs from the accepted
+  one. A rejoin that gets 401 with the accepted key tries the candidate once. That's
+  one extra CONNECT at most, only in this case, and never a password or Duo.
+  Sessions saved before 0.1.4 have no candidate.
+- `ocb_run` returns -EIO, not -1, if it can't set up the tun at the start: -1 is -EPERM,
+  which now means "session over, don't save".
+- Opus:
+  1. A switch reported during a newer reconnect no longer says Connected.
+     `TunHandoff.reconnecting()` clears the wait, so `down`, the 60 s kick and the
+     30-minute give-up keep running. A reconnect that overtakes an offer that hasn't
+     been taken yet waits for it.
+  2. The interface switch happens before the Keystore save.
+  3. No `OCB_TUN_SWITCHED` when `setup_tun_fd` fails; the run detaches and the rejoin
+     closes both fds.
+  4. `buf_alloc()` returning NULL is handled.
+  5. The lock comment now says a close can hold the kernel's network configuration
+     lock for a few milliseconds.
+  6. After a switch, vhost-net is only tried again if the old tun used it, so the
+     error-level "Failed to open /dev/vhost-net" line appears once per session, not
+     on every switch.
+  7. Tests: below.
+
+### Round 1 checks
+
+- `scripts/test-strap-cookie.sh`: builds patched OpenConnect 9.21 for macOS against
+  Homebrew OpenSSL 3.5.9 (the version Android uses) and runs
+  `Vendor/tests/strap-cookie-test.c`. It runs the real `start_cstp_connection` over an
+  in-memory TLS 1.3 session (STRAP signs its exporter), with scripted replies:
+  - 200 then truncated headers: the cookie carries the key the 200 accepted;
+  - a rejoin from that cookie (fresh vpninfo: set cookie, split, ingest) presents
+    exactly that key;
+  - no reply: the cookie keeps the accepted key, and the candidate carries the new
+    one;
+  - a cookie without a STRAP key is left alone.
+
+  11 checks pass. Negative control: without the early refresh, 4 of them fail.
+- LogicTest, new cases:
+  - SWITCHED after a newer RECONNECTING doesn't bring the VPN up;
+  - a reconnect overtaking an untaken offer waits for it;
+  - a stop while a switch is offered closes it;
+  - a SWITCHED from a run that already ended changes nothing;
+  - which run endings keep the session.
+- StoreTest: the candidate survives the session's JSON, and 0.1.3's format reads
+  with none. Robolectric has no AndroidKeyStore, so encryption isn't covered.
+
 ## Device checklist (0.1.4 (5))
 
 - [ ] Connect, then cause a short blip (airplane mode for ~5 s, or walk out of Wi‑Fi
@@ -1098,3 +1155,5 @@ login), and every in-process reconnect worked (20 of 20).
 - [ ] Note: the session saved by 0.1.3 carries the stale key, so the first start of
       0.1.4 may need one Duo login. Expected once.
 - [ ] Disconnect still logs out, and Connect needs Duo afterwards.
+- [ ] Rarely seen, so check only if it happens: "The saved session key was refused;
+      trying the newer one" followed by a successful rejoin.
