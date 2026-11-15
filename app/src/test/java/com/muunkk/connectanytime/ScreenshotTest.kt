@@ -344,6 +344,14 @@ class ScreenshotTest(private val dark: Boolean) {
         compose.waitForIdle()
     }
     private fun scrollTo(tag: String) { compose.onNode(hasScrollToNodeAction()).performScrollToNode(hasTestTag(tag)); compose.waitForIdle() }
+    @Test fun batteryLoadingReducedMotion() {
+        compose.setContent { ConnectTheme(dark = dark, dynamicColor = false) {
+            CompositionLocalProvider(LocalReducedMotion provides true) {
+                BatteryContent(app.store, BatteryStatus.Measuring, null, false, {}, {}, {}, {}, {})
+            }
+        } }
+        save("battery-loading-reduced-motion")
+    }
     @Test fun batteryOff() { battery(BatteryStatus.Off, BatteryReport()); save("battery-off") }
     @Test fun batteryMeasuringNotReady() {
         app.store.shareOverHotspot = true

@@ -403,7 +403,7 @@ private fun Settings(store: Store, state: VpnState, user: String, onUser: (Strin
 @Composable
 private fun BatteryRow(status: BatteryStatus, problem: BatteryProblem?, onClick: () -> Unit) {
     val title = stringResource(R.string.battery_title)
-    val spoken = stringResource(R.string.battery_home_spoken, title, stringResource(batteryHomeSpoken(status, problem)))
+    val spoken = stringResource(batteryHomeSpoken(status, problem))
     val open = stringResource(R.string.battery_open)
     val failed = status == BatteryStatus.CouldNotSave
     SegmentedListItem(colors = segmentColors(), onClick = onClick, shapes = ListItemDefaults.segmentedShapes(1, 2),

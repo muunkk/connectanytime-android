@@ -82,8 +82,12 @@ class BatteryScreenTest {
     private val polite = SemanticsMatcher.expectValue(SemanticsProperties.LiveRegion, LiveRegionMode.Polite)
     private fun scrollTo(matcher: SemanticsMatcher) = compose.onNode(hasScrollToNodeAction()).performScrollToNode(matcher)
     private val noLiveRegion = SemanticsMatcher.keyNotDefined(SemanticsProperties.LiveRegion)
-    /** The status line's live content, exactly ("" when it holds nothing). */
+    /** The status line's spoken content, exactly. */
     private fun says(text: String) = SemanticsMatcher.expectValue(SemanticsProperties.ContentDescription, listOf(text))
+    private val saysNothing = SemanticsMatcher.keyNotDefined(SemanticsProperties.ContentDescription)
+    /** Kept as a node, but out of TalkBack's reach. */
+    private val hidden = SemanticsMatcher.keyIsDefined(SemanticsProperties.HideFromAccessibility)
+    private val readable = SemanticsMatcher.keyNotDefined(SemanticsProperties.HideFromAccessibility)
 
     @Test fun switchRowSaysWhyItIsPaused() {
         status = BatteryStatus.Measuring; show()
@@ -96,42 +100,44 @@ class BatteryScreenTest {
     }
     @Test fun onlySystemCausedChangesAreAnnounced() {
         status = BatteryStatus.Measuring; show()
-        // One live node all along; plain Measuring is said by the switch, so it holds nothing.
-        line.assertExists().assert(polite).assert(says(""))
+        // One live node all along; plain Measuring is said by the switch, so it's hidden.
+        line.assertExists().assert(polite).assert(hidden).assert(says("Measuring"))
         val id = line.fetchSemanticsNode().id
+        // A change the phone made: the text changes, and the line is readable.
         status = BatteryStatus.PausedCharging; compose.waitForIdle()
-        line.assert(polite).assert(says("Paused while charging"))
+        line.assert(polite).assert(readable).assert(says("Paused while charging"))
         line.assertIsDisplayed().assertHeightIsAtLeast(48.dp)
-        // The user's own toggle is announced by the switch: that change drops the live region,
-        // but the line still says what it shows.
+        // The user's own toggle is announced by the switch: still live, but its text doesn't
+        // change (nothing to announce), and the line is hidden until the phone changes something.
         switch.performClick(); compose.waitForIdle()
         assertEquals(BatteryStatus.Off, status)
-        line.assert(noLiveRegion).assert(says(""))
+        line.assert(polite).assert(hidden).assert(says("Paused while charging"))
         switch.performClick(); compose.waitForIdle()
         assertEquals(BatteryStatus.PausedVpnOff, status)
-        line.assert(noLiveRegion).assert(says("Paused: the VPN is off"))
+        line.assert(polite).assert(hidden).assert(says("Paused while charging"))
         compose.onNodeWithText("Paused: the VPN is off", useUnmergedTree = true).assertIsDisplayed()
         // The next change the phone makes is announced again.
         status = BatteryStatus.CouldNotSave; compose.waitForIdle()
-        line.assert(polite).assert(says("Couldn’t save measurements. The Try saving again button is below."))
+        line.assert(polite).assert(readable).assert(says("Couldn’t save measurements. The Try saving again button is below."))
         // The same node throughout: its content changed, it never reappeared.
         assertEquals(id, line.fetchSemanticsNode().id)
     }
     @Test fun statusLineIsOneLiveNodeInEveryState() {
         status = BatteryStatus.Off; report = BatteryFakes.notReady(); show()
-        val id = line.assert(polite).assert(says("")).fetchSemanticsNode().id
-        // Each a change the phone made (or the auto-stop), in turn.
+        val id = line.assert(polite).assert(hidden).assert(saysNothing).fetchSemanticsNode().id
+        // Each a change the phone made (or the auto-stop), in turn: text, and whether it's hidden.
         val expected = listOf(
-            BatteryStatus.PausedVpnOff to "Paused: the VPN is off",
-            BatteryStatus.Measuring to "Measuring again",
-            BatteryStatus.PausedCharging to "Paused while charging",
-            BatteryStatus.CouldNotSave to "Couldn’t save measurements. The Try saving again button is below.",
-            BatteryStatus.Measuring to "",
-            BatteryStatus.AutoStopped to "Stopped after 7 days",
-            BatteryStatus.Off to "")
-        for ((next, text) in expected) {
+            Triple(BatteryStatus.PausedVpnOff, "Paused: the VPN is off", false),
+            // Readable while it's announced (hidden a few seconds later: measuringAgainIsAnnouncedThenHidden).
+            Triple(BatteryStatus.Measuring, "Measuring again", false),
+            Triple(BatteryStatus.PausedCharging, "Paused while charging", false),
+            Triple(BatteryStatus.CouldNotSave, "Couldn’t save measurements. The Try saving again button is below.", false),
+            Triple(BatteryStatus.Measuring, "Measuring", true),
+            Triple(BatteryStatus.AutoStopped, "Stopped after 7 days", false),
+            Triple(BatteryStatus.Off, null, true))
+        for ((next, text, isHidden) in expected) {
             status = next; compose.waitForIdle()
-            line.assert(polite).assert(says(text))
+            line.assert(polite).assert(if (text == null) saysNothing else says(text)).assert(if (isHidden) hidden else readable)
             assertEquals("$next keeps the node", id, line.fetchSemanticsNode().id)
         }
     }
@@ -141,18 +147,30 @@ class BatteryScreenTest {
         switch.performClick(); compose.waitForIdle()
         assertEquals(BatteryStatus.Measuring, status)
         status = BatteryStatus.PausedCharging; compose.waitForIdle()
-        line.assert(polite).assert(says("Paused while charging"))
+        line.assert(polite).assert(readable).assert(says("Paused while charging"))
     }
-    @Test fun measuringAgainAfterASystemPauseIsAnnounced() {
+    @Test fun measuringAgainIsAnnouncedThenHidden() {
         status = BatteryStatus.Measuring; show()
         status = BatteryStatus.PausedVpnOff; compose.waitForIdle()
         status = BatteryStatus.Measuring; compose.waitForIdle()
-        line.assert(polite).assert(says("Measuring again"))
+        line.assert(polite).assert(readable).assert(says("Measuring again"))
         compose.onNodeWithText("Measuring", useUnmergedTree = true).assertIsDisplayed()
-        // Back from anything but a pause (here a save problem), Measuring holds nothing.
+        // A few seconds later it has been said: hidden, the node and its text kept.
+        compose.mainClock.advanceTimeBy(5_000); compose.waitForIdle()
+        line.assert(polite).assert(hidden).assert(says("Measuring again"))
+        compose.onNodeWithText("Measuring", useUnmergedTree = true).assertIsDisplayed()
+        // Back from anything but a pause (here a save problem), Measuring is hidden at once.
         status = BatteryStatus.CouldNotSave; compose.waitForIdle()
         status = BatteryStatus.Measuring; compose.waitForIdle()
-        line.assert(polite).assert(says(""))
+        line.assert(polite).assert(hidden).assert(says("Measuring"))
+    }
+    @Test fun statusLineKeepsOneHeightInEveryShownState() {
+        status = BatteryStatus.Measuring; show()
+        val measuring = line.getBoundsInRoot()
+        for (next in listOf(BatteryStatus.PausedCharging, BatteryStatus.PausedVpnOff, BatteryStatus.AutoStopped)) {
+            status = next; compose.waitForIdle()
+            assertEquals("$next", measuring, line.getBoundsInRoot())
+        }
     }
     @Test fun withOneSideRecordedBothSidesAndHowToCompareShow() {
         app.store.proxySetup = ProxySetup.Automatic
@@ -309,7 +327,9 @@ class BatteryScreenTest {
         status = BatteryStatus.Measuring; report = BatteryFakes.compared(); show()
         scrollTo(hasTestTag("battery-compare"))
         compose.onNodeWithTag("battery-compare")
-            .assertTextEquals("Mobile data: 6.0 percentage points an hour more with sharing in use")
+            .assertTextEquals("6.0 percentage points an hour more with sharing in use")
+        // The network is named once, in the line above.
+        compose.onNodeWithTag("battery-compare-uplink").assertTextEquals("Both sides on Mobile data")
         compose.onNodeWithText("Sharing in use vs off").assertExists()
         compose.onNodeWithText("How to compare").assertDoesNotExist()
     }
@@ -393,7 +413,7 @@ class BatteryScreenTest {
     @Test fun offWithoutRowsShowsOnlyTheSwitchPanelAndFootnotes() {
         status = BatteryStatus.Off; report = BatteryReport(); show()
         compose.onNodeWithText("Not measuring yet").assertExists()
-        line.assert(polite).assert(says(""))
+        line.assert(polite).assert(hidden).assert(saysNothing)
         compose.onNodeWithText("This app").assertDoesNotExist()
         compose.onNodeWithContentDescription("Share battery data").assertIsNotEnabled()
         compose.onNodeWithContentDescription("Clear battery data").assertIsNotEnabled()
@@ -411,14 +431,19 @@ class BatteryScreenTest {
         report = BatteryMath.report(batteryTrace(minutes = 20, loss = 30_000).asSequence(), ProxySetup.Automatic); show()
         compose.onNodeWithContentDescription("Clear battery data").performClick()
         compose.onNodeWithText("Clear battery data?").assertExists()
-        compose.onNodeWithText("This removes 20 min of battery measurements saved on this device. Measuring continues.").assertExists()
-            .assert(hasContentDescription("This removes 20 minutes of battery measurements saved on this device. Measuring continues."))
+        val f = BatteryFormat(app)
+        fun dates(r: BatteryReport, spoken: Boolean = false) = f.dates(r.firstWallMinute!!, r.lastWallMinute!!, spoken)
+        compose.onNodeWithText("This removes the battery measurements from ${dates(report!!)} saved on this device. Measuring continues.")
+            .assertExists()
+            .assert(hasContentDescription("This removes the battery measurements from ${dates(report!!, spoken = true)} saved on this device. Measuring continues."))
         compose.onNodeWithText("Cancel").performClick()
         compose.onNodeWithText("Clear battery data?").assertDoesNotExist()
-        // The same counted time spread over six days: the dialog says the rows' span, not the counted time.
+        // Counted time spread over six days: the dialog names the same dates as the subtitle.
         report = BatteryFakes.notReady(); compose.waitForIdle()
+        val subtitle = batterySubtitle(app, f, status, report)!!.first
+        assertTrue(subtitle, subtitle.endsWith(dates(report!!)))
         compose.onNodeWithContentDescription("Clear battery data").performClick()
-        compose.onNodeWithText("This removes 153 hr of battery measurements saved on this device. Measuring continues.").assertExists()
+        compose.onNodeWithText("This removes the battery measurements from ${dates(report!!)} saved on this device. Measuring continues.").assertExists()
     }
     @Test fun comparedRowsAreTheComparisonsSides() {
         app.store.proxySetup = ProxySetup.Automatic
@@ -496,7 +521,13 @@ class BatteryScreenTest {
     @Test fun homeRowWhenOffSpeaksTitleAndHelp() {
         compose.setContent { ConnectTheme { HomeScreen(app.store, VpnState(), false, {}, {}, {}, {}) } }
         compose.onNodeWithTag("battery-row").performScrollTo()
-            .assert(hasContentDescription("Battery drain, How fast the phone’s battery drains while the VPN is on."))
+            .assert(hasContentDescription("Battery drain. How fast the phone’s battery drains while the VPN is on."))
+    }
+    @Test fun homeRowSpeaksOneWholeStringPerStatus() {
+        val spoken = BatteryStatus.entries.map { app.getString(batteryHomeSpoken(it)) } + app.getString(batteryHomeSpoken(BatteryStatus.CouldNotSave, BatteryProblem.StartFailed))
+        assertEquals(listOf("Battery drain. How fast the phone’s battery drains while the VPN is on.", "Battery drain, measuring",
+            "Battery drain, paused: the VPN is off", "Battery drain, paused while charging", "Battery drain, on, couldn’t save",
+            "Battery drain, stopped after 7 days", "Battery drain, on, couldn’t start").sorted(), spoken.sorted())
     }
     @Test fun homeRowSaysAStartFailure() {
         compose.setContent { ConnectTheme { HomeScreen(app.store, VpnState(), false, {}, {}, {}, {},
@@ -520,6 +551,14 @@ class BatteryFormatTest {
         assertEquals("10%", f().percent(10.0))
         assertEquals("150%", f().percent(150.0))
         assertEquals("200%", f().percent(200.0))
+    }
+    @Test fun aTinyPercentIsLessThanOneTenthAndZeroIsZero() {
+        assertEquals("less than 0.1%", f().percent(0.04))
+        assertEquals("less than 0.1%", f().percent(0.0001))
+        assertEquals("less than 0.1 percent", f().percent(0.04, spoken = true))
+        assertEquals("0.1%", f().percent(0.05))
+        assertEquals("0%", f().percent(0.0))
+        assertEquals("less than 0.1%", f().share(0.0003))
     }
     @Test fun twoPercentFromTheChargeCounter() {
         val r = BatteryMath.report(batteryTrace().asSequence(), ProxySetup.Automatic)
@@ -550,7 +589,6 @@ class BatteryFormatTest {
         assertFalse(caveat in batterySummary(app, BatteryStatus.Measuring, BatteryFakes.notReady()))
     }
     @Test fun durations() {
-        assertEquals("less than a minute", f().stored(59_000))
         assertTrue(f().duration(200 * 60_000L), f().duration(200 * 60_000L).startsWith("3"))
         assertTrue(f().duration(200 * 60_000L, spoken = true).contains("hours"))
         assertTrue(f().life(50.0, spoken = true), f().life(50.0, spoken = true) == "50 hours")

@@ -70,9 +70,16 @@ internal class BatteryFormat(private val context: Context, val locale: Locale = 
     private fun numberFormat(d: Int) = numbers.getOrPut(d) { NumberFormat.getNumberInstance(locale).fixed(d) }
     private val shortMeasure by lazy { MeasureFormat.getInstance(locale, MeasureFormat.FormatWidth.SHORT) }
     private val wideMeasure by lazy { MeasureFormat.getInstance(locale, MeasureFormat.FormatWidth.WIDE) }
-    /** A percentage (2.0 → "2.0%"); also CPU, which may exceed 100. */
-    fun percent(value: Double): String = percentFormat(digits(value)).format(exact(value).movePointLeft(2))
-    fun share(fraction: Double) = percent(fraction * 100)
+    /** A percentage (2.0 → "2.0%"); also CPU, which may exceed 100. Above zero but under what
+     *  rounds to 0.1 it's "less than 0.1%", never a "0.0%" that reads as none; exact zero is "0%".
+     *  [spoken] says the unit as a word where the shown form needs it ("less than 0.1 percent"). */
+    fun percent(value: Double, spoken: Boolean = false): String = when {
+        value > 0 && value < 0.05 -> if (spoken) context.getString(R.string.battery_less_than_percent_spoken, numberFormat(1).format(0.1))
+            else context.getString(R.string.battery_less_than_percent, percentFormat(1).format(0.001))
+        value == 0.0 -> percentFormat(0).format(0)
+        else -> percentFormat(digits(value)).format(exact(value).movePointLeft(2))
+    }
+    fun share(fraction: Double, spoken: Boolean = false) = percent(fraction * 100, spoken)
     /** The comparison difference: a plain decimal with no percent sign. */
     fun plain(value: Double): String = numberFormat(digits(value)).format(exact(value))
     fun plainIsZero(value: Double) = exact(value).setScale(digits(value), RoundingMode.HALF_UP).signum() == 0
@@ -90,8 +97,6 @@ internal class BatteryFormat(private val context: Context, val locale: Locale = 
         return format.formatMeasures(*measures.toTypedArray())
     }
     fun hours(value: Double, spoken: Boolean = false) = duration((value * 3_600_000).roundToLong(), spoken)
-    /** "Less than a minute" under a minute (the Clear dialog). */
-    fun stored(ms: Long, spoken: Boolean = false) = if (ms < 60_000) context.getString(R.string.battery_less_than_minute) else duration(ms, spoken)
     /** Full to empty: hours only above 3 h. */
     fun life(hours: Double, spoken: Boolean = false) = (hours * 3_600_000).roundToLong().let { duration(it, spoken, hoursOnly = hours > 3) }
     fun dates(first: Long, last: Long, spoken: Boolean = false): String = DateUtils.formatDateRange(context, first * 60_000, last * 60_000,
@@ -119,9 +124,9 @@ private fun stateDescriptionOf(status: BatteryStatus, problem: BatteryProblem?) 
     BatteryStatus.CouldNotSave -> if (problem.startFailed) R.string.battery_state_start_failed else R.string.battery_state_save_failed
     BatteryStatus.AutoStopped -> R.string.battery_state_auto
 }
-/** Home's spoken status, after the title. Off reads the row's help, as it shows. */
+/** Home's whole spoken row, one string per status. Off reads the row's help, as it shows. */
 internal fun batteryHomeSpoken(status: BatteryStatus, problem: BatteryProblem? = null) = when (status) {
-    BatteryStatus.Off -> R.string.battery_home_help
+    BatteryStatus.Off -> R.string.battery_home_spoken_off
     BatteryStatus.Measuring -> R.string.battery_home_spoken_measuring
     BatteryStatus.PausedVpnOff -> R.string.battery_home_spoken_paused_vpn
     BatteryStatus.PausedCharging -> R.string.battery_home_spoken_paused_charging
@@ -180,12 +185,15 @@ internal fun batterySummary(context: Context, status: BatteryStatus, report: Bat
     return lines.joinToString("\n")
 }
 
-private fun comparisonText(context: Context, f: BatteryFormat, c: BatteryComparison): String? {
+/** The difference sentence. [named] leaves the network out, for the screen, where "Both sides
+ *  on …" right above it already says it; the shared summary names it in the sentence. */
+private fun comparisonText(context: Context, f: BatteryFormat, c: BatteryComparison, named: Boolean = false): String? {
     val points = c.pointsPerHour ?: return null
     val d = c.difference ?: return null
     if (d == BatteryDifference.None || f.plainIsZero(points)) return context.getString(R.string.battery_compare_none)
-    return context.getString(if (d == BatteryDifference.More) R.string.battery_compare_more else R.string.battery_compare_less,
-        f.plain(points), context.getString(uplinkTitle(c.uplink)))
+    val more = d == BatteryDifference.More
+    return if (named) context.getString(if (more) R.string.battery_compare_more_here else R.string.battery_compare_less_here, f.plain(points))
+    else context.getString(if (more) R.string.battery_compare_more else R.string.battery_compare_less, f.plain(points), context.getString(uplinkTitle(c.uplink)))
 }
 
 // ---- Screen -------------------------------------------------------------------
@@ -273,6 +281,11 @@ internal fun BatteryContent(store: Store, status: BatteryStatus, report: Battery
     var toggles by remember { mutableIntStateOf(0) }
     // A toggle whose status never arrives (or arrives unchanged) stops counting after a while.
     LaunchedEffect(toggles) { delay(5_000); expectOn = null }
+    // "Measuring again" is left in the tree long enough to be announced, then the line goes back
+    // to the hidden Measuring it is otherwise.
+    var settled by remember { mutableIntStateOf(StatusAnnouncement.NEVER) }
+    val resumedAt = current.resumedAt
+    LaunchedEffect(resumedAt) { if (resumedAt != StatusAnnouncement.NEVER) { delay(4_000); settled = resumedAt } }
     val hasRows = report != null && report.rowCount > 0
     val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     Scaffold(modifier = Modifier.nestedScroll(scroll.nestedScrollConnection), topBar = { ReadableTopBar { insets ->
@@ -306,13 +319,16 @@ internal fun BatteryContent(store: Store, status: BatteryStatus, report: Battery
             }
             // Always there, even when Off (empty then), so the live region is never a node that
             // appears already live.
-            item(key = "status") { StatusLine(status, problem, current) }
+            item(key = "status") { StatusLine(status, problem, current, settled) }
             if (status == BatteryStatus.CouldNotSave) item(key = "retry") { ProblemRow(problem, onRetry) }
             if (report == null) {
                 item(key = "loading") {
                     Box(Modifier.fillMaxWidth().padding(vertical = 48.dp), contentAlignment = Alignment.Center) {
                         val label = stringResource(R.string.battery_loading)
-                        LoadingIndicator(Modifier.semantics { contentDescription = label })
+                        val modifier = Modifier.semantics { contentDescription = label }
+                        // Reduced motion: a still shape instead of the morphing one.
+                        if (LocalReducedMotion.current) LoadingIndicator(progress = { 0f }, modifier = modifier)
+                        else LoadingIndicator(modifier)
                     }
                 }
                 return@ReadableLazyColumn
@@ -330,8 +346,8 @@ internal fun BatteryContent(store: Store, status: BatteryStatus, report: Battery
                         report.path == BatteryPath.Level -> R.string.battery_keep_body_level
                         else -> R.string.battery_keep_body
                     })
-                    Panel(stringResource(R.string.battery_keep_title),
-                        if (report.anySituationReady) body + "\n\n" + stringResource(R.string.battery_keep_other_ready) else body)
+                    Panel(stringResource(R.string.battery_keep_title), body,
+                        if (report.anySituationReady) stringResource(R.string.battery_keep_other_ready) else null)
                 }
                 status == BatteryStatus.PausedVpnOff -> item(key = "panel") {
                     Panel(null, stringResource(if (hasRows) R.string.battery_paused_vpn_body else R.string.battery_paused_vpn_body_empty))
@@ -349,16 +365,18 @@ internal fun BatteryContent(store: Store, status: BatteryStatus, report: Battery
         }
     }
     if (confirmClear) {
-        // The rows kept span the wall-clock range, which can be far longer than the counted time.
-        val span = report?.firstWallMinute?.let { first -> ((report.lastWallMinute ?: first) - first).coerceAtLeast(0) * 60_000 } ?: 0
+        // The same dates as the subtitle: what's kept is the rows across that range, which can be
+        // far longer than the counted time.
+        val first = report?.firstWallMinute
+        val last = report?.lastWallMinute ?: first
         val body = if (status.on) R.string.battery_clear_body_on else R.string.battery_clear_body
         AlertDialog(onDismissRequest = { confirmClear = false },
             icon = { Icon(painterResource(R.drawable.ic_delete), contentDescription = null) },
             title = { Text(stringResource(R.string.battery_clear_title)) },
-            text = {
-                val spoken = stringResource(body, f.stored(span, spoken = true))
-                Text(stringResource(body, f.stored(span)), modifier = Modifier.semantics { contentDescription = spoken })
-            },
+            text = if (first == null || last == null) null else { {
+                val spoken = stringResource(body, f.dates(first, last, spoken = true))
+                Text(stringResource(body, f.dates(first, last)), modifier = Modifier.semantics { contentDescription = spoken })
+            } },
             confirmButton = {
                 TextButton(enabled = !clearing, onClick = { confirmClear = false; onClear() }, modifier = Modifier.heightIn(min = 48.dp)) {
                     Text(stringResource(R.string.clear))
@@ -368,39 +386,38 @@ internal fun BatteryContent(store: Store, status: BatteryStatus, report: Battery
     }
 }
 
-/** How the status line announces the latest change. */
-internal enum class StatusAnnounce { Quiet, Changed, Resumed }
-
-/** Who caused the latest status change, and how many changes so far. Immutable: [next] works
- *  out the following state. `expectOn` is the on/off state the user just toggled to; a change
- *  that lands on it is theirs ([byUser]), anything else is the system's. */
-internal data class StatusAnnouncement(val last: BatteryStatus, val announce: StatusAnnounce = StatusAnnounce.Quiet, val changes: Int = 0,
-    val byUser: Boolean = false) {
+/** What the status line says to TalkBack, and who caused the latest status change. Immutable:
+ *  [next] works out the following state. `expectOn` is the on/off state the user just toggled
+ *  to; a change that lands on it is theirs, anything else is the phone's.
+ *
+ *  The line is a polite live region at all times, so an announcement is its spoken text
+ *  changing. [said] is the status that text is for: a change the phone makes moves it on (and
+ *  is announced); the user's own change leaves it where it was, since the switch already says
+ *  it, and the line is hidden from TalkBack until the phone next changes something. */
+internal data class StatusAnnouncement(val last: BatteryStatus, val said: BatteryStatus = last, val changes: Int = 0,
+    val resumedAt: Int = NEVER) {
     fun next(status: BatteryStatus, expectOn: Boolean?): StatusAnnouncement {
         if (status == last) return this
-        val system = expectOn != status.on
+        if (expectOn == status.on) return copy(last = status, changes = changes + 1)
         val paused = last == BatteryStatus.PausedCharging || last == BatteryStatus.PausedVpnOff
-        val announce = when {
-            !system -> StatusAnnounce.Quiet
-            status == BatteryStatus.Measuring -> if (paused) StatusAnnounce.Resumed else StatusAnnounce.Quiet
-            else -> StatusAnnounce.Changed
-        }
-        return StatusAnnouncement(status, announce, changes + 1, byUser = !system)
+        val resumed = status == BatteryStatus.Measuring && paused
+        return StatusAnnouncement(status, status, changes + 1, if (resumed) changes + 1 else NEVER)
     }
-    /** Whether the line is a live region for this change. The user's own toggle is already said
-     *  by the switch, so that one change isn't announced again: the line drops its live region
-     *  (keeping its text) until the next change the phone makes. */
-    val live: Boolean get() = !byUser
-    /** What the status line says to TalkBack, or null for nothing: the status itself whenever
-     *  it's paused, a problem or auto-stopped. Plain Measuring and Off say nothing (the switch
-     *  says them), except Measuring again after a pause the phone ended. */
-    fun spoken(problem: BatteryProblem?): Int? = when (last) {
+    /** The spoken text for [said], or null for none (Off). Measuring after a pause the phone
+     *  ended is "Measuring again". */
+    fun spoken(problem: BatteryProblem?): Int? = when (said) {
         BatteryStatus.Off -> null
-        BatteryStatus.Measuring -> if (announce == StatusAnnounce.Resumed) R.string.battery_status_resumed else null
+        BatteryStatus.Measuring -> if (resumedAt != NEVER) R.string.battery_status_resumed else R.string.battery_status_measuring
         BatteryStatus.CouldNotSave ->
             if (problem.startFailed) R.string.battery_status_start_problem_spoken else R.string.battery_status_problem_spoken
-        else -> batteryStatusText(last)
+        else -> batteryStatusText(said)
     }
+    /** Hidden from TalkBack, keeping the node: Off; plain Measuring (the switch says it), and
+     *  "Measuring again" once it has been announced ([settled] is the change it was announced
+     *  at); and after the user's own change, whose text the line didn't take. */
+    fun hidden(settled: Int): Boolean = said != last || last == BatteryStatus.Off ||
+        (last == BatteryStatus.Measuring && (resumedAt == NEVER || resumedAt == settled))
+    companion object { const val NEVER = -1 }
 }
 
 @Composable
@@ -418,21 +435,21 @@ private fun SwitchRow(status: BatteryStatus, problem: BatteryProblem?, onClick: 
 /** The only live region on the screen, and one stable node in every state, so TalkBack sees its
  *  content change rather than a node that appears already live. It never ticks. */
 @Composable
-private fun StatusLine(status: BatteryStatus, problem: BatteryProblem?, announcement: StatusAnnouncement) {
-    val spoken = announcement.spoken(problem)?.let { stringResource(it) } ?: ""
-    val live = announcement.live
+private fun StatusLine(status: BatteryStatus, problem: BatteryProblem?, announcement: StatusAnnouncement, settled: Int) {
+    val spoken = announcement.spoken(problem)?.let { stringResource(it) }
+    val hidden = announcement.hidden(settled)
     val error = status == BatteryStatus.CouldNotSave
     val color = if (error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
-    // Lines that can be spoken get a full touch-exploration target.
-    val target = status == BatteryStatus.PausedVpnOff || status == BatteryStatus.PausedCharging || status == BatteryStatus.AutoStopped || error
     val shown = status != BatteryStatus.Off
-    val layout = when {
-        !shown -> Modifier
-        target -> Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp).heightIn(min = 48.dp)
-        else -> Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp)
-    }
+    // One rhythm in every shown state (a full touch-exploration target), so the list doesn't jump
+    // between Measuring and Paused; Off takes no space.
+    val layout = if (shown) Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp).heightIn(min = 48.dp) else Modifier
     Row(Modifier.fillMaxWidth().then(layout).testTag("battery-status")
-        .clearAndSetSemantics { contentDescription = spoken; if (live) liveRegion = LiveRegionMode.Polite },
+        .clearAndSetSemantics {
+            liveRegion = LiveRegionMode.Polite
+            spoken?.let { contentDescription = it }
+            if (hidden) hideFromAccessibility()
+        },
         horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
         if (shown) {
             // Sized with the text so it scales with the font size.
@@ -479,7 +496,7 @@ private fun ProblemRow(problem: BatteryProblem?, onRetry: () -> Unit) {
 }
 
 @Composable
-private fun Panel(title: String?, body: String) {
+private fun Panel(title: String?, body: String, more: String? = null) {
     Surface(Modifier.fillMaxWidth().padding(top = 16.dp).testTag("battery-panel"), shape = MaterialTheme.shapes.large,
         color = MaterialTheme.colorScheme.surfaceContainerHigh) {
         Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -488,7 +505,11 @@ private fun Panel(title: String?, body: String) {
                 tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp))
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (title != null) Text(title, style = MaterialTheme.typography.titleMedium)
-                Text(body, style = MaterialTheme.typography.bodyMedium)
+                // A second paragraph is its own Text, a fixed gap under the first.
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(body, style = MaterialTheme.typography.bodyMedium)
+                    more?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                }
             }
         }
     }
@@ -500,12 +521,14 @@ private fun Hero(f: BatteryFormat, report: BatteryReport) {
     val value = f.percent(hero.percentPerHour ?: return)
     val uplink = stringResource(uplinkTitle(report.heroUplink))
     val range = hero.rangePerHour?.let { f.percent(it) }
+    val valueSpoken = f.percent(hero.percentPerHour, spoken = true)
+    val rangeSpoken = hero.rangePerHour?.let { f.percent(it, spoken = true) }
     val watts = hero.watts?.let { f.watts(it) }
     val measured = hero.wattsLabel == BatteryWattsLabel.Measured
     val life = hero.fullToEmptyHours
     val spoken = listOfNotNull(
-        stringResource(R.string.battery_hero_value_spoken, value),
-        range?.let { stringResource(R.string.battery_hero_range_spoken, it) },
+        stringResource(R.string.battery_hero_value_spoken, valueSpoken),
+        rangeSpoken?.let { stringResource(R.string.battery_hero_range_spoken, it) },
         watts?.let { stringResource(if (measured) R.string.battery_hero_watts_measured_spoken else R.string.battery_hero_watts_about_spoken, it) },
         life?.let { stringResource(R.string.battery_life, f.life(it, spoken = true)).removeSuffix(".") },
     ).joinToString(". ") + "."
@@ -558,8 +581,8 @@ private fun InfoRow(index: Int, count: Int, headline: String, supporting: List<S
 @Composable
 private fun rateValue(f: BatteryFormat, rate: BatteryRate): Pair<String, String> =
     if (rate.ready && rate.percentPerHour != null) {
-        val p = f.percent(rate.percentPerHour)
-        stringResource(R.string.battery_rate_short, p) to stringResource(R.string.battery_rate_short_spoken, p)
+        stringResource(R.string.battery_rate_short, f.percent(rate.percentPerHour)) to
+            stringResource(R.string.battery_rate_short_spoken, f.percent(rate.percentPerHour, spoken = true))
     } else stringResource(R.string.battery_not_yet) to stringResource(R.string.battery_not_yet_spoken)
 
 @Composable
@@ -579,7 +602,7 @@ private fun Compared(f: BatteryFormat, store: Store, report: BatteryReport) {
                 modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp).testTag("battery-compare-uplink"))
         }
         if (c != null && bothReady) {
-            comparisonText(context, f, c)?.let {
+            comparisonText(context, f, c, named = true)?.let {
                 Text(it, style = MaterialTheme.typography.bodyLargeEmphasized, modifier = Modifier.padding(horizontal = 16.dp).testTag("battery-compare"))
             }
             // "Points" only needs explaining when a number of them is shown; the caveat always stays.
@@ -626,11 +649,12 @@ private fun Side(f: BatteryFormat, index: Int, count: Int, name: String, rate: B
     val unknown = stringResource(R.string.battery_unknown)
     val proxy = rate.proxyBytesPerHour?.let(f::size) ?: unknown
     val cell = rate.mobileBytesPerHour?.let(f::size) ?: unknown
-    val awake = rate.awakeShare?.let(f::share) ?: unknown
+    val awake = rate.awakeShare?.let { f.share(it) } ?: unknown
+    val awakeSpoken = rate.awakeShare?.let { f.share(it, spoken = true) } ?: unknown
     // A side with nothing recorded yet has no detail line: it would be all "unknown".
     val empty = rate.proxyBytesPerHour == null && rate.mobileBytesPerHour == null && rate.awakeShare == null
     val detail = if (empty) null else stringResource(R.string.battery_side_detail, proxy, cell, awake)
-    val detailSpoken = if (empty) null else stringResource(R.string.battery_side_detail_spoken, proxy, cell, awake)
+    val detailSpoken = if (empty) null else stringResource(R.string.battery_side_detail_spoken, proxy, cell, awakeSpoken)
     val (value, valueSpoken) = rateValue(f, rate)
     InfoRow(index, count, name, listOfNotNull(line1, detail), value,
         spoken = listOfNotNull(name, line1Spoken, detailSpoken, valueSpoken).joinToString(". "), tag = tag)
@@ -646,7 +670,7 @@ private fun ThisApp(f: BatteryFormat, report: BatteryReport) {
         val help = stringResource(R.string.battery_cpu_help)
         val total = report.cpu.totalPercent
         val value = total?.let { stringResource(R.string.battery_cpu_total, f.percent(it)) } ?: stringResource(R.string.battery_not_yet)
-        val spoken = total?.let { stringResource(R.string.battery_cpu_total_spoken, f.percent(it)) } ?: stringResource(R.string.battery_not_yet_spoken)
+        val spoken = total?.let { stringResource(R.string.battery_cpu_total_spoken, f.percent(it, spoken = true)) } ?: stringResource(R.string.battery_not_yet_spoken)
         // The value goes under the help, so a long "% of one core" never squeezes the text at 360 dp.
         Group(1) { InfoRow(0, 1, title, listOf(help), value, spoken = "$title. $help. $spoken", tag = "battery-cpu", stack = true) }
     }
@@ -761,7 +785,7 @@ private data class DetailRow(val headline: String, val supporting: List<String> 
 private fun detailRows(f: BatteryFormat, report: BatteryReport): List<DetailRow> = buildList {
     val all = report.all
     all.percentPerHour?.let { add(DetailRow(stringResource(R.string.battery_d_all, f.percent(it), f.hours(all.hours)),
-        spoken = stringResource(R.string.battery_d_all, f.percent(it), f.hours(all.hours, spoken = true)))) }
+        spoken = stringResource(R.string.battery_d_all, f.percent(it, spoken = true), f.hours(all.hours, spoken = true)))) }
     report.cpu.vpnPercent?.let { add(DetailRow(stringResource(R.string.battery_d_vpn, f.percent(it)))) }
     report.cpu.forwardingPercent?.let { add(DetailRow(stringResource(R.string.battery_d_fwd, f.percent(it)))) }
     report.cpu.otherPercent?.let { add(DetailRow(stringResource(R.string.battery_d_other, f.percent(it)))) }
@@ -775,7 +799,7 @@ private fun detailRows(f: BatteryFormat, report: BatteryReport): List<DetailRow>
         val title = stringResource(R.string.battery_transport_title)
         val note = stringResource(R.string.battery_transport_note)
         add(DetailRow(title, listOf(stringResource(R.string.battery_transport, f.share(t.dtls), f.share(t.tls), f.share(t.unknown)), note),
-            spoken = "$title. " + stringResource(R.string.battery_transport_spoken, f.share(t.dtls), f.share(t.tls), f.share(t.unknown)) + ". $note"))
+            spoken = "$title. " + stringResource(R.string.battery_transport_spoken, f.share(t.dtls, true), f.share(t.tls, true), f.share(t.unknown, true)) + ". $note"))
     }
     all.awakeShare?.let { add(DetailRow(stringResource(R.string.battery_d_awake, f.share(it)))) }
     all.proxyBytesPerHour?.let { add(DetailRow(stringResource(R.string.battery_d_proxy_mb, f.size(it)))) }

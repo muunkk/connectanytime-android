@@ -321,13 +321,13 @@
     <string name="battery_state_start_failed">On, couldn’t start</string>
     <string name="battery_state_auto">Off, stopped after 7 days</string>
     <!-- Home row, spoken as one: "Battery drain, measuring". -->
-    <string name="battery_home_spoken">%1$s, %2$s</string>
-    <string name="battery_home_spoken_measuring">measuring</string>
-    <string name="battery_home_spoken_paused_vpn">paused: the VPN is off</string>
-    <string name="battery_home_spoken_paused_charging">paused while charging</string>
-    <string name="battery_home_spoken_save_failed">on, couldn’t save</string>
-    <string name="battery_home_spoken_start_failed">on, couldn’t start</string>
-    <string name="battery_home_spoken_auto">stopped after 7 days</string>
+    <string name="battery_home_spoken_off">Battery drain. How fast the phone’s battery drains while the VPN is on.</string>
+    <string name="battery_home_spoken_measuring">Battery drain, measuring</string>
+    <string name="battery_home_spoken_paused_vpn">Battery drain, paused: the VPN is off</string>
+    <string name="battery_home_spoken_paused_charging">Battery drain, paused while charging</string>
+    <string name="battery_home_spoken_save_failed">Battery drain, on, couldn’t save</string>
+    <string name="battery_home_spoken_start_failed">Battery drain, on, couldn’t start</string>
+    <string name="battery_home_spoken_auto">Battery drain, stopped after 7 days</string>
     <!-- Subtitle: %1$s = measured time, %2$s = the date range. -->
     <string name="battery_subtitle_on">%1$s measured · %2$s</string>
     <string name="battery_subtitle_stopped">Stopped · %1$s measured · %2$s</string>
@@ -340,15 +340,16 @@
     <string name="battery_subtitle_auto_dates">Stopped after 7 days · %1$s</string>
     <string name="battery_subtitle_stopped_dates_spoken">Stopped, %1$s</string>
     <string name="battery_subtitle_auto_dates_spoken">Stopped after 7 days, %1$s</string>
-    <string name="battery_less_than_minute">less than a minute</string>
+    <string name="battery_less_than_percent">less than %1$s</string>
+    <string name="battery_less_than_percent_spoken">less than %1$s percent</string>
     <string name="battery_loading">Loading battery data</string>
     <string name="battery_share">Share battery data</string>
     <string name="battery_clear">Clear battery data</string>
     <string name="battery_share_failed">Couldn’t export the battery data.</string>
     <string name="battery_share_note">Includes the phone’s model and Android version. No sites or device names.</string>
     <string name="battery_clear_title">Clear battery data?</string>
-    <string name="battery_clear_body">This removes %1$s of battery measurements saved on this device.</string>
-    <string name="battery_clear_body_on">This removes %1$s of battery measurements saved on this device. Measuring continues.</string>
+    <string name="battery_clear_body">This removes the battery measurements from %1$s saved on this device.</string>
+    <string name="battery_clear_body_on">This removes the battery measurements from %1$s saved on this device. Measuring continues.</string>
     <string name="battery_save_failed">Couldn’t save measurements</string>
     <string name="battery_save_failed_help">Recent measurements are kept in memory for now. Older ones may be lost.</string>
     <string name="battery_retry">Try saving again</string>
@@ -389,6 +390,9 @@
     <!-- %1$s = a plain decimal (no percent sign), %2$s = the network, title case. -->
     <string name="battery_compare_more">%2$s: %1$s percentage points an hour more with sharing in use</string>
     <string name="battery_compare_less">%2$s: %1$s percentage points an hour less with sharing in use</string>
+    <!-- On screen, under "Both sides on …", which already names the network. -->
+    <string name="battery_compare_more_here">%1$s percentage points an hour more with sharing in use</string>
+    <string name="battery_compare_less_here">%1$s percentage points an hour less with sharing in use</string>
     <string name="battery_compare_none">No clear difference yet. The two ranges overlap; keep measuring both.</string>
     <string name="battery_points_help">Points are percent of the battery.</string>
     <string name="battery_compare_caveat">Observed whole-phone drain. Traffic and network conditions may have differed; similar use on both sides gives a fairer comparison.</string>
