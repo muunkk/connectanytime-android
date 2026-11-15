@@ -566,7 +566,7 @@ turn the proxies off on the Mac, or sharing back on.
 
 ## Battery drain measurement
 
-Settings → **Battery drain** turns on a recorder that checks the battery about once a
+The **Battery drain** row on the home screen (under Activity) opens a switch for a recorder that checks the battery about once a
 minute while the VPN is on and the phone is unplugged (it turns itself off after 7
 days). It records counts only: battery charge, voltage, temperature, screen and power
 state, network type, the app's processor time, and proxy and cellular byte totals. It

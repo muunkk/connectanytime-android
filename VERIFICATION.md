@@ -1204,7 +1204,7 @@ the battery in about two hours, and there was no data to optimize against.
 
 ## What this adds
 
-An opt-in recorder (Settings → Battery drain) and a report screen. Design, feasibility
+An opt-in recorder and report screen (home screen → Battery drain, under Activity). Design, feasibility
 and accuracy limits, ranked drain suspects with file:line evidence, quick wins and the
 adb cross-check: `docs/battery-measurement.md`.
 
